@@ -304,6 +304,17 @@ export const RetryConfigSchema = z
   .strict()
   .optional();
 
+export const DmRetryConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    timeoutMs: z.number().int().min(1000).optional(),
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    backoffMs: z.number().int().min(1000).optional(),
+    notifyOnFailure: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
+
 export const QueueModeBySurfaceSchema = z
   .object({
     whatsapp: QueueModeSchema.optional(),

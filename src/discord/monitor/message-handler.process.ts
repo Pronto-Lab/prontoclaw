@@ -29,6 +29,7 @@ import { danger, logVerbose, shouldLogVerbose } from "../../globals.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
 import { truncateUtf16Safe } from "../../utils.js";
+import { markDmResponded, resolveDmRetryConfig } from "../dm-retry/index.js";
 import { reactMessageDiscord, removeReactionDiscord } from "../send.js";
 import { normalizeDiscordSlug } from "./allow-list.js";
 import { resolveTimestampMs } from "./format.js";
@@ -315,6 +316,22 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       logVerbose(`discord: failed updating session meta: ${String(err)}`);
     },
   });
+
+  if (isDirectMessage) {
+    const dmRetryConfig = resolveDmRetryConfig(cfg, accountId);
+    if (dmRetryConfig.enabled) {
+      try {
+        const count = await markDmResponded(message.channelId);
+        if (count > 0) {
+          logVerbose(
+            `dm-retry: marked ${count} DM(s) as responded for channel ${message.channelId}`,
+          );
+        }
+      } catch (err) {
+        logVerbose(`dm-retry: failed to mark DM responded: ${String(err)}`);
+      }
+    }
+  }
 
   if (shouldLogVerbose()) {
     const preview = truncateUtf16Safe(combinedBody, 200).replace(/\n/g, "\\n");

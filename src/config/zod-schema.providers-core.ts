@@ -11,6 +11,7 @@ import {
   BlockStreamingCoalesceSchema,
   DmConfigSchema,
   DmPolicySchema,
+  DmRetryConfigSchema,
   ExecutableTokenSchema,
   GroupPolicySchema,
   MarkdownConfigSchema,
@@ -210,6 +211,7 @@ export const DiscordDmSchema = z
     allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
     groupEnabled: z.boolean().optional(),
     groupChannels: z.array(z.union([z.string(), z.number()])).optional(),
+    retry: DmRetryConfigSchema,
   })
   .strict()
   .superRefine((value, ctx) => {

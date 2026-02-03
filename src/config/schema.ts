@@ -354,6 +354,11 @@ const FIELD_LABELS: Record<string, string> = {
   "channels.discord.intents.guildMembers": "Discord Guild Members Intent",
   "channels.discord.pluralkit.enabled": "Discord PluralKit Enabled",
   "channels.discord.pluralkit.token": "Discord PluralKit Token",
+  "channels.discord.dm.retry.enabled": "Discord DM Retry Enabled",
+  "channels.discord.dm.retry.timeoutMs": "Discord DM Retry Timeout (ms)",
+  "channels.discord.dm.retry.maxAttempts": "Discord DM Retry Max Attempts",
+  "channels.discord.dm.retry.backoffMs": "Discord DM Retry Backoff (ms)",
+  "channels.discord.dm.retry.notifyOnFailure": "Discord DM Retry Notify on Failure",
   "channels.slack.dm.policy": "Slack DM Policy",
   "channels.slack.allowBots": "Slack Allow Bot Messages",
   "channels.discord.token": "Discord Bot Token",
@@ -746,6 +751,16 @@ const FIELD_HELP: Record<string, string> = {
     "Resolve PluralKit proxied messages and treat system members as distinct senders.",
   "channels.discord.pluralkit.token":
     "Optional PluralKit token for resolving private systems or members.",
+  "channels.discord.dm.retry.enabled":
+    "Enable DM retry tracking for agent-to-agent messages (auto-retry unresponded DMs).",
+  "channels.discord.dm.retry.timeoutMs":
+    "Timeout in ms before considering a DM unresponded (default: 300000 = 5 min).",
+  "channels.discord.dm.retry.maxAttempts":
+    "Maximum retry attempts before marking DM as failed (default: 3).",
+  "channels.discord.dm.retry.backoffMs":
+    "Delay in ms between retry attempts (default: 60000 = 1 min).",
+  "channels.discord.dm.retry.notifyOnFailure":
+    "Notify sender when all retries fail (default: true).",
   "channels.slack.dm.policy":
     'Direct message access control ("pairing" recommended). "open" requires channels.slack.dm.allowFrom=["*"].',
 };

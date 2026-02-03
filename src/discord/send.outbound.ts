@@ -6,9 +6,11 @@ import type { DiscordSendResult } from "./send.types.js";
 import { resolveChunkMode } from "../auto-reply/chunk.js";
 import { loadConfig } from "../config/config.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
+import { logVerbose } from "../globals.js";
 import { recordChannelActivity } from "../infra/channel-activity.js";
 import { convertMarkdownTables } from "../markdown/tables.js";
 import { resolveDiscordAccount } from "./accounts.js";
+import { resolveDmRetryConfig, trackOutboundDm } from "./dm-retry/index.js";
 import {
   buildDiscordSendError,
   createDiscordClient,
@@ -29,6 +31,8 @@ type DiscordSendOpts = {
   replyTo?: string;
   retry?: RetryConfig;
   embeds?: unknown[];
+  senderAgentId?: string;
+  targetUserId?: string;
 };
 
 export async function sendMessageDiscord(
@@ -91,6 +95,24 @@ export async function sendMessageDiscord(
     accountId: accountInfo.accountId,
     direction: "outbound",
   });
+
+  // Track outbound DM for retry if enabled
+  const dmRetryConfig = resolveDmRetryConfig(cfg, accountInfo.accountId);
+  if (dmRetryConfig.enabled && opts.senderAgentId && opts.targetUserId) {
+    try {
+      await trackOutboundDm({
+        messageId: result.id ? String(result.id) : "unknown",
+        channelId: String(result.channel_id ?? channelId),
+        senderAgentId: opts.senderAgentId,
+        targetUserId: opts.targetUserId,
+        originalText: text,
+      });
+      logVerbose(`dm-retry: tracked outbound DM to ${opts.targetUserId}`);
+    } catch (err) {
+      logVerbose(`dm-retry: failed to track outbound DM: ${String(err)}`);
+    }
+  }
+
   return {
     messageId: result.id ? String(result.id) : "unknown",
     channelId: String(result.channel_id ?? channelId),

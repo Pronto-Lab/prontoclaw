@@ -27,6 +27,7 @@ git push origin main
 When Agent A sends a DM to Agent B via Discord, if B doesn't respond (gateway disconnection, crash, or timeout), the message is lost with no retry mechanism.
 
 **Current Flow:**
+
 ```
 Agent A → Discord DM → Agent B
                 ↓
@@ -36,6 +37,7 @@ Agent A → Discord DM → Agent B
 ```
 
 **Proposed Solution:**
+
 ```
 Agent A → Discord DM → Agent B
                 ↓
@@ -46,13 +48,13 @@ Agent A → Discord DM → Agent B
 
 #### Requirements
 
-| Requirement | Description |
-|-------------|-------------|
-| Response tracking | Track outbound DMs and expected responses |
-| Timeout detection | Configurable timeout (default: 5 min) |
-| Retry mechanism | Auto-resend after timeout (configurable attempts) |
-| Fallback notification | Alert sender if all retries fail |
-| Configuration | Per-agent or global settings |
+| Requirement           | Description                                       |
+| --------------------- | ------------------------------------------------- |
+| Response tracking     | Track outbound DMs and expected responses         |
+| Timeout detection     | Configurable timeout (default: 5 min)             |
+| Retry mechanism       | Auto-resend after timeout (configurable attempts) |
+| Fallback notification | Alert sender if all retries fail                  |
+| Configuration         | Per-agent or global settings                      |
 
 #### Proposed Config
 
@@ -63,14 +65,14 @@ Agent A → Discord DM → Agent B
       dm: {
         retry: {
           enabled: true,
-          timeoutMs: 300000,      // 5 minutes
+          timeoutMs: 300000, // 5 minutes
           maxAttempts: 3,
-          backoffMs: 60000,       // 1 minute between retries
-          notifyOnFailure: true,  // Notify sender after all retries fail
-        }
-      }
-    }
-  }
+          backoffMs: 60000, // 1 minute between retries
+          notifyOnFailure: true, // Notify sender after all retries fail
+        },
+      },
+    },
+  },
 }
 ```
 
@@ -79,6 +81,7 @@ Agent A → Discord DM → Agent B
 **Architecture Decision: Separate Tracking File (Option B)**
 
 Rationale:
+
 - Session store is per-agent, but DM tracking is cross-agent
 - Separate file allows clean separation of concerns
 - Easier to debug and migrate
@@ -93,21 +96,22 @@ Rationale:
 
 **Files to modify:**
 
-| File | Change |
-|------|--------|
-| `src/config/types.discord.ts` | Add `DmRetryConfig` type to `DiscordDmConfig` |
-| `src/config/zod-schema.core.ts` | Add `DmRetryConfigSchema` Zod validator |
-| `src/config/zod-schema.providers-core.ts` | Add `dmRetry` to `DiscordDmSchema` |
-| `src/config/schema.ts` | Add UI labels for `channels.discord.dm.retry.*` |
+| File                                      | Change                                          |
+| ----------------------------------------- | ----------------------------------------------- |
+| `src/config/types.discord.ts`             | Add `DmRetryConfig` type to `DiscordDmConfig`   |
+| `src/config/zod-schema.core.ts`           | Add `DmRetryConfigSchema` Zod validator         |
+| `src/config/zod-schema.providers-core.ts` | Add `dmRetry` to `DiscordDmSchema`              |
+| `src/config/schema.ts`                    | Add UI labels for `channels.discord.dm.retry.*` |
 
 **New Type:**
+
 ```typescript
 // src/config/types.discord.ts
 export interface DmRetryConfig {
   enabled?: boolean;
-  timeoutMs?: number;      // default: 300000 (5 min)
-  maxAttempts?: number;    // default: 3
-  backoffMs?: number;      // default: 60000 (1 min)
+  timeoutMs?: number; // default: 300000 (5 min)
+  maxAttempts?: number; // default: 3
+  backoffMs?: number; // default: 60000 (1 min)
   notifyOnFailure?: boolean; // default: true
 }
 ```
@@ -120,15 +124,15 @@ export interface DmRetryConfig {
 
 ```typescript
 interface TrackedDm {
-  id: string;                    // UUID
-  messageId: string;             // Discord message ID
-  channelId: string;             // DM channel ID
-  senderAgentId: string;         // Agent that sent the DM
-  targetAgentId: string;         // Agent that should respond
-  originalText: string;          // Message content (for retry)
-  sentAt: number;                // Timestamp
-  attempts: number;              // Retry count
-  status: 'pending' | 'responded' | 'failed';
+  id: string; // UUID
+  messageId: string; // Discord message ID
+  channelId: string; // DM channel ID
+  senderAgentId: string; // Agent that sent the DM
+  targetAgentId: string; // Agent that should respond
+  originalText: string; // Message content (for retry)
+  sentAt: number; // Timestamp
+  attempts: number; // Retry count
+  status: "pending" | "responded" | "failed";
 }
 
 interface DmRetryStore {
@@ -138,6 +142,7 @@ interface DmRetryStore {
 ```
 
 **Functions:**
+
 - `loadDmRetryStore(): DmRetryStore`
 - `saveDmRetryStore(store: DmRetryStore): void`
 - `trackOutboundDm(dm: TrackedDm): void`
@@ -166,7 +171,7 @@ if (isAgentToAgentDm && dmRetryConfig?.enabled) {
     originalText: text,
     sentAt: Date.now(),
     attempts: 1,
-    status: 'pending',
+    status: "pending",
   });
 }
 ```
@@ -193,7 +198,7 @@ let retryInterval: NodeJS.Timeout | null = null;
 
 export function startDmRetryScheduler(cfg: DiscordConfig): void {
   if (!cfg.dm?.retry?.enabled) return;
-  
+
   const checkIntervalMs = 60000; // Check every minute
   retryInterval = setInterval(() => {
     processPendingRetries(cfg);
@@ -209,7 +214,7 @@ export function stopDmRetryScheduler(): void {
 
 async function processPendingRetries(cfg: DiscordConfig): Promise<void> {
   const timedOut = getTimedOutDms(cfg.dm.retry.timeoutMs);
-  
+
   for (const dm of timedOut) {
     if (dm.attempts >= cfg.dm.retry.maxAttempts) {
       markDmFailed(dm.id);
@@ -218,7 +223,7 @@ async function processPendingRetries(cfg: DiscordConfig): Promise<void> {
       }
       continue;
     }
-    
+
     // Retry
     incrementRetryAttempt(dm.id);
     await resendDm(dm);
@@ -234,7 +239,7 @@ async function processPendingRetries(cfg: DiscordConfig): Promise<void> {
 
 ```typescript
 // Add to startup sequence
-import { startDmRetryScheduler } from '../discord/dm-retry/scheduler';
+import { startDmRetryScheduler } from "../discord/dm-retry/scheduler";
 
 // In startup function
 startDmRetryScheduler(cfg.channels.discord);
@@ -244,7 +249,7 @@ startDmRetryScheduler(cfg.channels.discord);
 
 ```typescript
 // Add to shutdown sequence
-import { stopDmRetryScheduler } from '../discord/dm-retry/scheduler';
+import { stopDmRetryScheduler } from "../discord/dm-retry/scheduler";
 
 // In shutdown handler
 stopDmRetryScheduler();
@@ -263,12 +268,10 @@ stopDmRetryScheduler();
 export function isAgentToAgentDm(
   senderAgentId: string,
   recipientUserId: string,
-  cfg: OpenClawConfig
+  cfg: OpenClawConfig,
 ): boolean {
-  const agentBotIds = cfg.agents.list
-    .filter(a => a.discord?.botId)
-    .map(a => a.discord.botId);
-  
+  const agentBotIds = cfg.agents.list.filter((a) => a.discord?.botId).map((a) => a.discord.botId);
+
   return agentBotIds.includes(recipientUserId);
 }
 ```
@@ -277,19 +280,19 @@ export function isAgentToAgentDm(
 
 #### File Summary
 
-| File | Status | Purpose |
-|------|--------|---------|
-| `src/config/types.discord.ts` | Modify | Add DmRetryConfig type |
-| `src/config/zod-schema.core.ts` | Modify | Add DmRetryConfigSchema |
-| `src/config/zod-schema.providers-core.ts` | Modify | Wire into DiscordDmSchema |
-| `src/config/schema.ts` | Modify | UI labels |
-| `src/discord/dm-retry/tracker.ts` | **New** | Tracking state management |
-| `src/discord/dm-retry/scheduler.ts` | **New** | Retry timer logic |
-| `src/discord/dm-retry/utils.ts` | **New** | Helper functions |
-| `src/discord/dm-retry/index.ts` | **New** | Module exports |
-| `src/discord/send.outbound.ts` | Modify | Hook outbound DMs |
-| `src/discord/monitor/message-handler.process.ts` | Modify | Hook inbound responses |
-| `src/gateway/server-startup.ts` | Modify | Start scheduler |
+| File                                             | Status  | Purpose                   |
+| ------------------------------------------------ | ------- | ------------------------- |
+| `src/config/types.discord.ts`                    | Modify  | Add DmRetryConfig type    |
+| `src/config/zod-schema.core.ts`                  | Modify  | Add DmRetryConfigSchema   |
+| `src/config/zod-schema.providers-core.ts`        | Modify  | Wire into DiscordDmSchema |
+| `src/config/schema.ts`                           | Modify  | UI labels                 |
+| `src/discord/dm-retry/tracker.ts`                | **New** | Tracking state management |
+| `src/discord/dm-retry/scheduler.ts`              | **New** | Retry timer logic         |
+| `src/discord/dm-retry/utils.ts`                  | **New** | Helper functions          |
+| `src/discord/dm-retry/index.ts`                  | **New** | Module exports            |
+| `src/discord/send.outbound.ts`                   | Modify  | Hook outbound DMs         |
+| `src/discord/monitor/message-handler.process.ts` | Modify  | Hook inbound responses    |
+| `src/gateway/server-startup.ts`                  | Modify  | Start scheduler           |
 
 ---
 
@@ -364,4 +367,4 @@ If a feature is generally useful, consider submitting a PR to upstream:
 
 ---
 
-*Last updated: 2026-02-03*
+_Last updated: 2026-02-03_

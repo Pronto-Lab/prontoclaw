@@ -7,6 +7,23 @@ import type {
   OutboundRetryConfig,
   ReplyToMode,
 } from "./types.base.js";
+
+/**
+ * Configuration for DM retry behavior (agent-to-agent communication).
+ * When enabled, outbound DMs are tracked and auto-retried if no response is received.
+ */
+export type DmRetryConfig = {
+  /** Enable DM retry tracking for agent-to-agent messages. Default: false. */
+  enabled?: boolean;
+  /** Timeout in ms before considering a DM unresponded. Default: 300000 (5 min). */
+  timeoutMs?: number;
+  /** Maximum retry attempts before marking as failed. Default: 3. */
+  maxAttempts?: number;
+  /** Delay in ms between retry attempts. Default: 60000 (1 min). */
+  backoffMs?: number;
+  /** Notify sender when all retries fail. Default: true. */
+  notifyOnFailure?: boolean;
+};
 import type { ChannelHeartbeatVisibilityConfig } from "./types.channels.js";
 import type { DmConfig, ProviderCommandsConfig } from "./types.messages.js";
 import type { GroupToolPolicyBySenderConfig, GroupToolPolicyConfig } from "./types.tools.js";
@@ -22,6 +39,8 @@ export type DiscordDmConfig = {
   groupEnabled?: boolean;
   /** Optional allowlist for group DM channels (ids or slugs). */
   groupChannels?: Array<string | number>;
+  /** DM retry configuration for agent-to-agent communication. */
+  retry?: DmRetryConfig;
 };
 
 export type DiscordGuildChannelConfig = {

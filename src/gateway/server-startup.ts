@@ -8,6 +8,7 @@ import {
   resolveConfiguredModelRef,
   resolveHooksGmailModel,
 } from "../agents/model-selection.js";
+import { startDmRetryScheduler } from "../discord/dm-retry/scheduler.js";
 import { startGmailWatcher } from "../hooks/gmail-watcher.js";
 import {
   clearInternalHooks,
@@ -16,6 +17,7 @@ import {
 } from "../hooks/internal-hooks.js";
 import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
+import { scheduleTaskContinuation } from "../infra/task-continuation.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
 import { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import {
@@ -97,6 +99,13 @@ export async function startGatewaySidecars(params: {
     }
   }
 
+  // Start DM retry scheduler for Discord agent-to-agent communication.
+  try {
+    startDmRetryScheduler(params.cfg);
+  } catch (err) {
+    params.log.warn(`dm-retry scheduler failed to start: ${String(err)}`);
+  }
+
   // Load internal hook handlers from configuration and directory discovery.
   try {
     // Clear any previously registered hooks to ensure fresh loading
@@ -154,6 +163,14 @@ export async function startGatewaySidecars(params: {
     setTimeout(() => {
       void scheduleRestartSentinelWake({ deps: params.deps });
     }, 750);
+  }
+
+  if (shouldWakeFromRestartSentinel()) {
+    scheduleTaskContinuation({
+      cfg: params.cfg,
+      deps: params.deps,
+      delayMs: 1500,
+    });
   }
 
   return { browserControl, pluginServices };
