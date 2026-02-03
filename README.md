@@ -1,5 +1,13 @@
 # 🦞 OpenClaw — Personal AI Assistant
 
+> **⚠️ Pronto-Lab Fork**
+>
+> This is [Pronto-Lab's fork](https://github.com/Pronto-Lab/prontolab-openclaw) of OpenClaw with custom features for multi-agent coordination.
+>
+> **Upstream:** [openclaw/openclaw](https://github.com/openclaw/openclaw)
+>
+> **Custom features:** See [PRONTOLAB.md](./PRONTOLAB.md)
+
 <p align="center">
     <picture>
         <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text-dark.png">
