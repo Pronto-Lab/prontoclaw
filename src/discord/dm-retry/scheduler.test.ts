@@ -144,6 +144,78 @@ describe("dm-retry scheduler", () => {
       expect(markDmFailed).toHaveBeenCalledWith("dm-1");
       expect(incrementRetryAttempt).not.toHaveBeenCalled();
     });
+
+    it("sends failure notification when notifyOnFailure is enabled", async () => {
+      vi.mocked(resolveDmRetryConfig).mockReturnValue({
+        enabled: true,
+        timeoutMs: 300000,
+        maxAttempts: 3,
+        backoffMs: 60000,
+        notifyOnFailure: true,
+      });
+
+      const timedOutDm: TrackedDm = {
+        id: "dm-1",
+        messageId: "msg-1",
+        channelId: "ch-1",
+        senderAgentId: "main",
+        targetUserId: "user-1",
+        originalText: "Hello World",
+        sentAt: 1000,
+        attempts: 3,
+        lastAttemptAt: 1000,
+        status: "pending",
+      };
+      vi.mocked(getTimedOutDms).mockReturnValue([timedOutDm]);
+
+      const cfg = {} as OpenClawConfig;
+      startDmRetryScheduler(cfg);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(markDmFailed).toHaveBeenCalledWith("dm-1");
+      expect(sendMessageDiscord).toHaveBeenCalledWith(
+        "channel:ch-1",
+        expect.stringContaining("DM 전송 실패"),
+      );
+      expect(sendMessageDiscord).toHaveBeenCalledWith(
+        "channel:ch-1",
+        expect.stringContaining("user-1"),
+      );
+    });
+
+    it("does not send notification when notifyOnFailure is disabled", async () => {
+      vi.mocked(resolveDmRetryConfig).mockReturnValue({
+        enabled: true,
+        timeoutMs: 300000,
+        maxAttempts: 3,
+        backoffMs: 60000,
+        notifyOnFailure: false,
+      });
+
+      const timedOutDm: TrackedDm = {
+        id: "dm-1",
+        messageId: "msg-1",
+        channelId: "ch-1",
+        senderAgentId: "main",
+        targetUserId: "user-1",
+        originalText: "Hello",
+        sentAt: 1000,
+        attempts: 3,
+        lastAttemptAt: 1000,
+        status: "pending",
+      };
+      vi.mocked(getTimedOutDms).mockReturnValue([timedOutDm]);
+
+      const cfg = {} as OpenClawConfig;
+      startDmRetryScheduler(cfg);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(markDmFailed).toHaveBeenCalledWith("dm-1");
+      // sendMessageDiscord should not be called for notification
+      expect(sendMessageDiscord).not.toHaveBeenCalled();
+    });
   });
 
   describe("stopDmRetryScheduler", () => {

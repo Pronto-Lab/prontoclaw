@@ -92,8 +92,15 @@ async function resendDm(dm: TrackedDm): Promise<void> {
 
 async function notifySenderOfFailure(dm: TrackedDm): Promise<void> {
   const preview = truncateText(dm.originalText, 100);
-  const notification = `⚠️ DM delivery failed after ${dm.attempts} attempts. Target: ${dm.targetUserId}. Message preview: "${preview}"`;
+  const notification = `⚠️ DM 전송 실패 (${dm.attempts}회 시도). 대상: ${dm.targetUserId}. 메시지: "${preview}"`;
+
   logVerbose(`dm-retry: notifying sender ${dm.senderAgentId}: ${notification}`);
+
+  try {
+    await sendMessageDiscord(`channel:${dm.channelId}`, notification);
+  } catch (err) {
+    logVerbose(`dm-retry: failed to send failure notification: ${String(err)}`);
+  }
 }
 
 export function updateSchedulerConfig(cfg: OpenClawConfig): void {
