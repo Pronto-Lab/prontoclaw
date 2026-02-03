@@ -50,6 +50,7 @@ import {
   registerAgentRunContext,
 } from "../infra/agent-events.js";
 import { getRemoteSkillEligibility } from "../infra/skills-remote.js";
+import { registerTaskContext } from "../infra/task-tracker.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { applyVerboseOverride } from "../sessions/level-overrides.js";
@@ -184,6 +185,7 @@ export async function agentCommand(
         sessionKey,
         verboseLevel: resolvedVerboseLevel,
       });
+      registerTaskContext(runId, { body });
     }
 
     const needsSkillsSnapshot = isNewSession || !sessionEntry?.skillsSnapshot;

@@ -26,6 +26,7 @@ import {
 } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { emitAgentEvent, registerAgentRunContext } from "../../infra/agent-events.js";
+import { registerTaskContext } from "../../infra/task-tracker.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
   isMarkdownCapableMessageChannel,
@@ -92,6 +93,9 @@ export async function runAgentTurnWithFallback(params: {
       verboseLevel: params.resolvedVerboseLevel,
       isHeartbeat: params.isHeartbeat,
     });
+    if (!params.isHeartbeat) {
+      registerTaskContext(runId, { body: params.commandBody });
+    }
   }
   let runResult: Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
   let fallbackProvider = params.followupRun.run.provider;

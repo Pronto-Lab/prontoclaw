@@ -18,6 +18,7 @@ import {
 import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { scheduleTaskContinuation } from "../infra/task-continuation.js";
+import { startTaskTracker } from "../infra/task-tracker.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
 import { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import {
@@ -104,6 +105,13 @@ export async function startGatewaySidecars(params: {
     startDmRetryScheduler(params.cfg);
   } catch (err) {
     params.log.warn(`dm-retry scheduler failed to start: ${String(err)}`);
+  }
+
+  // Start task tracker for automatic CURRENT_TASK.md updates.
+  try {
+    startTaskTracker(params.cfg);
+  } catch (err) {
+    params.log.warn(`task-tracker failed to start: ${String(err)}`);
   }
 
   // Load internal hook handlers from configuration and directory discovery.
