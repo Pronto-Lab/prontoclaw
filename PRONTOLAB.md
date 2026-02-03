@@ -146,6 +146,42 @@ User → 루다: "재시작해줘"
 
 ---
 
+### 5. Skill System (Phase 1) ✅
+
+**Purpose:** Define domain-specific workflows and behaviors that can be injected into agent/subagent prompts.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `~/.openclaw/skills/delegate/SKILL.md` | Category→model mapping + workflow skills |
+| `~/.openclaw/SKILL-GOVERNANCE.md` | Skill creation governance and KPIs |
+
+**Implemented Workflow Skills:**
+
+| Skill | Agent | Purpose |
+|-------|-------|---------|
+| `dev-tdd` | 이든 💻 | TDD workflow (RED-GREEN-REFACTOR) |
+| `git-commit` | 이든/세움 | Conventional Commits convention |
+| `infra-troubleshoot` | 세움 🔧 | Incident response workflow |
+
+**How it works:**
+
+1. Skills are defined in `<Workflow_Context>` blocks with English instructions
+2. Each skill has: 적용 시점, 프롬프트 예시, 성공 지표
+3. Skills are injected into subagent prompts via `sessions_spawn`
+4. Governance document tracks KPIs and skill lifecycle
+
+**Future Proposals:**
+- Skill Groups + Lazy Loading (reduce context bloat)
+- Per-agent default skill groups
+- Task-aware skill selection
+
+See:
+- Proposal: `/Users/server/openclaw-future/PROPOSAL-skill-groups-impl.md`
+- Governance: `~/.openclaw/SKILL-GOVERNANCE.md`
+
+---
+
 ## Agent Configuration
 
 | Agent ID         | Name        | Emoji | Role             |
