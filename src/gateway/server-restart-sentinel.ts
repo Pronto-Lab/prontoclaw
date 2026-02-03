@@ -10,6 +10,7 @@ import {
   summarizeRestartSentinel,
 } from "../infra/restart-sentinel.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
+import { buildAgentMainSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { deliveryContextFromSession, mergeDeliveryContext } from "../utils/delivery-context.js";
 import { loadSessionEntry } from "./session-utils.js";
@@ -20,6 +21,12 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
     return;
   }
   const payload = sentinel.payload;
+
+  if (payload.requestingAgentId) {
+    await notifyRequestingAgent(params.deps, payload.requestingAgentId, payload.deliveryContext);
+    return;
+  }
+
   const sessionKey = payload.sessionKey?.trim();
   const message = formatRestartSentinelMessage(payload);
   const summary = summarizeRestartSentinel(payload);
@@ -107,4 +114,32 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
 
 export function shouldWakeFromRestartSentinel() {
   return !process.env.VITEST && process.env.NODE_ENV !== "test";
+}
+
+async function notifyRequestingAgent(
+  deps: CliDeps,
+  agentId: string,
+  _deliveryContext?: { channel?: string; to?: string; accountId?: string },
+): Promise<void> {
+  const sessionKey = buildAgentMainSessionKey({ agentId });
+  const message =
+    "Gateway 재시작 완료됐어. 아까 재시작한다고 한 거 완료됐다고 사용자한테 Discord 채널로 알려줘.";
+
+  try {
+    await agentCommand(
+      {
+        message,
+        agentId,
+        sessionKey,
+        deliver: false,
+        bestEffortDeliver: false,
+      },
+      defaultRuntime,
+      deps,
+    );
+    console.info(`restart-sentinel: notified agent ${agentId} of restart completion`);
+  } catch (err) {
+    console.warn(`restart-sentinel: failed to notify agent ${agentId}: ${String(err)}`);
+    enqueueSystemEvent(`Gateway restart complete (failed to notify ${agentId})`, { sessionKey });
+  }
 }

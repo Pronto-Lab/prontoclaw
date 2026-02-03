@@ -8,6 +8,7 @@ import {
   writeRestartSentinel,
 } from "../../infra/restart-sentinel.js";
 import { scheduleGatewaySigusr1Restart } from "../../infra/restart.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { stringEnum } from "../schema/typebox.js";
 import { type AnyAgentTool, jsonResult, readStringParam } from "./common.js";
 import { callGatewayTool } from "./gateway.js";
@@ -126,6 +127,7 @@ export function createGatewayTool(opts?: {
           status: "ok",
           ts: Date.now(),
           sessionKey,
+          requestingAgentId: sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined,
           deliveryContext,
           threadId,
           message: note ?? reason ?? null,
