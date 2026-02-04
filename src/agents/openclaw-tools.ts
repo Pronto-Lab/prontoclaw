@@ -16,6 +16,14 @@ import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { createSessionsSpawnTool } from "./tools/sessions-spawn-tool.js";
+import {
+  createTaskCancelTool,
+  createTaskCompleteTool,
+  createTaskListTool,
+  createTaskStartTool,
+  createTaskStatusTool,
+  createTaskUpdateTool,
+} from "./tools/task-tool.js";
 import { createTtsTool } from "./tools/tts-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
 
@@ -139,6 +147,49 @@ export function createOpenClawTools(options?: {
     ...(webFetchTool ? [webFetchTool] : []),
     ...(imageTool ? [imageTool] : []),
   ];
+
+  const taskStart = createTaskStartTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  const taskUpdate = createTaskUpdateTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  const taskComplete = createTaskCompleteTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  const taskStatus = createTaskStatusTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  const taskList = createTaskListTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  const taskCancel = createTaskCancelTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  if (taskStart) {
+    tools.push(taskStart);
+  }
+  if (taskUpdate) {
+    tools.push(taskUpdate);
+  }
+  if (taskComplete) {
+    tools.push(taskComplete);
+  }
+  if (taskStatus) {
+    tools.push(taskStatus);
+  }
+  if (taskList) {
+    tools.push(taskList);
+  }
+  if (taskCancel) {
+    tools.push(taskCancel);
+  }
 
   const pluginTools = resolvePluginTools({
     context: {

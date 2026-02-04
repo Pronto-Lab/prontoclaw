@@ -26,6 +26,15 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "sessions_spawn",
     "session_status",
   ],
+  // Task management tools
+  "group:task": [
+    "task_start",
+    "task_update",
+    "task_complete",
+    "task_status",
+    "task_list",
+    "task_cancel",
+  ],
   // UI helpers
   "group:ui": ["browser", "canvas"],
   // Automation + infra
@@ -53,6 +62,10 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "web_search",
     "web_fetch",
     "image",
+    "task_start",
+    "task_update",
+    "task_complete",
+    "task_status",
   ],
 };
 

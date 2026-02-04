@@ -146,7 +146,177 @@ User → 루다: "재시작해줘"
 
 ---
 
-### 5. Skill System (Phase 1) ✅
+### 6. Task Management MCP Tools ✅
+
+**Purpose:** Agent-managed task tracking with 6 MCP tools for explicit task lifecycle control.
+
+**Tools:**
+
+| Tool            | Description                                          |
+| --------------- | ---------------------------------------------------- |
+| `task_start`    | Start a new task, creates file in `tasks/` directory |
+| `task_update`   | Add progress entry to a task                         |
+| `task_complete` | Mark task complete, archive to `TASK_HISTORY.md`     |
+| `task_status`   | Get task status (specific or summary)                |
+| `task_list`     | List all tasks with optional status filter           |
+| `task_cancel`   | Cancel a task with optional reason                   |
+
+**Files:**
+
+| File                            | Purpose                        |
+| ------------------------------- | ------------------------------ |
+| `src/agents/tools/task-tool.ts` | 6 MCP tool implementations     |
+| `src/agents/openclaw-tools.ts`  | Tool registration              |
+| `src/agents/tool-policy.ts`     | `group:task` policy group      |
+| `src/infra/task-tracker.ts`     | Agent-managed mode integration |
+| `src/plugins/runtime/index.ts`  | Plugin SDK exports             |
+
+**How it works:**
+
+1. Agent calls `task_start` → creates `tasks/task_xxx.md` file
+2. Agent calls `task_update` → adds progress entries
+3. Agent calls `task_complete` → archives to `TASK_HISTORY.md`, deletes task file
+4. When agent uses task tools, automatic CURRENT_TASK.md clearing is disabled (agent-managed mode)
+
+**Task File Format (`tasks/task_xxx.md`):**
+
+```markdown
+# Task: task_m1abc_xyz1
+
+## Metadata
+
+- **Status:** in_progress
+- **Priority:** high
+- **Created:** 2026-02-04T12:00:00.000Z
+
+## Description
+
+Implement new feature X
+
+## Context
+
+User requested via Discord
+
+## Progress
+
+- Task started
+- Created initial component
+- Added unit tests
+
+## Last Activity
+
+2026-02-04T12:30:00.000Z
+
+---
+
+_Managed by task tools_
+```
+
+**Multi-task Support:**
+
+- Multiple tasks can exist simultaneously in `tasks/` directory
+- Tasks are sorted by priority (urgent > high > medium > low) then creation time
+- `task_list` shows all tasks with filtering by status
+
+**Real-time Monitoring:**
+
+```bash
+# Watch all agents' tasks in real-time (CLI)
+scripts/task-watch.sh
+
+# Watch specific agent
+scripts/task-watch.sh eden
+
+# Check current status once
+cat ~/.openclaw/agents/main/CURRENT_TASK.md
+ls ~/.openclaw/agents/*/tasks/
+```
+
+---
+
+### 7. Task Monitor API Server ✅
+
+**Purpose:** Standalone HTTP + WebSocket server for real-time task monitoring via web interface.
+
+**Files:**
+
+| File                                    | Purpose                   |
+| --------------------------------------- | ------------------------- |
+| `scripts/task-monitor-server.ts`        | API server implementation |
+| `src/task-monitor/task-monitor.test.ts` | Unit tests                |
+
+**Usage:**
+
+```bash
+# Start server (default port 3847)
+bun scripts/task-monitor-server.ts
+
+# Custom port
+bun scripts/task-monitor-server.ts --port 8080
+
+# Environment variable
+TASK_MONITOR_PORT=8080 bun scripts/task-monitor-server.ts
+```
+
+**API Endpoints:**
+
+| Endpoint                      | Description                      |
+| ----------------------------- | -------------------------------- |
+| `GET /api/health`             | Health check                     |
+| `GET /api/agents`             | List all agents with task counts |
+| `GET /api/agents/:id/info`    | Agent details                    |
+| `GET /api/agents/:id/tasks`   | List tasks (optional `?status=`) |
+| `GET /api/agents/:id/current` | Current task status              |
+| `GET /api/agents/:id/history` | Task history                     |
+
+**WebSocket:**
+
+```javascript
+const ws = new WebSocket("ws://localhost:3847/ws");
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  // msg.type: "connected" | "agent_update" | "task_update"
+  // msg.agentId: agent ID
+  // msg.taskId: task ID (for task_update)
+  // msg.timestamp: ISO timestamp
+  console.log(msg);
+};
+```
+
+**Response Examples:**
+
+```json
+// GET /api/agents
+{
+  "agents": [
+    { "id": "main", "workspaceDir": "...", "hasCurrentTask": true, "taskCount": 2 },
+    { "id": "eden", "workspaceDir": "...", "hasCurrentTask": false, "taskCount": 0 }
+  ],
+  "count": 2
+}
+
+// GET /api/agents/main/current
+{
+  "agentId": "main",
+  "hasTask": true,
+  "content": "...",
+  "taskSummary": "Implementing feature X"
+}
+
+// WebSocket message
+{
+  "type": "task_update",
+  "agentId": "main",
+  "taskId": "task_abc123",
+  "timestamp": "2026-02-04T12:30:00.000Z",
+  "data": { "event": "change", "file": "task_abc123.md" }
+}
+```
+
+---
+
+### 8. Skill System (Phase 1) ✅
 
 **Purpose:** Define domain-specific workflows and behaviors that can be injected into agent/subagent prompts.
 
@@ -251,9 +421,11 @@ openclaw agent --agent main --message "gateway tool로 재시작해줘"
 ### Recent Commits
 
 ```
-2b2ce64cd feat(gateway): notify requesting agent after restart completes
-ac42c3970 feat(infra): add automatic task tracking for CURRENT_TASK.md
-e03205cf0 feat(discord): add DM retry and task continuation for multi-agent
+373fef522 feat(tools): add task management MCP tools
+c87eaa39c fix(boot-md): clarify system prompt to prevent injection false positives
+6b647ce13 feat(gateway): notify requesting agent after restart completes
+25dbe720e feat(infra): add automatic task tracking for CURRENT_TASK.md
+f84b16ff2 feat(discord): add DM retry and task continuation for multi-agent
 ```
 
 ---
@@ -268,6 +440,8 @@ e03205cf0 feat(discord): add DM retry and task continuation for multi-agent
 | Session key utils      | `src/routing/session-key.js`             |
 | Task tracker           | `src/infra/task-tracker.ts`              |
 | Task continuation      | `src/infra/task-continuation.ts`         |
+| Task MCP tools         | `src/agents/tools/task-tool.ts`          |
+| Task watch script      | `scripts/task-watch.sh`                  |
 | DM retry scheduler     | `src/discord/dm-retry/scheduler.ts`      |
 | DM retry tracker       | `src/discord/dm-retry/tracker.ts`        |
 | Gateway startup        | `src/gateway/server-startup.ts`          |
@@ -334,4 +508,4 @@ If a feature is generally useful, consider submitting a PR to upstream:
 
 ---
 
-_Last updated: 2026-02-03_
+_Last updated: 2026-02-04_

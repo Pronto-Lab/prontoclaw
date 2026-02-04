@@ -16,6 +16,7 @@ import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { onAgentEvent, type AgentEventPayload } from "./agent-events.js";
 
 const CURRENT_TASK_FILENAME = "CURRENT_TASK.md";
+const TASKS_DIR = "tasks";
 
 /** In-memory map: runId → task context (message body, thread info, start time). */
 const runTaskContext = new Map<
@@ -60,6 +61,16 @@ export function disableAgentManagedMode(agentId: string): void {
  */
 export function isAgentManagedMode(agentId: string): boolean {
   return agentManagedMode.has(agentId);
+}
+
+async function hasActiveTaskFiles(workspaceDir: string): Promise<boolean> {
+  const tasksDir = path.join(workspaceDir, TASKS_DIR);
+  try {
+    const files = await fs.readdir(tasksDir);
+    return files.some((f) => f.startsWith("task_") && f.endsWith(".md"));
+  } catch {
+    return false;
+  }
 }
 
 /** Unsubscribe function from agent events. */
@@ -160,8 +171,31 @@ async function handleTaskStart(
 
     activeAgentTasks.set(agentId, runId);
 
+    // Skip if agent is in agent-managed mode (using task tools)
+    if (agentManagedMode.has(agentId)) {
+      logVerbose(`task-tracker: agent ${agentId} is in agent-managed mode, skipping auto-write`);
+      return;
+    }
+
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
     const taskFilePath = path.join(workspaceDir, CURRENT_TASK_FILENAME);
+
+    // Check if file was created by task tools (persists across restarts)
+    try {
+      const existingContent = await fs.readFile(taskFilePath, "utf-8");
+      if (existingContent.includes("*Managed by agent via task tools*")) {
+        logVerbose(`task-tracker: file has agent-managed marker, skipping auto-write`);
+        return;
+      }
+    } catch {
+      // File doesn't exist, proceed with write
+    }
+
+    // Check if tasks/ directory has active task files (multi-task mode)
+    if (await hasActiveTaskFiles(workspaceDir)) {
+      logVerbose(`task-tracker: tasks/ directory has active files, skipping auto-write`);
+      return;
+    }
 
     const content = formatCurrentTaskMd({
       task: truncateBody(taskCtx.body),
@@ -206,6 +240,22 @@ async function handleTaskEnd(
 
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
     const taskFilePath = path.join(workspaceDir, CURRENT_TASK_FILENAME);
+
+    // Check if file was created by task tools (persists across restarts)
+    try {
+      const existingContent = await fs.readFile(taskFilePath, "utf-8");
+      if (existingContent.includes("*Managed by agent via task tools*")) {
+        logVerbose(`task-tracker: file has agent-managed marker, skipping auto-clear`);
+        return;
+      }
+    } catch {
+      // File doesn't exist, proceed with clear
+    }
+
+    if (await hasActiveTaskFiles(workspaceDir)) {
+      logVerbose(`task-tracker: tasks/ directory has active files, skipping auto-clear`);
+      return;
+    }
 
     const content = formatEmptyCurrentTaskMd(phase === "error");
 
