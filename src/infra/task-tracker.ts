@@ -30,6 +30,38 @@ const runTaskContext = new Map<
 /** Track which agents currently have an active task to avoid duplicate writes. */
 const activeAgentTasks = new Map<string, string>();
 
+/**
+ * Track which agents are in "agent-managed" mode (using task tools).
+ * When an agent uses task tools, auto-clear on lifecycle end is disabled.
+ */
+const agentManagedMode = new Set<string>();
+
+/**
+ * Enable agent-managed mode for an agent.
+ * Call this when the agent starts using task tools (e.g., task_start).
+ * When enabled, task-tracker will NOT auto-clear CURRENT_TASK.md on lifecycle end.
+ */
+export function enableAgentManagedMode(agentId: string): void {
+  agentManagedMode.add(agentId);
+  logVerbose(`task-tracker: enabled agent-managed mode for ${agentId}`);
+}
+
+/**
+ * Disable agent-managed mode for an agent.
+ * Call this when the agent completes their task (e.g., task_complete).
+ */
+export function disableAgentManagedMode(agentId: string): void {
+  agentManagedMode.delete(agentId);
+  logVerbose(`task-tracker: disabled agent-managed mode for ${agentId}`);
+}
+
+/**
+ * Check if an agent is in agent-managed mode.
+ */
+export function isAgentManagedMode(agentId: string): boolean {
+  return agentManagedMode.has(agentId);
+}
+
 /** Unsubscribe function from agent events. */
 let unsubscribe: (() => void) | null = null;
 
@@ -165,6 +197,12 @@ async function handleTaskEnd(
 
     activeAgentTasks.delete(agentId);
     clearTaskContext(runId);
+
+    // Skip auto-clear if agent is using task tools (agent-managed mode)
+    if (agentManagedMode.has(agentId)) {
+      logVerbose(`task-tracker: agent ${agentId} is in agent-managed mode, skipping auto-clear`);
+      return;
+    }
 
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
     const taskFilePath = path.join(workspaceDir, CURRENT_TASK_FILENAME);

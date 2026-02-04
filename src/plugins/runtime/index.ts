@@ -3,6 +3,12 @@ import type { PluginRuntime } from "./types.js";
 import { resolveEffectiveMessagesConfig, resolveHumanDelayConfig } from "../../agents/identity.js";
 import { createMemoryGetTool, createMemorySearchTool } from "../../agents/tools/memory-tool.js";
 import { handleSlackAction } from "../../agents/tools/slack-actions.js";
+import {
+  createTaskCompleteTool,
+  createTaskStartTool,
+  createTaskStatusTool,
+  createTaskUpdateTool,
+} from "../../agents/tools/task-tool.js";
 import { handleWhatsAppAction } from "../../agents/tools/whatsapp-actions.js";
 import {
   chunkByNewline,
@@ -189,6 +195,10 @@ export function createPluginRuntime(): PluginRuntime {
       createMemoryGetTool,
       createMemorySearchTool,
       registerMemoryCli,
+      createTaskStartTool,
+      createTaskUpdateTool,
+      createTaskCompleteTool,
+      createTaskStatusTool,
     },
     channel: {
       text: {

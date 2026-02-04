@@ -158,11 +158,11 @@ User → 루다: "재시작해줘"
 
 **Implemented Workflow Skills:**
 
-| Skill | Agent | Purpose |
-|-------|-------|---------|
-| `dev-tdd` | 이든 💻 | TDD workflow (RED-GREEN-REFACTOR) |
-| `git-commit` | 이든/세움 | Conventional Commits convention |
-| `infra-troubleshoot` | 세움 🔧 | Incident response workflow |
+| Skill                | Agent     | Purpose                           |
+| -------------------- | --------- | --------------------------------- |
+| `dev-tdd`            | 이든 💻   | TDD workflow (RED-GREEN-REFACTOR) |
+| `git-commit`         | 이든/세움 | Conventional Commits convention   |
+| `infra-troubleshoot` | 세움 🔧   | Incident response workflow        |
 
 **How it works:**
 
@@ -172,11 +172,13 @@ User → 루다: "재시작해줘"
 4. Governance document tracks KPIs and skill lifecycle
 
 **Future Proposals:**
+
 - Skill Groups + Lazy Loading (reduce context bloat)
 - Per-agent default skill groups
 - Task-aware skill selection
 
 See:
+
 - Proposal: `/Users/server/openclaw-future/PROPOSAL-skill-groups-impl.md`
 - Governance: `~/.openclaw/SKILL-GOVERNANCE.md`
 
