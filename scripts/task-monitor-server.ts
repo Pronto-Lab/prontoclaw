@@ -98,25 +98,11 @@ interface WsMessage {
 // Paths
 // ============================================================================
 
-const AGENTS_DIR = path.join(os.homedir(), ".openclaw", "agents");
+const OPENCLAW_DIR = path.join(os.homedir(), ".openclaw");
+const WORKSPACE_PREFIX = "workspace-";
 const TASKS_DIR = "tasks";
 const CURRENT_TASK_FILENAME = "CURRENT_TASK.md";
 const TASK_HISTORY_FILENAME = "TASK_HISTORY.md";
-
-const _KNOWN_AGENTS = [
-  "main",
-  "eden",
-  "seum",
-  "yunseul",
-  "miri",
-  "onsae",
-  "ieum",
-  "dajim",
-  "hangyeol",
-  "nuri",
-  "test",
-  "ruda",
-];
 
 // ============================================================================
 // Task Parsing (adapted from task-tool.ts)
@@ -209,17 +195,22 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
 // Data Access Functions
 // ============================================================================
 
-async function getAgentDirs(): Promise<string[]> {
+async function getAgentDirs(): Promise<{ agentId: string; workspaceDir: string }[]> {
   try {
-    const entries = await fs.readdir(AGENTS_DIR, { withFileTypes: true });
-    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    const entries = await fs.readdir(OPENCLAW_DIR, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isDirectory() && e.name.startsWith(WORKSPACE_PREFIX))
+      .map((e) => ({
+        agentId: e.name.slice(WORKSPACE_PREFIX.length),
+        workspaceDir: path.join(OPENCLAW_DIR, e.name),
+      }));
   } catch {
     return [];
   }
 }
 
 async function getAgentInfo(agentId: string): Promise<AgentInfo | null> {
-  const workspaceDir = path.join(AGENTS_DIR, agentId);
+  const workspaceDir = path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}${agentId}`);
   try {
     await fs.access(workspaceDir);
   } catch {
@@ -255,7 +246,7 @@ async function listAgents(): Promise<AgentInfo[]> {
   const agentDirs = await getAgentDirs();
   const agents: AgentInfo[] = [];
 
-  for (const agentId of agentDirs) {
+  for (const { agentId } of agentDirs) {
     const info = await getAgentInfo(agentId);
     if (info) {
       agents.push(info);
@@ -266,7 +257,7 @@ async function listAgents(): Promise<AgentInfo[]> {
 }
 
 async function getCurrentTask(agentId: string): Promise<CurrentTaskInfo> {
-  const workspaceDir = path.join(AGENTS_DIR, agentId);
+  const workspaceDir = path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}${agentId}`);
   const currentTaskPath = path.join(workspaceDir, CURRENT_TASK_FILENAME);
 
   try {
@@ -289,7 +280,7 @@ async function getCurrentTask(agentId: string): Promise<CurrentTaskInfo> {
 }
 
 async function listTasks(agentId: string, statusFilter?: TaskStatus): Promise<TaskFile[]> {
-  const workspaceDir = path.join(AGENTS_DIR, agentId);
+  const workspaceDir = path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}${agentId}`);
   const tasksDir = path.join(workspaceDir, TASKS_DIR);
   const tasks: TaskFile[] = [];
 
@@ -326,7 +317,7 @@ async function listTasks(agentId: string, statusFilter?: TaskStatus): Promise<Ta
 }
 
 async function getTaskHistory(agentId: string, limit = 50): Promise<string> {
-  const workspaceDir = path.join(AGENTS_DIR, agentId);
+  const workspaceDir = path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}${agentId}`);
   const historyPath = path.join(workspaceDir, TASK_HISTORY_FILENAME);
 
   try {
@@ -492,10 +483,10 @@ function setupWebSocket(server: http.Server): WebSocketServer {
     }
   }
 
-  // Setup file watcher
+  // Setup file watcher - watch workspace-* directories
   const watchPaths = [
-    path.join(AGENTS_DIR, "*", CURRENT_TASK_FILENAME),
-    path.join(AGENTS_DIR, "*", TASKS_DIR, "*.md"),
+    path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}*`, CURRENT_TASK_FILENAME),
+    path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}*`, TASKS_DIR, "*.md"),
   ];
 
   const watcher = chokidar.watch(watchPaths, {
@@ -505,14 +496,16 @@ function setupWebSocket(server: http.Server): WebSocketServer {
   });
 
   watcher.on("all", (event, filePath) => {
-    // Extract agent ID from path
-    const relativePath = path.relative(AGENTS_DIR, filePath);
+    // Extract agent ID from path (format: ~/.openclaw/workspace-{agentId}/...)
+    const relativePath = path.relative(OPENCLAW_DIR, filePath);
     const parts = relativePath.split(path.sep);
-    const agentId = parts[0];
+    const workspaceDir = parts[0];
 
-    if (!agentId) {
+    if (!workspaceDir || !workspaceDir.startsWith(WORKSPACE_PREFIX)) {
       return;
     }
+
+    const agentId = workspaceDir.slice(WORKSPACE_PREFIX.length);
 
     // Determine update type
     const isCurrentTask = filePath.includes(CURRENT_TASK_FILENAME);
