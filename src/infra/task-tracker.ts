@@ -183,7 +183,7 @@ async function handleTaskStart(
     // Check if file was created by task tools (persists across restarts)
     try {
       const existingContent = await fs.readFile(taskFilePath, "utf-8");
-      if (existingContent.includes("*Managed by agent via task tools*")) {
+      if (existingContent.includes("*Managed by task tools*")) {
         logVerbose(`task-tracker: file has agent-managed marker, skipping auto-write`);
         return;
       }
@@ -244,7 +244,7 @@ async function handleTaskEnd(
     // Check if file was created by task tools (persists across restarts)
     try {
       const existingContent = await fs.readFile(taskFilePath, "utf-8");
-      if (existingContent.includes("*Managed by agent via task tools*")) {
+      if (existingContent.includes("*Managed by task tools*")) {
         logVerbose(`task-tracker: file has agent-managed marker, skipping auto-clear`);
         return;
       }
