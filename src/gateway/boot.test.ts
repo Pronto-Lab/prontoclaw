@@ -63,8 +63,9 @@ describe("runBootOnce", () => {
         sessionKey: resolveMainSessionKey({}),
       }),
     );
-    expect(call?.message).toContain("BOOT.md:");
+    expect(call?.message).toContain("BOOT.md content");
     expect(call?.message).toContain(content);
+    expect(call?.message).toContain("SYSTEM BOOT NOTIFICATION");
     expect(call?.message).toContain("NO_REPLY");
 
     await fs.rm(workspaceDir, { recursive: true, force: true });
