@@ -12,7 +12,10 @@ Docs: https://docs.openclaw.ai
 ### Fixes
 
 - Telegram: honor session model overrides in inline model selection. (#8193) Thanks @gildo.
+- Web UI: resolve header logo path when `gateway.controlUi.basePath` is set. (#7178) Thanks @Yeom-JinHo.
 - Web UI: apply button styling to the new-messages indicator.
+- Security: keep untrusted channel metadata out of system prompts (Slack/Discord). Thanks @KonstantinMirin.
+- Voice call: harden webhook verification with host allowlists/proxy trust and keep ngrok loopback bypass.
 
 ## 2026.2.2-3
 
