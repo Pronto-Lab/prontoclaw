@@ -18,10 +18,10 @@ function getMonthlyHistoryFilename(): string {
   return `${year}-${month}.md`;
 }
 
-type TaskStatus = "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
-type TaskPriority = "low" | "medium" | "high" | "urgent";
+export type TaskStatus = "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
+export type TaskPriority = "low" | "medium" | "high" | "urgent";
 
-interface TaskFile {
+export interface TaskFile {
   id: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -255,9 +255,13 @@ async function listTasks(
   return tasks;
 }
 
-async function findActiveTask(workspaceDir: string): Promise<TaskFile | null> {
+export async function findActiveTask(workspaceDir: string): Promise<TaskFile | null> {
   const tasks = await listTasks(workspaceDir, "in_progress");
   return tasks[0] || null;
+}
+
+export async function findPendingTasks(workspaceDir: string): Promise<TaskFile[]> {
+  return listTasks(workspaceDir, "pending");
 }
 
 async function appendToHistory(workspaceDir: string, entry: string): Promise<string> {

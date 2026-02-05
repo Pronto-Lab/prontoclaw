@@ -196,7 +196,11 @@ export type AgentDefaultsConfig = {
      */
     includeReasoning?: boolean;
   };
-  /** Max concurrent agent runs across all conversations. Default: 1 (sequential). */
+  taskContinuation?: {
+    enabled?: boolean;
+    checkInterval?: string;
+    idleThreshold?: string;
+  };
   maxConcurrent?: number;
   /** Sub-agent defaults (spawned via sessions_spawn). */
   subagents?: {
