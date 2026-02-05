@@ -5,7 +5,7 @@ import { parseDurationMs } from "../cli/parse-duration.js";
 import { agentCommand } from "../commands/agent.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize } from "../process/command-queue.js";
-import { CommandLane } from "../process/lanes.js";
+// CommandLane import removed - using agent-specific lanes
 import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 
@@ -169,9 +169,12 @@ async function checkAgentForContinuation(
 ): Promise<boolean> {
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
 
-  const mainQueueSize = getQueueSize(CommandLane.Main);
-  if (mainQueueSize > 0) {
-    log.debug("Agent busy, skipping continuation check", { agentId, queueSize: mainQueueSize });
+  // Check agent-specific queue, not global main queue
+  // Agent lanes follow pattern: session:agent:{agentId}:main
+  const agentLane = `session:agent:${agentId}:main`;
+  const agentQueueSize = getQueueSize(agentLane);
+  if (agentQueueSize > 0) {
+    log.debug("Agent busy, skipping continuation check", { agentId, queueSize: agentQueueSize });
     return false;
   }
 
