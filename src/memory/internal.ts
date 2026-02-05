@@ -83,6 +83,7 @@ export async function listMemoryFiles(
   const memoryFile = path.join(workspaceDir, "MEMORY.md");
   const altMemoryFile = path.join(workspaceDir, "memory.md");
   const memoryDir = path.join(workspaceDir, "memory");
+  const taskHistoryDir = path.join(workspaceDir, "task-history");
 
   const addMarkdownFile = async (absPath: string) => {
     try {
@@ -103,6 +104,14 @@ export async function listMemoryFiles(
     const dirStat = await fs.lstat(memoryDir);
     if (!dirStat.isSymbolicLink() && dirStat.isDirectory()) {
       await walkDir(memoryDir, result);
+    }
+  } catch {}
+
+  // Include task history as memory source
+  try {
+    const taskHistoryStat = await fs.lstat(taskHistoryDir);
+    if (!taskHistoryStat.isSymbolicLink() && taskHistoryStat.isDirectory()) {
+      await walkDir(taskHistoryDir, result);
     }
   } catch {}
 
