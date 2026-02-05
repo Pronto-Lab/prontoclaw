@@ -447,4 +447,95 @@ describe("startTaskContinuationRunner", () => {
       runner.stop();
     });
   });
+
+  describe("agent-specific queue check", () => {
+    const idleTask = {
+      id: "task_abc123",
+      status: "in_progress" as const,
+      priority: "high" as const,
+      description: "Fix the bug",
+      created: "2026-02-05T09:50:00Z",
+      lastActivity: "2026-02-05T09:50:00Z",
+      progress: ["Started"],
+    };
+
+    it("checks agent-specific lane, not global main queue", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      
+      // Mock getQueueSize to return different values based on lane
+      vi.mocked(getQueueSize).mockImplementation((lane: string) => {
+        if (lane === "main") {
+          return 5; // Global main queue has items
+        }
+        if (lane === "session:agent:main:main") {
+          return 0; // Agent-specific queue is empty
+        }
+        return 0;
+      });
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+
+      // Should send prompt because agent-specific queue is empty
+      // (even though global main queue has items)
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+      runner.stop();
+    });
+
+    it("skips when agent-specific queue has items", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      
+      // Mock getQueueSize: agent-specific queue has items
+      vi.mocked(getQueueSize).mockImplementation((lane: string) => {
+        if (lane === "session:agent:main:main") {
+          return 2; // Agent-specific queue has items
+        }
+        return 0;
+      });
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+
+      // Should NOT send prompt because agent is busy
+      expect(agentCommand).not.toHaveBeenCalled();
+      runner.stop();
+    });
+
+    it("uses correct lane format for each agent", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      
+      const checkedLanes: string[] = [];
+      vi.mocked(getQueueSize).mockImplementation((lane: string) => {
+        checkedLanes.push(lane);
+        return 0;
+      });
+
+      const runner = startTaskContinuationRunner({
+        cfg: {
+          agents: {
+            defaults: {},
+            list: [{ id: "dajim" }, { id: "eden" }],
+          },
+        } as OpenClawConfig,
+      });
+
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+
+      // Should check agent-specific lanes for each agent
+      // When agents.list is provided, first agent becomes default (not "main")
+      expect(checkedLanes).toContain("session:agent:dajim:main");
+      expect(checkedLanes).toContain("session:agent:eden:main");
+      
+      // Should NOT check global main queue
+      expect(checkedLanes).not.toContain("main");
+
+      runner.stop();
+    });
+  });
 });
