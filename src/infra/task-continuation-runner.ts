@@ -6,6 +6,7 @@ import { agentCommand } from "../commands/agent.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
+import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 
 const log = createSubsystemLogger("task-continuation");
@@ -32,6 +33,11 @@ type AgentContinuationState = {
 };
 
 const agentStates = new Map<string, AgentContinuationState>();
+
+/** @internal - For testing only. Clears all agent continuation state. */
+export function __resetAgentStates(): void {
+  agentStates.clear();
+}
 
 function resolveTaskContinuationConfig(cfg: OpenClawConfig): {
   enabled: boolean;
@@ -112,6 +118,14 @@ async function checkAgentForContinuation(
     return false;
   }
 
+  if (activeTask.status === "pending_approval") {
+    log.debug("Task is pending approval, skipping continuation", {
+      agentId,
+      taskId: activeTask.id,
+    });
+    return false;
+  }
+
   const lastActivityMs = new Date(activeTask.lastActivity).getTime();
   const idleMs = nowMs - lastActivityMs;
 
@@ -149,10 +163,12 @@ async function checkAgentForContinuation(
   });
 
   try {
+    const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
     await agentCommand({
       config: cfg,
       message: prompt,
       agentId,
+      accountId,
       deliver: false,
       quiet: true,
     });

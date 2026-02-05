@@ -22,6 +22,7 @@ vi.mock("../../infra/task-tracker.js", () => ({
 }));
 
 import {
+  createTaskApproveTool,
   createTaskCancelTool,
   createTaskCompleteTool,
   createTaskListTool,
@@ -536,6 +537,133 @@ High priority task
       expect(parsed.tasks[0].id).toBe("task_urgent");
       expect(parsed.tasks[1].id).toBe("task_high");
       expect(parsed.tasks[2].id).toBe("task_low");
+    });
+  });
+
+  describe("createTaskStartTool with requires_approval", () => {
+    it("creates task with pending_approval status when requires_approval is true", async () => {
+      const tool = createTaskStartTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Task needing approval",
+        requires_approval: true,
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.status).toBe("pending_approval");
+      expect(parsed.requiresApproval).toBe(true);
+      expect(parsed.started).toBeNull();
+
+      const writeCall = vi
+        .mocked(fs.writeFile)
+        .mock.calls.find((call) => (call[0] as string).includes("tasks/task_"));
+      const content = writeCall![1] as string;
+      expect(content).toContain("- **Status:** pending_approval");
+      expect(content).toContain("- Task created - awaiting approval");
+    });
+
+    it("creates task with in_progress status when requires_approval is false", async () => {
+      const tool = createTaskStartTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Regular task",
+        requires_approval: false,
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.status).toBe("in_progress");
+      expect(parsed.requiresApproval).toBe(false);
+    });
+  });
+
+  describe("createTaskApproveTool", () => {
+    it("returns null when config is missing", () => {
+      const tool = createTaskApproveTool({});
+      expect(tool).toBeNull();
+    });
+
+    it("approves pending_approval task and transitions to in_progress", async () => {
+      const pendingApprovalTask = `# Task: task_pending123
+
+## Metadata
+- **Status:** pending_approval
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Task awaiting approval
+
+## Progress
+- Task created - awaiting approval
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue([]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("task_pending123")) {
+          return pendingApprovalTask;
+        }
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskApproveTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_pending123" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.approved).toBe(true);
+      expect(parsed.taskId).toBe("task_pending123");
+
+      const writeCall = vi
+        .mocked(fs.writeFile)
+        .mock.calls.find((call) => (call[0] as string).includes("task_pending123"));
+      const content = writeCall![1] as string;
+      expect(content).toContain("- **Status:** in_progress");
+      expect(content).toContain("- Task approved and started");
+    });
+
+    it("returns error when task is not pending_approval", async () => {
+      const inProgressTask = `# Task: task_active123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readFile).mockResolvedValue(inProgressTask);
+
+      const tool = createTaskApproveTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_active123" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("not pending approval");
+    });
+
+    it("returns error for non-existent task", async () => {
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("Not found"));
+
+      const tool = createTaskApproveTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_nonexistent" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("not found");
     });
   });
 });

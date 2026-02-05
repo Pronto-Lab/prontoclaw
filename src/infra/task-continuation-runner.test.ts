@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
-import { startTaskContinuationRunner } from "./task-continuation-runner.js";
+import { startTaskContinuationRunner, __resetAgentStates } from "./task-continuation-runner.js";
 
 vi.mock("../agents/tools/task-tool.js", () => ({
   findActiveTask: vi.fn(),
@@ -23,6 +23,8 @@ describe("startTaskContinuationRunner", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-02-05T10:00:00Z"));
+    vi.clearAllMocks();
+    __resetAgentStates();
     vi.mocked(findActiveTask).mockResolvedValue(null);
     vi.mocked(findPendingTasks).mockResolvedValue([]);
     vi.mocked(agentCommand).mockResolvedValue({
@@ -35,7 +37,6 @@ describe("startTaskContinuationRunner", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    vi.restoreAllMocks();
   });
 
   it("starts and stops without error", () => {
@@ -183,6 +184,28 @@ describe("startTaskContinuationRunner", () => {
     runner.updateConfig({
       agents: { defaults: { taskContinuation: { enabled: false } } },
     } as OpenClawConfig);
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+    expect(agentCommand).not.toHaveBeenCalled();
+    runner.stop();
+  });
+
+  it("skips tasks with pending_approval status", async () => {
+    const pendingApprovalTask = {
+      id: "task_pending123",
+      status: "pending_approval" as const,
+      priority: "high" as const,
+      description: "Task awaiting approval",
+      created: "2026-02-05T09:50:00Z",
+      lastActivity: "2026-02-05T09:50:00Z",
+      progress: ["Task created - awaiting approval"],
+    };
+    vi.mocked(findActiveTask).mockResolvedValue(pendingApprovalTask);
+
+    const runner = startTaskContinuationRunner({
+      cfg: { agents: { defaults: {} } } as OpenClawConfig,
+    });
 
     await vi.advanceTimersByTimeAsync(10 * 60_000);
 

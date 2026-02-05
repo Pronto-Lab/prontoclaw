@@ -57,7 +57,13 @@ function parseArgs(): { port: number; host: string } {
 // Types
 // ============================================================================
 
-type TaskStatus = "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
+type TaskStatus =
+  | "pending"
+  | "pending_approval"
+  | "in_progress"
+  | "blocked"
+  | "completed"
+  | "cancelled";
 type TaskPriority = "low" | "medium" | "high" | "urgent";
 
 interface TaskFile {

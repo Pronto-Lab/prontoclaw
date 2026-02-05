@@ -6,6 +6,7 @@ import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope.js
 import { agentCommand } from "../commands/agent.js";
 import { resolveStateDir } from "../config/paths.js";
 import { logVerbose } from "../globals.js";
+import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { buildAgentMainSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 
@@ -173,11 +174,13 @@ export async function resumePendingTasks(params: {
     try {
       const message = formatResumeMessage(task);
       const sessionKey = buildAgentMainSessionKey({ agentId: task.agentId });
+      const accountId = resolveAgentBoundAccountId(params.cfg, task.agentId, "discord");
 
       await agentCommand(
         {
           message,
           agentId: task.agentId,
+          accountId,
           sessionKey,
           deliver: false,
           bestEffortDeliver: false,

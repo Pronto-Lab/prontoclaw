@@ -18,7 +18,13 @@ function getMonthlyHistoryFilename(): string {
   return `${year}-${month}.md`;
 }
 
-export type TaskStatus = "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
+export type TaskStatus =
+  | "pending"
+  | "pending_approval"
+  | "in_progress"
+  | "blocked"
+  | "completed"
+  | "cancelled";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 
 export interface TaskFile {
@@ -37,6 +43,7 @@ const TaskStartSchema = Type.Object({
   description: Type.String(),
   context: Type.Optional(Type.String()),
   priority: Type.Optional(Type.String()),
+  requires_approval: Type.Optional(Type.Boolean()),
 });
 
 const TaskUpdateSchema = Type.Object({
@@ -60,6 +67,10 @@ const TaskListSchema = Type.Object({
 const TaskCancelSchema = Type.Object({
   task_id: Type.String(),
   reason: Type.Optional(Type.String()),
+});
+
+const TaskApproveSchema = Type.Object({
+  task_id: Type.String(),
 });
 
 function generateTaskId(): string {
@@ -264,6 +275,10 @@ export async function findPendingTasks(workspaceDir: string): Promise<TaskFile[]
   return listTasks(workspaceDir, "pending");
 }
 
+export async function findPendingApprovalTasks(workspaceDir: string): Promise<TaskFile[]> {
+  return listTasks(workspaceDir, "pending_approval");
+}
+
 async function appendToHistory(workspaceDir: string, entry: string): Promise<string> {
   const historyDir = path.join(workspaceDir, TASK_HISTORY_DIR);
   await fs.mkdir(historyDir, { recursive: true });
@@ -372,7 +387,9 @@ async function updateCurrentTaskPointer(
 
 async function hasActiveTasks(workspaceDir: string): Promise<boolean> {
   const tasks = await listTasks(workspaceDir);
-  return tasks.some((t) => t.status === "in_progress" || t.status === "pending");
+  return tasks.some(
+    (t) => t.status === "in_progress" || t.status === "pending" || t.status === "pending_approval",
+  );
 }
 
 export async function isAgentUsingTaskTools(workspaceDir: string): Promise<boolean> {
@@ -404,7 +421,7 @@ export function createTaskStartTool(options: {
     label: "Task Start",
     name: "task_start",
     description:
-      "Start a new task. Creates a task file in tasks/ directory. Multiple tasks can exist simultaneously. Returns the task_id for future reference.",
+      "Start a new task. Creates a task file in tasks/ directory. Multiple tasks can exist simultaneously. If requires_approval is true, task starts in pending_approval status and needs task_approve before work begins. Returns the task_id for future reference.",
     parameters: TaskStartSchema,
     execute: async (_toolCallId, params) => {
       const description = readStringParam(params, "description", { required: true });
@@ -413,33 +430,44 @@ export function createTaskStartTool(options: {
       const priority = ["low", "medium", "high", "urgent"].includes(priorityRaw)
         ? (priorityRaw as TaskPriority)
         : "medium";
+      const requiresApproval = (params as Record<string, unknown>).requires_approval === true;
 
       const now = new Date().toISOString();
       const taskId = generateTaskId();
 
+      const initialStatus: TaskStatus = requiresApproval ? "pending_approval" : "in_progress";
+      const initialProgress = requiresApproval
+        ? "Task created - awaiting approval"
+        : "Task started";
+
       const newTask: TaskFile = {
         id: taskId,
-        status: "in_progress",
+        status: initialStatus,
         priority,
         description,
         context,
         source: "user",
         created: now,
         lastActivity: now,
-        progress: ["Task started"],
+        progress: [initialProgress],
       };
 
       await writeTask(workspaceDir, newTask);
       await updateCurrentTaskPointer(workspaceDir, taskId);
 
-      enableAgentManagedMode(agentId);
+      if (!requiresApproval) {
+        enableAgentManagedMode(agentId);
+      }
 
       const allTasks = await listTasks(workspaceDir);
 
       return jsonResult({
         success: true,
         taskId,
-        started: now,
+        status: initialStatus,
+        requiresApproval,
+        started: requiresApproval ? null : now,
+        createdAt: now,
         priority,
         totalActiveTasks: allTasks.length,
       });
@@ -640,6 +668,7 @@ export function createTaskStatusTool(options: {
         byStatus: {
           in_progress: allTasks.filter((t) => t.status === "in_progress").length,
           pending: allTasks.filter((t) => t.status === "pending").length,
+          pending_approval: allTasks.filter((t) => t.status === "pending_approval").length,
           blocked: allTasks.filter((t) => t.status === "blocked").length,
         },
         currentFocus: activeTask
@@ -679,11 +708,17 @@ export function createTaskListTool(options: {
     label: "Task List",
     name: "task_list",
     description:
-      "List all tasks. Optionally filter by status: 'all', 'pending', 'in_progress', 'blocked'. Returns tasks sorted by priority then creation time.",
+      "List all tasks. Optionally filter by status: 'all', 'pending', 'pending_approval', 'in_progress', 'blocked'. Returns tasks sorted by priority then creation time.",
     parameters: TaskListSchema,
     execute: async (_toolCallId, params) => {
       const statusParam = readStringParam(params, "status") || "all";
-      const statusFilter = ["all", "pending", "in_progress", "blocked"].includes(statusParam)
+      const statusFilter = [
+        "all",
+        "pending",
+        "pending_approval",
+        "in_progress",
+        "blocked",
+      ].includes(statusParam)
         ? (statusParam as TaskStatus | "all")
         : "all";
 
@@ -765,6 +800,65 @@ export function createTaskCancelTool(options: {
         cancelled: true,
         reason: reason || null,
         remainingTasks: remainingTasks.length,
+      });
+    },
+  };
+}
+
+export function createTaskApproveTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  const cfg = options.config;
+  if (!cfg) {
+    return null;
+  }
+
+  const agentId = resolveSessionAgentId({
+    sessionKey: options.agentSessionKey,
+    config: cfg,
+  });
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+
+  return {
+    label: "Task Approve",
+    name: "task_approve",
+    description:
+      "Approve a task that is waiting for approval. Transitions task from pending_approval to in_progress status.",
+    parameters: TaskApproveSchema,
+    execute: async (_toolCallId, params) => {
+      const taskId = readStringParam(params, "task_id", { required: true });
+
+      const task = await readTask(workspaceDir, taskId);
+      if (!task) {
+        return jsonResult({
+          success: false,
+          error: `Task not found: ${taskId}`,
+        });
+      }
+
+      if (task.status !== "pending_approval") {
+        return jsonResult({
+          success: false,
+          error: `Task ${taskId} is not pending approval. Current status: ${task.status}`,
+        });
+      }
+
+      const now = new Date().toISOString();
+      task.status = "in_progress";
+      task.lastActivity = now;
+      task.progress.push("Task approved and started");
+
+      await writeTask(workspaceDir, task);
+      await updateCurrentTaskPointer(workspaceDir, task.id);
+
+      enableAgentManagedMode(agentId);
+
+      return jsonResult({
+        success: true,
+        taskId: task.id,
+        approved: true,
+        startedAt: now,
       });
     },
   };
