@@ -17,6 +17,7 @@ import { createSessionsListTool } from "./tools/sessions-list-tool.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { createSessionsSpawnTool } from "./tools/sessions-spawn-tool.js";
 import {
+  createTaskApproveTool,
   createTaskCancelTool,
   createTaskCompleteTool,
   createTaskListTool,
@@ -197,6 +198,13 @@ export function createOpenClawTools(options?: {
   }
   if (taskCancel) {
     tools.push(taskCancel);
+  }
+  const taskApprove = createTaskApproveTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  if (taskApprove) {
+    tools.push(taskApprove);
   }
 
   const pluginTools = resolvePluginTools({

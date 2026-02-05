@@ -33,6 +33,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "task_start",
     "task_update",
     "task_complete",
+    "task_approve",
     "task_status",
     "task_list",
     "task_cancel",
@@ -67,6 +68,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "task_start",
     "task_update",
     "task_complete",
+    "task_approve",
     "task_status",
   ],
 };
