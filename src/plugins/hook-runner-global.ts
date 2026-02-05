@@ -7,6 +7,7 @@
 
 import type { PluginRegistry } from "./registry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { registerTaskEnforcerHook } from "./core-hooks/task-enforcer.js";
 import { createHookRunner, type HookRunner } from "./hooks.js";
 
 const log = createSubsystemLogger("plugins");
@@ -19,6 +20,8 @@ let globalRegistry: PluginRegistry | null = null;
  * Called once when plugins are loaded during gateway startup.
  */
 export function initializeGlobalHookRunner(registry: PluginRegistry): void {
+  registerTaskEnforcerHook(registry);
+
   globalRegistry = registry;
   globalHookRunner = createHookRunner(registry, {
     logger: {
@@ -29,9 +32,9 @@ export function initializeGlobalHookRunner(registry: PluginRegistry): void {
     catchErrors: true,
   });
 
-  const hookCount = registry.hooks.length;
+  const hookCount = registry.typedHooks.length;
   if (hookCount > 0) {
-    log.info(`hook runner initialized with ${hookCount} registered hooks`);
+    log.info(`hook runner initialized with ${hookCount} registered typed hooks`);
   }
 }
 
