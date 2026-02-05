@@ -38,6 +38,7 @@ import { buildThreadingToolContext, resolveEnforceFinalTag } from "./agent-runne
 import { createBlockReplyPayloadKey, type BlockReplyPipeline } from "./block-reply-pipeline.js";
 import { parseReplyDirectives } from "./reply-directives.js";
 import { applyReplyTagsToPayload, isRenderablePayload } from "./reply-payloads.js";
+import { isRateLimitExhaustion } from "./quota-recovery.js";
 
 export type AgentRunLoopResult =
   | {
@@ -50,7 +51,8 @@ export type AgentRunLoopResult =
       /** Payload keys sent directly (not via pipeline) during tool flush. */
       directlySentBlockKeys?: Set<string>;
     }
-  | { kind: "final"; payload: ReplyPayload };
+  | { kind: "final"; payload: ReplyPayload }
+  | { kind: "rate_limited"; error: string };
 
 export async function runAgentTurnWithFallback(params: {
   commandBody: string;
@@ -574,6 +576,14 @@ export async function runAgentTurnWithFallback(params: {
           payload: {
             text: "⚠️ Session history was corrupted. I've reset the conversation - please try again!",
           },
+        };
+      }
+      // Check for rate limit exhaustion (all models failed due to quota)
+      if (isRateLimitExhaustion(err)) {
+        defaultRuntime.error(`All models rate limited: ${message}`);
+        return {
+          kind: "rate_limited",
+          error: message,
         };
       }
 

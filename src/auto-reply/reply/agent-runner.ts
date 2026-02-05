@@ -41,6 +41,7 @@ import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-t
 import { incrementCompactionCount } from "./session-updates.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";
 import { createTypingSignaler } from "./typing-mode.js";
+import { getQuotaRecoveryQueue, generateQuotaQueuedMessage } from "./quota-recovery.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
 
@@ -333,6 +334,21 @@ export async function runReplyAgent(params: {
 
     if (runOutcome.kind === "final") {
       return finalizeWithFollowup(runOutcome.payload, queueKey, runFollowupTurn);
+    }
+    // Handle rate limit exhaustion by queuing for retry
+    if (runOutcome.kind === "rate_limited") {
+      const queue = getQuotaRecoveryQueue();
+      const task = queue.enqueue({
+        commandBody,
+        followupRun,
+        sessionCtx,
+        opts,
+        sessionKey,
+        storePath,
+        originalError: runOutcome.error,
+      });
+      const message = generateQuotaQueuedMessage(task.id);
+      return finalizeWithFollowup({ text: message }, queueKey, runFollowupTurn);
     }
 
     const { runResult, fallbackProvider, fallbackModel, directlySentBlockKeys } = runOutcome;
