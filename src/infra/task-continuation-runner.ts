@@ -15,6 +15,17 @@ const DEFAULT_CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const DEFAULT_IDLE_THRESHOLD_MS = 3 * 60 * 1000;
 const CONTINUATION_COOLDOWN_MS = 5 * 60 * 1000;
 
+// Failure-based backoff configuration
+const BACKOFF_MS = {
+  rate_limit: 20 * 60 * 1000,    // 20 minutes
+  billing: 60 * 60 * 1000,       // 1 hour
+  timeout: 1 * 60 * 1000,        // 1 minute
+  context_overflow: 30 * 60 * 1000, // 30 minutes (needs manual intervention)
+  unknown: 5 * 60 * 1000,        // 5 minutes (default)
+} as const;
+
+type FailureReason = keyof typeof BACKOFF_MS;
+
 export type TaskContinuationConfig = {
   checkInterval?: string;
   idleThreshold?: string;
@@ -30,6 +41,12 @@ export type TaskContinuationRunner = {
 type AgentContinuationState = {
   lastContinuationSentMs: number;
   lastTaskId: string | null;
+  /** If set, skip continuation attempts until this timestamp */
+  backoffUntilMs?: number;
+  /** Number of consecutive failures for exponential backoff */
+  consecutiveFailures?: number;
+  /** Last failure reason for debugging */
+  lastFailureReason?: FailureReason;
 };
 
 const agentStates = new Map<string, AgentContinuationState>();
@@ -37,6 +54,52 @@ const agentStates = new Map<string, AgentContinuationState>();
 /** @internal - For testing only. Clears all agent continuation state. */
 export function __resetAgentStates(): void {
   agentStates.clear();
+}
+
+/**
+ * Parse failure reason from error message.
+ * Returns a categorized reason for backoff calculation.
+ */
+function parseFailureReason(error: unknown): FailureReason {
+  const message = error instanceof Error ? error.message : String(error);
+  const lowerMessage = message.toLowerCase();
+
+  // Rate limit / quota exhaustion
+  if (
+    /rate.?limit|quota|429|too many requests|all models failed.*rate/i.test(message)
+  ) {
+    return "rate_limit";
+  }
+
+  // Billing / payment issues
+  if (/billing|payment|insufficient|credit/i.test(message)) {
+    return "billing";
+  }
+
+  // Timeout
+  if (/timeout|timed out|deadline exceeded/i.test(message)) {
+    return "timeout";
+  }
+
+  // Context overflow
+  if (/context.*overflow|token.*limit|too long|max.*token/i.test(message)) {
+    return "context_overflow";
+  }
+
+  return "unknown";
+}
+
+/**
+ * Calculate backoff duration based on failure reason and consecutive failures.
+ * Uses exponential backoff with a cap.
+ */
+function resolveBackoffMs(reason: FailureReason, consecutiveFailures: number): number {
+  const baseMs = BACKOFF_MS[reason];
+  // Exponential backoff: base * 2^(failures-1), capped at 2 hours
+  const multiplier = Math.min(Math.pow(2, Math.max(0, consecutiveFailures - 1)), 8);
+  const backoffMs = baseMs * multiplier;
+  const maxBackoffMs = 2 * 60 * 60 * 1000; // 2 hours max
+  return Math.min(backoffMs, maxBackoffMs);
 }
 
 function resolveTaskContinuationConfig(cfg: OpenClawConfig): {
@@ -140,9 +203,25 @@ async function checkAgentForContinuation(
   }
 
   const state = agentStates.get(agentId);
+  
+  // Check failure-based backoff first
+  if (state?.backoffUntilMs && nowMs < state.backoffUntilMs) {
+    const remainingMs = state.backoffUntilMs - nowMs;
+    const remainingMin = Math.ceil(remainingMs / 60000);
+    log.debug("Continuation backoff active", {
+      agentId,
+      taskId: activeTask.id,
+      remainingMinutes: remainingMin,
+      reason: state.lastFailureReason,
+      consecutiveFailures: state.consecutiveFailures,
+    });
+    return false;
+  }
+
+  // Check regular cooldown (only for same task, prevents spam on success)
   if (state) {
     const sinceLast = nowMs - state.lastContinuationSentMs;
-    if (sinceLast < CONTINUATION_COOLDOWN_MS && state.lastTaskId === activeTask.id) {
+    if (sinceLast < CONTINUATION_COOLDOWN_MS && state.lastTaskId === activeTask.id && !state.backoffUntilMs) {
       log.debug("Continuation cooldown active", {
         agentId,
         taskId: activeTask.id,
@@ -173,18 +252,40 @@ async function checkAgentForContinuation(
       quiet: true,
     });
 
+    // Success - reset failure state
     agentStates.set(agentId, {
       lastContinuationSentMs: nowMs,
       lastTaskId: activeTask.id,
+      backoffUntilMs: undefined,
+      consecutiveFailures: 0,
+      lastFailureReason: undefined,
     });
 
     log.info("Task continuation prompt sent", { agentId, taskId: activeTask.id });
     return true;
   } catch (error) {
-    log.warn("Failed to send continuation prompt", {
+    // Failure - apply backoff based on failure reason
+    const reason = parseFailureReason(error);
+    const prevState = agentStates.get(agentId);
+    const consecutiveFailures = (prevState?.consecutiveFailures ?? 0) + 1;
+    const backoffMs = resolveBackoffMs(reason, consecutiveFailures);
+    const backoffUntilMs = nowMs + backoffMs;
+
+    agentStates.set(agentId, {
+      lastContinuationSentMs: nowMs,
+      lastTaskId: activeTask.id,
+      backoffUntilMs,
+      consecutiveFailures,
+      lastFailureReason: reason,
+    });
+
+    log.warn("Failed to send continuation prompt, applying backoff", {
       agentId,
       taskId: activeTask.id,
       error: String(error),
+      reason,
+      consecutiveFailures,
+      backoffMinutes: Math.round(backoffMs / 60000),
     });
     return false;
   }
