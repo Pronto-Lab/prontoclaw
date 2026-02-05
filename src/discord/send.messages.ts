@@ -105,6 +105,11 @@ export async function createThreadDiscord(
   if (payload.autoArchiveMinutes) {
     body.auto_archive_duration = payload.autoArchiveMinutes;
   }
+  // When creating a thread without a source message, explicitly set type to public thread (11).
+  // Without this, Discord defaults to private thread which causes permission issues for other bots.
+  if (!payload.messageId) {
+    body.type = 11; // GUILD_PUBLIC_THREAD
+  }
   const route = Routes.threads(channelId, payload.messageId);
   return await rest.post(route, { body });
 }
