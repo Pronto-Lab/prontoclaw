@@ -212,4 +212,239 @@ describe("startTaskContinuationRunner", () => {
     expect(agentCommand).not.toHaveBeenCalled();
     runner.stop();
   });
+
+  describe("failure-based backoff", () => {
+    const idleTask = {
+      id: "task_abc123",
+      status: "in_progress" as const,
+      priority: "high" as const,
+      description: "Fix the bug",
+      created: "2026-02-05T09:50:00Z",
+      lastActivity: "2026-02-05T09:50:00Z",
+      progress: ["Started"],
+    };
+
+    it("applies 20 minute backoff for rate_limit errors", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("All models failed: rate_limit"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      // First attempt - fails with rate_limit
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      // Reset mock to track new calls
+      vi.mocked(agentCommand).mockClear();
+
+      // After 10 minutes - still in backoff (20min required)
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(agentCommand).not.toHaveBeenCalled();
+
+      // After 20 minutes total - backoff expired, should retry
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      runner.stop();
+    });
+
+    it("applies 1 hour backoff for billing errors", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("billing error: insufficient credits"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      // First attempt - fails with billing
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      vi.mocked(agentCommand).mockClear();
+
+      // After 30 minutes - still in backoff (1hr required)
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(agentCommand).not.toHaveBeenCalled();
+
+      // After 60 minutes total - backoff expired
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      runner.stop();
+    });
+
+    it("applies 1 minute backoff for timeout errors", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("request timeout"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      // First attempt - fails with timeout
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      vi.mocked(agentCommand).mockClear();
+
+      // After 1 minute - backoff expired, should retry
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      runner.stop();
+    });
+
+    it("applies 5 minute backoff for unknown errors", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("some random error"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      // First attempt - fails with unknown
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      vi.mocked(agentCommand).mockClear();
+
+      // After 3 minutes - still in backoff (5min required)
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).not.toHaveBeenCalled();
+
+      // After 5 minutes total - backoff expired
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      runner.stop();
+    });
+
+    it("applies exponential backoff on consecutive failures", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("rate_limit"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      // First failure - 20 min backoff
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+      vi.mocked(agentCommand).mockClear();
+
+      // Wait 20 min, second failure - 40 min backoff (20 * 2)
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+      vi.mocked(agentCommand).mockClear();
+
+      // After 20 min - still in backoff (40 min required)
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(agentCommand).not.toHaveBeenCalled();
+
+      // After 40 min total - backoff expired
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      runner.stop();
+    });
+
+    it("resets failure state on successful continuation", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      
+      // First call fails
+      vi.mocked(agentCommand).mockRejectedValueOnce(new Error("rate_limit"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      // First attempt - fails
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      // Now make it succeed
+      vi.mocked(agentCommand).mockResolvedValue({
+        text: "ok",
+        sessionId: "test",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      });
+
+      // Wait for backoff to expire (20 min)
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(2);
+
+      // Third attempt after normal cooldown (5 min) - should work (not 40 min exponential)
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(3);
+
+      runner.stop();
+    });
+
+    it("caps backoff at 2 hours maximum", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("billing error"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      // Simulate multiple failures to trigger exponential backoff
+      // billing = 1hr base, after 3 failures would be 4hr, but capped at 2hr
+      for (let i = 0; i < 3; i++) {
+        await vi.advanceTimersByTimeAsync(2 * 60 * 60_000 + 3 * 60_000); // 2hr + 3min
+      }
+
+      vi.mocked(agentCommand).mockClear();
+
+      // After 2 hours (max cap) - should retry
+      await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
+      expect(agentCommand).toHaveBeenCalled();
+
+      runner.stop();
+    });
+
+    it("detects rate_limit from 429 status code message", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("HTTP 429 Too Many Requests"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      vi.mocked(agentCommand).mockClear();
+
+      // Should apply 20 min backoff (rate_limit detection)
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(agentCommand).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      runner.stop();
+    });
+
+    it("detects context_overflow from error message", async () => {
+      vi.mocked(findActiveTask).mockResolvedValue(idleTask);
+      vi.mocked(agentCommand).mockRejectedValue(new Error("context overflow: token limit exceeded"));
+
+      const runner = startTaskContinuationRunner({
+        cfg: { agents: { defaults: {} } } as OpenClawConfig,
+      });
+
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      vi.mocked(agentCommand).mockClear();
+
+      // Should apply 30 min backoff (context_overflow)
+      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      expect(agentCommand).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
+      runner.stop();
+    });
+  });
 });
