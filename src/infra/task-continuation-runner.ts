@@ -102,7 +102,7 @@ async function checkAgentForContinuation(
 
   const mainQueueSize = getQueueSize(CommandLane.Main);
   if (mainQueueSize > 0) {
-    log.debug({ agentId, queueSize: mainQueueSize }, "Agent busy, skipping continuation check");
+    log.debug("Agent busy, skipping continuation check", { agentId, queueSize: mainQueueSize });
     return false;
   }
 
@@ -116,10 +116,12 @@ async function checkAgentForContinuation(
   const idleMs = nowMs - lastActivityMs;
 
   if (idleMs < idleThresholdMs) {
-    log.debug(
-      { agentId, taskId: activeTask.id, idleMs, thresholdMs: idleThresholdMs },
-      "Task not idle long enough",
-    );
+    log.debug("Task not idle long enough", {
+      agentId,
+      taskId: activeTask.id,
+      idleMs,
+      thresholdMs: idleThresholdMs,
+    });
     return false;
   }
 
@@ -127,10 +129,12 @@ async function checkAgentForContinuation(
   if (state) {
     const sinceLast = nowMs - state.lastContinuationSentMs;
     if (sinceLast < CONTINUATION_COOLDOWN_MS && state.lastTaskId === activeTask.id) {
-      log.debug(
-        { agentId, taskId: activeTask.id, sinceLast, cooldown: CONTINUATION_COOLDOWN_MS },
-        "Continuation cooldown active",
-      );
+      log.debug("Continuation cooldown active", {
+        agentId,
+        taskId: activeTask.id,
+        sinceLast,
+        cooldown: CONTINUATION_COOLDOWN_MS,
+      });
       return false;
     }
   }
@@ -138,10 +142,11 @@ async function checkAgentForContinuation(
   const pendingTasks = await findPendingTasks(workspaceDir);
   const prompt = formatContinuationPrompt(activeTask, pendingTasks.length);
 
-  log.info(
-    { agentId, taskId: activeTask.id, idleMinutes: Math.round(idleMs / 60000) },
-    "Sending task continuation prompt",
-  );
+  log.info("Sending task continuation prompt", {
+    agentId,
+    taskId: activeTask.id,
+    idleMinutes: Math.round(idleMs / 60000),
+  });
 
   try {
     await agentCommand({
@@ -157,13 +162,14 @@ async function checkAgentForContinuation(
       lastTaskId: activeTask.id,
     });
 
-    log.info({ agentId, taskId: activeTask.id }, "Task continuation prompt sent");
+    log.info("Task continuation prompt sent", { agentId, taskId: activeTask.id });
     return true;
   } catch (error) {
-    log.warn(
-      { agentId, taskId: activeTask.id, error: String(error) },
-      "Failed to send continuation prompt",
-    );
+    log.warn("Failed to send continuation prompt", {
+      agentId,
+      taskId: activeTask.id,
+      error: String(error),
+    });
     return false;
   }
 }
@@ -181,13 +187,13 @@ async function runContinuationCheck(cfg: OpenClawConfig, idleThresholdMs: number
     }
   }
 
-  log.debug({ agentCount: agentIds.size }, "Running task continuation check");
+  log.debug("Running task continuation check", { agentCount: agentIds.size });
 
   for (const agentId of agentIds) {
     try {
       await checkAgentForContinuation(cfg, agentId, idleThresholdMs, nowMs);
     } catch (error) {
-      log.warn({ agentId, error: String(error) }, "Error checking agent for continuation");
+      log.warn("Error checking agent for continuation", { agentId, error: String(error) });
     }
   }
 }
@@ -213,7 +219,7 @@ export function startTaskContinuationRunner(opts: { cfg: OpenClawConfig }): Task
       try {
         await runContinuationCheck(currentCfg, idleThresholdMs);
       } catch (error) {
-        log.warn({ error: String(error) }, "Task continuation check failed");
+        log.warn("Task continuation check failed", { error: String(error) });
       }
 
       scheduleNext();
