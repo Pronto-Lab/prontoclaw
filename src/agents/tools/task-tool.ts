@@ -8,8 +8,15 @@ import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../agent-scope.
 import { jsonResult, readStringParam } from "./common.js";
 
 const TASKS_DIR = "tasks";
-const TASK_HISTORY_FILENAME = "TASK_HISTORY.md";
+const TASK_HISTORY_DIR = "task-history";
 const CURRENT_TASK_FILENAME = "CURRENT_TASK.md";
+
+function getMonthlyHistoryFilename(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}.md`;
+}
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "completed" | "cancelled";
 type TaskPriority = "low" | "medium" | "high" | "urgent";
@@ -253,18 +260,24 @@ async function findActiveTask(workspaceDir: string): Promise<TaskFile | null> {
   return tasks[0] || null;
 }
 
-async function appendToHistory(workspaceDir: string, entry: string): Promise<void> {
-  const filePath = path.join(workspaceDir, TASK_HISTORY_FILENAME);
-  await fs.mkdir(workspaceDir, { recursive: true });
+async function appendToHistory(workspaceDir: string, entry: string): Promise<string> {
+  const historyDir = path.join(workspaceDir, TASK_HISTORY_DIR);
+  await fs.mkdir(historyDir, { recursive: true });
+
+  const filename = getMonthlyHistoryFilename();
+  const filePath = path.join(historyDir, filename);
 
   let existingContent = "";
   try {
     existingContent = await fs.readFile(filePath, "utf-8");
   } catch {
-    existingContent = "# Task History\n";
+    const now = new Date();
+    const monthName = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+    existingContent = `# Task History - ${monthName}\n`;
   }
 
   await fs.writeFile(filePath, existingContent + entry, "utf-8");
+  return `${TASK_HISTORY_DIR}/${filename}`;
 }
 
 function formatTaskHistoryEntry(task: TaskFile, summary?: string): string {
@@ -541,7 +554,7 @@ export function createTaskCompleteTool(options: {
       task.status = "completed";
 
       const historyEntry = formatTaskHistoryEntry(task, summary);
-      await appendToHistory(workspaceDir, historyEntry);
+      const archivedTo = await appendToHistory(workspaceDir, historyEntry);
 
       await deleteTask(workspaceDir, task.id);
 
@@ -558,7 +571,7 @@ export function createTaskCompleteTool(options: {
         success: true,
         taskId: task.id,
         archived: true,
-        archivedTo: TASK_HISTORY_FILENAME,
+        archivedTo,
         completedAt: new Date().toISOString(),
         remainingTasks: remainingTasks.length,
         nextTaskId: nextTask?.id || null,

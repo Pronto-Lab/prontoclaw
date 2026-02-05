@@ -159,7 +159,7 @@ Test task
       expect(tool).toBeNull();
     });
 
-    it("archives task to TASK_HISTORY.md", async () => {
+    it("archives task to monthly history file", async () => {
       const existingTask = `# Task: task_abc123
 
 ## Metadata
@@ -181,7 +181,7 @@ Test task
 
       vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
       vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
-        if ((filePath as string).includes("TASK_HISTORY")) {
+        if ((filePath as string).includes("task-history")) {
           throw new Error("File not found");
         }
         return existingTask;
@@ -193,7 +193,7 @@ Test task
       const parsed = result.details as Record<string, unknown>;
       expect(parsed.success).toBe(true);
       expect(parsed.archived).toBe(true);
-      expect(parsed.archivedTo).toBe("TASK_HISTORY.md");
+      expect(parsed.archivedTo as string).toMatch(/^task-history\/\d{4}-\d{2}\.md$/);
       expect(fs.unlink).toHaveBeenCalled();
     });
 
@@ -219,8 +219,8 @@ Test task
 
       vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
       vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
-        if ((filePath as string).includes("TASK_HISTORY")) {
-          return "# Task History\n";
+        if ((filePath as string).includes("task-history")) {
+          return "# Task History - February 2026\n";
         }
         return existingTask;
       });
@@ -230,7 +230,7 @@ Test task
 
       const historyWrite = vi
         .mocked(fs.writeFile)
-        .mock.calls.find((call) => (call[0] as string).includes("TASK_HISTORY.md"));
+        .mock.calls.find((call) => (call[0] as string).includes("task-history/"));
       expect(historyWrite).toBeDefined();
       const content = historyWrite![1] as string;
       expect(content).toContain("Successfully implemented feature");
