@@ -101,8 +101,8 @@ interface WsMessage {
 const OPENCLAW_DIR = path.join(os.homedir(), ".openclaw");
 const WORKSPACE_PREFIX = "workspace-";
 const TASKS_DIR = "tasks";
+const TASK_HISTORY_DIR = "task-history";
 const CURRENT_TASK_FILENAME = "CURRENT_TASK.md";
-const TASK_HISTORY_FILENAME = "TASK_HISTORY.md";
 
 // ============================================================================
 // Task Parsing (adapted from task-tool.ts)
@@ -316,17 +316,39 @@ async function listTasks(agentId: string, statusFilter?: TaskStatus): Promise<Ta
   return tasks;
 }
 
-async function getTaskHistory(agentId: string, limit = 50): Promise<string> {
+async function getTaskHistory(
+  agentId: string,
+  options: { limit?: number; month?: string } = {},
+): Promise<{ entries: string; months: string[] }> {
   const workspaceDir = path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}${agentId}`);
-  const historyPath = path.join(workspaceDir, TASK_HISTORY_FILENAME);
+  const historyDir = path.join(workspaceDir, TASK_HISTORY_DIR);
+  const limit = options.limit ?? 50;
+
+  let months: string[] = [];
+  try {
+    const files = await fs.readdir(historyDir);
+    months = files
+      .filter((f) => /^\d{4}-\d{2}\.md$/.test(f))
+      .map((f) => f.replace(".md", ""))
+      .sort()
+      .reverse();
+  } catch {
+    return { entries: "", months: [] };
+  }
+
+  if (months.length === 0) {
+    return { entries: "", months: [] };
+  }
+
+  const targetMonth = options.month || months[0];
+  const historyPath = path.join(historyDir, `${targetMonth}.md`);
 
   try {
     const content = await fs.readFile(historyPath, "utf-8");
-    // Return last N entries (split by ## headers)
     const entries = content.split(/(?=^## \[)/m);
-    return entries.slice(-limit).join("");
+    return { entries: entries.slice(-limit).join(""), months };
   } catch {
-    return "";
+    return { entries: "", months };
   }
 }
 
@@ -405,8 +427,15 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
     if (action === "history") {
       const limit = Number(url.searchParams.get("limit")) || 50;
-      const history = await getTaskHistory(agentId, limit);
-      jsonResponse(res, { agentId, history, hasHistory: history.length > 0 });
+      const month = url.searchParams.get("month") || undefined;
+      const { entries, months } = await getTaskHistory(agentId, { limit, month });
+      jsonResponse(res, {
+        agentId,
+        history: entries,
+        months,
+        currentMonth: month || months[0] || null,
+        hasHistory: entries.length > 0,
+      });
       return;
     }
 
@@ -423,7 +452,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (pathname === "/" || pathname === "/api") {
     jsonResponse(res, {
       name: "Task Monitor API",
-      version: "1.0.0",
+      version: "1.1.0",
       endpoints: [
         "GET /api/health",
         "GET /api/agents",
@@ -432,6 +461,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents/:agentId/tasks?status=in_progress",
         "GET /api/agents/:agentId/current",
         "GET /api/agents/:agentId/history",
+        "GET /api/agents/:agentId/history?month=2026-02",
         "WS /ws",
       ],
       docs: "https://github.com/pronto-lab/prontolab-openclaw/blob/main/PRONTOLAB.md",
