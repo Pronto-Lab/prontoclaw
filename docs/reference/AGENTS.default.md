@@ -71,8 +71,28 @@ cp docs/reference/AGENTS.default.md ~/.openclaw/workspace/AGENTS.md
 
 ## Tools & skills
 
-- Tools live in skills; follow each skill’s `SKILL.md` when you need it.
+- Tools live in skills; follow each skill's `SKILL.md` when you need it.
 - Keep environment-specific notes in `TOOLS.md` (Notes for Skills).
+
+## Task management
+
+For multi-step work, use task tools to track progress:
+
+**When to use:**
+
+- Work has 2+ steps or takes multiple turns
+- Complex tasks that need tracking
+- Resumable work after breaks/restarts
+
+**Workflow:**
+
+1. `task_start "Description"` — begin tracking
+2. `task_update "Progress..."` — log each step
+3. `task_complete "Summary"` — finish and archive
+
+**Available:** `task_start`, `task_update`, `task_complete`, `task_status`, `task_list`, `task_cancel`
+
+**Files:** `CURRENT_TASK.md` (focus), `tasks/*.md` (details), `TASK_HISTORY.md` (archive)
 
 ## Backup tip (recommended)
 

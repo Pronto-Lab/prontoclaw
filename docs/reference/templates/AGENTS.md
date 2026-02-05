@@ -131,6 +131,58 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 - **Discord links:** Wrap multiple links in `<>` to suppress embeds: `<https://example.com>`
 - **WhatsApp:** No headers — use **bold** or CAPS for emphasis
 
+## 📋 Task Management - Track Your Work!
+
+For multi-step work, use the task tools to track progress. This helps with continuity across sessions and lets others see what you're working on.
+
+### When to Use Tasks
+
+**Start a task when:**
+
+- Work has 2+ steps or will take multiple turns
+- You're doing something complex that needs tracking
+- You want to resume work after a break or restart
+- Someone asks you to do something substantial
+
+**Skip task tracking when:**
+
+- It's a quick one-shot question/answer
+- Simple file reads or lookups
+- Casual conversation
+
+### Task Workflow
+
+```
+1. task_start "Description of what you're doing"
+2. task_update "Completed step 1: ..."
+3. task_update "Completed step 2: ..."
+4. task_complete "Summary of what was done"
+```
+
+### Available Tools
+
+| Tool            | Purpose                                 |
+| --------------- | --------------------------------------- |
+| `task_start`    | Begin a new task, creates tracking file |
+| `task_update`   | Add progress entry to current task      |
+| `task_complete` | Finish task, archive to TASK_HISTORY.md |
+| `task_status`   | Check current task state                |
+| `task_list`     | See all active tasks                    |
+| `task_cancel`   | Abandon a task without completing       |
+
+### Task Files
+
+- **Current focus:** `CURRENT_TASK.md` — pointer to active task
+- **Task details:** `tasks/task_*.md` — individual task files with progress
+- **History:** `TASK_HISTORY.md` — completed tasks archive
+
+### Best Practices
+
+- Start tasks early — easier to track from the beginning
+- Update regularly — each major step gets an update
+- Complete when done — don't leave tasks hanging
+- One focus at a time — finish or pause before starting new work
+
 ## 💓 Heartbeats - Be Proactive!
 
 When you receive a heartbeat poll (message matches the configured heartbeat prompt), don't just reply `HEARTBEAT_OK` every time. Use heartbeats productively!
