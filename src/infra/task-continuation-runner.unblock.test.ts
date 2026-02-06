@@ -23,6 +23,19 @@ vi.mock("../routing/bindings.js", () => ({
   resolveAgentBoundAccountId: vi.fn(() => "test-account"),
 }));
 
+vi.mock("../agents/tools/sessions-helpers.js", () => ({
+  createAgentToAgentPolicy: vi.fn((cfg: OpenClawConfig) => {
+    const policy = cfg.agents?.defaults?.agentToAgent?.policy ?? "allow-all";
+    return {
+      isAllowed: (from: string, to: string) => {
+        if (policy === "deny-all") return false;
+        if (policy === "allow-all") return true;
+        return true;
+      },
+    };
+  }),
+}));
+
 import { findBlockedTasks, writeTask } from "../agents/tools/task-tool.js";
 import { agentCommand } from "../commands/agent.js";
 import { getQueueSize } from "../process/command-queue.js";
@@ -527,6 +540,272 @@ describe("Task Unblock Rotation", () => {
     expect(agentCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "agent_a",
+      }),
+    );
+
+    runner.stop();
+  });
+});
+
+describe("Task Unblock A2A Policy", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-05T10:00:00Z"));
+    vi.clearAllMocks();
+    __resetAgentStates();
+    vi.mocked(findBlockedTasks).mockResolvedValue([]);
+    vi.mocked(agentCommand).mockResolvedValue({
+      text: "ok",
+      sessionId: "test",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+    vi.mocked(getQueueSize).mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("skips unblocker when A2A policy denies request", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a", "agent_b"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {
+            agentToAgent: {
+              policy: "deny-all",
+            },
+          },
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+            { id: "agent_b", name: "Agent B" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(agentCommand).not.toHaveBeenCalled();
+
+    runner.stop();
+  });
+
+  it("policy denial does not count as request attempt", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {
+            agentToAgent: {
+              policy: "deny-all",
+            },
+          },
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        unblockRequestCount: 0,
+        escalationState: "failed",
+      }),
+    );
+
+    runner.stop();
+  });
+
+  it("proceeds with request when A2A policy allows", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {
+            agentToAgent: {
+              policy: "allow-all",
+            },
+          },
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_a",
+      }),
+    );
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        unblockRequestCount: 1,
+        escalationState: "requesting",
+      }),
+    );
+
+    runner.stop();
+  });
+
+  it("sets escalationState to failed when all unblockers denied by policy", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a", "agent_b", "agent_c"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {
+            agentToAgent: {
+              policy: "deny-all",
+            },
+          },
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+            { id: "agent_b", name: "Agent B" },
+            { id: "agent_c", name: "Agent C" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(agentCommand).not.toHaveBeenCalled();
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        escalationState: "failed",
+        unblockRequestCount: 0,
+      }),
+    );
+
+    runner.stop();
+  });
+
+  it("continues rotation when policy denies one unblocker but allows another", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a", "agent_b"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {
+            agentToAgent: {
+              policy: "allow-all",
+            },
+          },
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+            { id: "agent_b", name: "Agent B" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_a",
+      }),
+    );
+
+    blockedTask.unblockRequestCount = 1;
+    blockedTask.lastUnblockerIndex = 0;
+    blockedTask.lastActivity = "2026-02-05T10:31:00Z";
+    blockedTask.escalationState = "requesting";
+    vi.clearAllMocks();
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_b",
       }),
     );
 

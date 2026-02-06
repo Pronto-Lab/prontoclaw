@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { createAgentToAgentPolicy } from "../agents/tools/sessions-helpers.js";
 import {
   findActiveTask,
   findBlockedTasks,
@@ -384,6 +385,7 @@ async function checkBlockedTasksForUnblock(
 ): Promise<void> {
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
   const blockedTasks = await findBlockedTasks(workspaceDir);
+  const a2aPolicy = createAgentToAgentPolicy(cfg);
 
   for (const task of blockedTasks) {
     if (!task.unblockedBy || task.unblockedBy.length === 0) {
@@ -428,6 +430,29 @@ async function checkBlockedTasksForUnblock(
     const nextIndex = (clampedLastIndex + 1) % task.unblockedBy.length;
     const targetAgentId = task.unblockedBy[nextIndex];
     task.lastUnblockerIndex = nextIndex;
+
+    // Check A2A policy before sending request
+    if (!a2aPolicy.isAllowed(agentId, targetAgentId)) {
+      log.debug("A2A policy denied unblock request", {
+        blockedAgentId: agentId,
+        targetAgentId,
+        taskId: task.id,
+      });
+
+      // Check if all unblockers are denied by policy
+      const allDenied = task.unblockedBy.every(
+        (unblocker) => !a2aPolicy.isAllowed(agentId, unblocker),
+      );
+
+      if (allDenied) {
+        task.escalationState = "failed";
+        await writeTask(workspaceDir, task);
+        log.warn("All unblockers denied by A2A policy", { taskId: task.id });
+      }
+
+      continue;
+    }
+
     const prompt = formatUnblockRequestPrompt(agentId, task);
 
     log.info("Sending unblock request", {
