@@ -23,6 +23,12 @@ vi.mock("../routing/bindings.js", () => ({
   resolveAgentBoundAccountId: vi.fn(() => "test-account"),
 }));
 
+
+vi.mock("./task-lock.js", () => ({
+  acquireTaskLock: vi.fn(async () => ({
+    release: vi.fn(async () => {}),
+  })),
+}));
 vi.mock("../agents/tools/sessions-helpers.js", () => ({
   createAgentToAgentPolicy: vi.fn((cfg: OpenClawConfig) => {
     const policy = cfg.agents?.defaults?.agentToAgent?.policy ?? "allow-all";

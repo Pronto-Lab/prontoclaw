@@ -15,6 +15,7 @@ import { getQueueSize } from "../process/command-queue.js";
 // CommandLane import removed - using agent-specific lanes
 import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { acquireTaskLock } from "./task-lock.js";
 
 const log = createSubsystemLogger("task-continuation");
 
@@ -388,6 +389,13 @@ async function checkBlockedTasksForUnblock(
   const a2aPolicy = createAgentToAgentPolicy(cfg);
 
   for (const task of blockedTasks) {
+    // Try to acquire lock for this task
+    const lock = await acquireTaskLock(workspaceDir, task.id);
+    if (!lock) {
+      log.debug("Could not acquire lock for task, skipping", { taskId: task.id });
+      continue;
+    }
+
     try {
     if (!task.unblockedBy || task.unblockedBy.length === 0) {
       continue;
@@ -508,6 +516,8 @@ async function checkBlockedTasksForUnblock(
         error: String(error),
       });
       // Continue to next task
+    } finally {
+      await lock.release();
     }
   }
 }
