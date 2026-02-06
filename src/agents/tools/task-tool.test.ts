@@ -28,6 +28,7 @@ import {
   createTaskCancelTool,
   createTaskCompleteTool,
   createTaskListTool,
+  createTaskResumeTool,
   createTaskStartTool,
   createTaskStatusTool,
   createTaskUpdateTool,
@@ -872,6 +873,147 @@ Active task
       expect(parsed.success).toBe(true);
       expect(parsed.status).toBe("blocked");
       expect(parsed.taskId).toBe("task_active123");
+    });
+  });
+  describe("createTaskResumeTool", () => {
+    it("returns null when config is missing", () => {
+      const tool = createTaskResumeTool({});
+      expect(tool).toBeNull();
+    });
+
+    it("resumes blocked task and transitions to in_progress", async () => {
+      const blockedTask = `# Task: task_blocked123
+
+## Metadata
+- **Status:** blocked
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Task waiting for unblock
+
+## Progress
+- Task started
+- [BLOCKED] Waiting for agent1 to complete
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue([]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("task_blocked123")) {
+          return blockedTask;
+        }
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskResumeTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_blocked123" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.resumed).toBe(true);
+      expect(parsed.taskId).toBe("task_blocked123");
+
+      const writeCall = vi
+        .mocked(fs.writeFile)
+        .mock.calls.find((call) => (call[0] as string).includes("task_blocked123"));
+      const content = writeCall![1] as string;
+      expect(content).toContain("- **Status:** in_progress");
+      expect(content).toContain("- Task resumed from blocked state");
+    });
+
+    it("returns error when task is not blocked", async () => {
+      const inProgressTask = `# Task: task_active123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readFile).mockResolvedValue(inProgressTask);
+
+      const tool = createTaskResumeTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_active123" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("not blocked");
+    });
+
+    it("returns error for non-existent task", async () => {
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("Not found"));
+
+      const tool = createTaskResumeTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_nonexistent" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("not found");
+    });
+
+    it("resumes most recently blocked task when task_id is not specified", async () => {
+      const blockedTaskMd = `# Task: task_auto_blocked
+
+## Metadata
+- **Status:** blocked
+- **Priority:** high
+- **Created:** 2026-02-04T12:00:00.000Z
+
+## Description
+Auto blocked task
+
+## Progress
+- Task started
+- [BLOCKED] Need help
+
+## Last Activity
+2026-02-04T12:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_auto_blocked.md"] as unknown as Dirent[]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("task_auto_blocked")) {
+          return blockedTaskMd;
+        }
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskResumeTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {});
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.resumed).toBe(true);
+      expect(parsed.taskId).toBe("task_auto_blocked");
+    });
+
+    it("returns error when no blocked tasks exist", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue([]);
+
+      const tool = createTaskResumeTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {});
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("No blocked task");
     });
   });
 });
