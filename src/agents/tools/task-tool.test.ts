@@ -1017,3 +1017,421 @@ Auto blocked task
     });
   });
 });
+
+// Import backlog tools
+import {
+  createTaskBacklogAddTool,
+  createTaskPickBacklogTool,
+  findBacklogTasks,
+  findAllBacklogTasks,
+  findPickableBacklogTask,
+  checkDependenciesMet,
+  readTask,
+} from "./task-tool.js";
+
+describe("backlog functionality", () => {
+  describe("createTaskBacklogAddTool", () => {
+    it("returns null when config is missing", () => {
+      const tool = createTaskBacklogAddTool({});
+      expect(tool).toBeNull();
+    });
+
+    it("creates a tool with correct metadata", () => {
+      const tool = createTaskBacklogAddTool({ config: mockConfig });
+      expect(tool).not.toBeNull();
+      expect(tool!.name).toBe("task_backlog_add");
+      expect(tool!.label).toBe("Task Backlog Add");
+    });
+
+    it("creates backlog task with default priority", async () => {
+      const tool = createTaskBacklogAddTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { description: "Backlog task" });
+
+      expect(fs.mkdir).toHaveBeenCalled();
+      expect(fs.writeFile).toHaveBeenCalled();
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.status).toBe("backlog");
+      expect(parsed.priority).toBe("medium");
+      expect(parsed.isCrossAgent).toBe(false);
+    });
+
+    it("creates backlog task with estimated effort", async () => {
+      const tool = createTaskBacklogAddTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Large backlog task",
+        estimated_effort: "large",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.estimatedEffort).toBe("large");
+    });
+
+    it("creates backlog task with start_date and due_date", async () => {
+      const tool = createTaskBacklogAddTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Scheduled task",
+        start_date: "2026-03-01",
+        due_date: "2026-03-15",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.startDate).toBe("2026-03-01");
+      expect(parsed.dueDate).toBe("2026-03-15");
+    });
+
+    it("creates backlog task with dependencies", async () => {
+      const tool = createTaskBacklogAddTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Dependent task",
+        depends_on: ["task_abc123", "task_def456"],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.dependsOn).toEqual(["task_abc123", "task_def456"]);
+    });
+
+    it("forces low priority for cross-agent requests", async () => {
+      const tool = createTaskBacklogAddTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Cross-agent task",
+        priority: "urgent",
+        assignee: "agent1",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.priority).toBe("low");
+      expect(parsed.isCrossAgent).toBe(true);
+      expect(parsed.assignee).toBe("agent1");
+    });
+
+    it("rejects invalid assignee", async () => {
+      const tool = createTaskBacklogAddTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Invalid assignee task",
+        assignee: "nonexistent_agent",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("Invalid assignee");
+    });
+  });
+
+  describe("createTaskPickBacklogTool", () => {
+    it("returns null when config is missing", () => {
+      const tool = createTaskPickBacklogTool({});
+      expect(tool).toBeNull();
+    });
+
+    it("creates a tool with correct metadata", () => {
+      const tool = createTaskPickBacklogTool({ config: mockConfig });
+      expect(tool).not.toBeNull();
+      expect(tool!.name).toBe("task_pick_backlog");
+      expect(tool!.label).toBe("Task Pick Backlog");
+    });
+
+    it("rejects pick when active task exists", async () => {
+      const activeTask = `# Task: task_active
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_active.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(activeTask);
+
+      const tool = createTaskPickBacklogTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {});
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("Already have an active task");
+    });
+
+    it("picks specific backlog task by task_id", async () => {
+      const backlogTask = `# Task: task_backlog123
+
+## Metadata
+- **Status:** backlog
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Backlog task
+
+## Progress
+- Added to backlog
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+## Backlog
+{"createdBy":"main","assignee":"main"}
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_backlog123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(backlogTask);
+
+      const tool = createTaskPickBacklogTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_backlog123" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.pickedFromBacklog).toBe(true);
+      expect(parsed.taskId).toBe("task_backlog123");
+
+      const writeCall = vi
+        .mocked(fs.writeFile)
+        .mock.calls.find((call) => (call[0] as string).includes("task_backlog123"));
+      const content = writeCall![1] as string;
+      expect(content).toContain("- **Status:** in_progress");
+    });
+
+    it("rejects task with future start_date", async () => {
+      const futureTask = `# Task: task_future
+
+## Metadata
+- **Status:** backlog
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Future task
+
+## Progress
+- Added to backlog
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+## Backlog
+{"startDate":"2099-01-01"}
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue([]);
+      vi.mocked(fs.readFile).mockResolvedValue(futureTask);
+
+      const tool = createTaskPickBacklogTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_future" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("cannot start until");
+    });
+
+    it("rejects task with unmet dependencies", async () => {
+      const dependentTask = `# Task: task_dependent
+
+## Metadata
+- **Status:** backlog
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Dependent task
+
+## Progress
+- Added to backlog
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+## Backlog
+{"dependsOn":["task_prereq"]}
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_dependent.md"] as never);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("task_dependent")) {
+          return dependentTask;
+        }
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskPickBacklogTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_dependent" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("unmet dependencies");
+      expect(parsed.unmetDependencies).toContain("task_prereq");
+    });
+
+    it("returns error when no pickable backlog tasks", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue([]);
+
+      const tool = createTaskPickBacklogTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {});
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("No backlog tasks available");
+    });
+  });
+
+  describe("backlog sorting", () => {
+    it("sorts backlog by priority > due_date > start_date > created", async () => {
+      const urgentTask = `# Task: task_urgent
+
+## Metadata
+- **Status:** backlog
+- **Priority:** urgent
+- **Created:** 2026-02-04T12:00:00.000Z
+
+## Description
+Urgent backlog task
+
+## Progress
+- Added to backlog
+
+## Last Activity
+2026-02-04T12:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      const mediumWithDueDate = `# Task: task_medium_due
+
+## Metadata
+- **Status:** backlog
+- **Priority:** medium
+- **Created:** 2026-02-04T10:00:00.000Z
+
+## Description
+Medium with due date
+
+## Progress
+- Added to backlog
+
+## Last Activity
+2026-02-04T10:00:00.000Z
+
+## Backlog
+{"dueDate":"2026-02-10"}
+
+---
+*Managed by task tools*`;
+
+      const mediumNoDueDate = `# Task: task_medium_nodue
+
+## Metadata
+- **Status:** backlog
+- **Priority:** medium
+- **Created:** 2026-02-04T09:00:00.000Z
+
+## Description
+Medium no due date
+
+## Progress
+- Added to backlog
+
+## Last Activity
+2026-02-04T09:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue([
+        "task_medium_nodue.md",
+        "task_urgent.md",
+        "task_medium_due.md",
+      ] as never);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("task_urgent")) return urgentTask;
+        if ((filePath as string).includes("task_medium_due")) return mediumWithDueDate;
+        if ((filePath as string).includes("task_medium_nodue")) return mediumNoDueDate;
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskListTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { status: "backlog" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.tasks[0].id).toBe("task_urgent");
+      expect(parsed.tasks[1].id).toBe("task_medium_due");
+      expect(parsed.tasks[2].id).toBe("task_medium_nodue");
+    });
+  });
+
+  describe("task_list with backlog filter", () => {
+    it("filters backlog tasks correctly", async () => {
+      const backlogTask = `# Task: task_backlog
+
+## Metadata
+- **Status:** backlog
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Backlog task
+
+## Progress
+- Added to backlog
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      const inProgressTask = `# Task: task_active
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T10:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T10:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_backlog.md", "task_active.md"] as never);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("task_backlog")) return backlogTask;
+        if ((filePath as string).includes("task_active")) return inProgressTask;
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskListTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { status: "backlog" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.count).toBe(1);
+      expect(parsed.tasks[0].id).toBe("task_backlog");
+      expect(parsed.filter).toBe("backlog");
+    });
+  });
+});

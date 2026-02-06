@@ -23,10 +23,12 @@ export type TaskStatus =
   | "pending_approval"
   | "in_progress"
   | "blocked"
+  | "backlog"
   | "completed"
   | "cancelled";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export type EscalationState = "none" | "requesting" | "escalated" | "failed";
+export type EstimatedEffort = "small" | "medium" | "large";
 export interface TaskFile {
   id: string;
   status: TaskStatus;
@@ -46,6 +48,13 @@ export interface TaskFile {
   lastUnblockRequestAt?: string;
   escalationState?: EscalationState;
   unblockRequestFailures?: number;
+  // Backlog task fields
+  createdBy?: string;           // Who added this task (user/agent id)
+  assignee?: string;            // Whose backlog (for cross-agent requests)
+  dependsOn?: string[];         // Task IDs that must complete first
+  estimatedEffort?: EstimatedEffort;
+  startDate?: string;           // ISO date - don't start before this date
+  dueDate?: string;             // ISO date - deadline
 }
 
 const TaskStartSchema = Type.Object({
@@ -90,6 +99,21 @@ const TaskBlockSchema = Type.Object({
 });
 
 const TaskResumeSchema = Type.Object({
+  task_id: Type.Optional(Type.String()),
+});
+
+const TaskBacklogAddSchema = Type.Object({
+  description: Type.String(),
+  context: Type.Optional(Type.String()),
+  priority: Type.Optional(Type.String()),
+  estimated_effort: Type.Optional(Type.String()),
+  start_date: Type.Optional(Type.String()),
+  due_date: Type.Optional(Type.String()),
+  depends_on: Type.Optional(Type.Array(Type.String())),
+  assignee: Type.Optional(Type.String()),
+});
+
+const TaskPickBacklogSchema = Type.Object({
   task_id: Type.Optional(Type.String()),
 });
 
@@ -139,6 +163,19 @@ function formatTaskFileMd(task: TaskFile): string {
     lines.push("## Blocking", "```json", JSON.stringify(blockingData), "```", "");
   }
 
+  // Serialize backlog fields if present
+  if (task.status === "backlog" || task.createdBy || task.assignee || task.dependsOn || task.startDate || task.dueDate) {
+    const backlogData = {
+      createdBy: task.createdBy,
+      assignee: task.assignee,
+      dependsOn: task.dependsOn,
+      estimatedEffort: task.estimatedEffort,
+      startDate: task.startDate,
+      dueDate: task.dueDate,
+    };
+    lines.push("## Backlog", "```json", JSON.stringify(backlogData), "```", "");
+  }
+
   lines.push("---", "*Managed by task tools*");
 
   return lines.join("\n");
@@ -169,6 +206,12 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let lastUnblockRequestAt: string | undefined;
   let escalationState: EscalationState | undefined;
   let unblockRequestFailures: number | undefined;
+  let createdBy: string | undefined;
+  let assignee: string | undefined;
+  let dependsOn: string[] | undefined;
+  let estimatedEffort: EstimatedEffort | undefined;
+  let startDate: string | undefined;
+  let dueDate: string | undefined;
 
   let currentSection = "";
 
@@ -235,6 +278,20 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
            // Ignore malformed JSON
          }
        }
+     } else if (currentSection === "backlog") {
+       if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+         try {
+           const backlogData = JSON.parse(trimmed);
+           createdBy = backlogData.createdBy;
+           assignee = backlogData.assignee;
+           dependsOn = backlogData.dependsOn;
+           estimatedEffort = backlogData.estimatedEffort;
+           startDate = backlogData.startDate;
+           dueDate = backlogData.dueDate;
+         } catch {
+           // Ignore malformed JSON
+         }
+       }
      }
   }
 
@@ -260,6 +317,12 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     lastUnblockRequestAt,
     escalationState,
     unblockRequestFailures,
+    createdBy,
+    assignee,
+    dependsOn,
+    estimatedEffort,
+    startDate,
+    dueDate,
   };
 }
 
@@ -338,6 +401,24 @@ async function listTasks(
     if (priorityDiff !== 0) {
       return priorityDiff;
     }
+    
+    // For backlog tasks: due_date > start_date > created
+    if (a.dueDate || b.dueDate) {
+      const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+      const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+      if (aDue !== bDue) {
+        return aDue - bDue;
+      }
+    }
+    
+    if (a.startDate || b.startDate) {
+      const aStart = a.startDate ? new Date(a.startDate).getTime() : Infinity;
+      const bStart = b.startDate ? new Date(b.startDate).getTime() : Infinity;
+      if (aStart !== bStart) {
+        return aStart - bStart;
+      }
+    }
+    
     return new Date(a.created).getTime() - new Date(b.created).getTime();
   });
 
@@ -359,6 +440,56 @@ export async function findPendingApprovalTasks(workspaceDir: string): Promise<Ta
 
 export async function findBlockedTasks(workspaceDir: string): Promise<TaskFile[]> {
   return listTasks(workspaceDir, "blocked");
+}
+
+export async function findBacklogTasks(workspaceDir: string): Promise<TaskFile[]> {
+  const tasks = await listTasks(workspaceDir, "backlog");
+  const now = new Date();
+  return tasks.filter((t) => {
+    if (t.startDate) {
+      const startDate = new Date(t.startDate);
+      if (startDate > now) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+export async function findAllBacklogTasks(workspaceDir: string): Promise<TaskFile[]> {
+  return listTasks(workspaceDir, "backlog");
+}
+
+export async function checkDependenciesMet(
+  workspaceDir: string,
+  task: TaskFile,
+): Promise<{ met: boolean; unmetDeps: string[] }> {
+  if (!task.dependsOn || task.dependsOn.length === 0) {
+    return { met: true, unmetDeps: [] };
+  }
+
+  const unmetDeps: string[] = [];
+  for (const depId of task.dependsOn) {
+    const depTask = await readTask(workspaceDir, depId);
+    if (!depTask || depTask.status !== "completed") {
+      unmetDeps.push(depId);
+    }
+  }
+
+  return { met: unmetDeps.length === 0, unmetDeps };
+}
+
+export async function findPickableBacklogTask(workspaceDir: string): Promise<TaskFile | null> {
+  const backlogTasks = await findBacklogTasks(workspaceDir);
+  
+  for (const task of backlogTasks) {
+    const { met } = await checkDependenciesMet(workspaceDir, task);
+    if (met) {
+      return task;
+    }
+  }
+  
+  return null;
 }
 
 async function appendToHistory(workspaceDir: string, entry: string): Promise<string> {
@@ -790,7 +921,7 @@ export function createTaskListTool(options: {
     label: "Task List",
     name: "task_list",
     description:
-      "List all tasks. Optionally filter by status: 'all', 'pending', 'pending_approval', 'in_progress', 'blocked'. Returns tasks sorted by priority then creation time.",
+      "List all tasks. Optionally filter by status: 'all', 'pending', 'pending_approval', 'in_progress', 'blocked', 'backlog'. Returns tasks sorted by priority then creation time.",
     parameters: TaskListSchema,
     execute: async (_toolCallId, params) => {
       const statusParam = readStringParam(params, "status") || "all";
@@ -1141,6 +1272,211 @@ export function createTaskResumeTool(options: {
         taskId: task.id,
         resumed: true,
         resumedAt: now,
+      });
+    },
+  };
+}
+
+export function createTaskBacklogAddTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  const cfg = options.config;
+  if (!cfg) {
+    return null;
+  }
+
+  const currentAgentId = resolveSessionAgentId({
+    sessionKey: options.agentSessionKey,
+    config: cfg,
+  });
+
+  return {
+    label: "Task Backlog Add",
+    name: "task_backlog_add",
+    description:
+      "Add a task to the backlog. Backlog tasks are picked up automatically when no active task exists. Use assignee to add to another agent's backlog. Priority defaults to 'low' for cross-agent requests.",
+    parameters: TaskBacklogAddSchema,
+    execute: async (_toolCallId, params) => {
+      const description = readStringParam(params, "description", { required: true });
+      const context = readStringParam(params, "context");
+      const priorityRaw = readStringParam(params, "priority") || "medium";
+      const estimatedEffortRaw = readStringParam(params, "estimated_effort");
+      const startDateRaw = readStringParam(params, "start_date");
+      const dueDateRaw = readStringParam(params, "due_date");
+      const assigneeRaw = readStringParam(params, "assignee");
+
+      const rawDependsOn = (params as Record<string, unknown>).depends_on;
+      const dependsOn = Array.isArray(rawDependsOn)
+        ? rawDependsOn.filter((s): s is string => typeof s === "string")
+        : undefined;
+
+      const targetAgentId = assigneeRaw || currentAgentId;
+      const isCrossAgent = targetAgentId !== currentAgentId;
+
+      if (isCrossAgent) {
+        const validAgentIds = listAgentIds(cfg);
+        if (!validAgentIds.includes(targetAgentId)) {
+          return jsonResult({
+            success: false,
+            error: `Invalid assignee: ${targetAgentId}. Valid agents: ${validAgentIds.join(", ")}`,
+          });
+        }
+      }
+
+      const priority: TaskPriority = isCrossAgent
+        ? "low"
+        : (["low", "medium", "high", "urgent"].includes(priorityRaw)
+            ? (priorityRaw as TaskPriority)
+            : "medium");
+
+      const estimatedEffort: EstimatedEffort | undefined =
+        estimatedEffortRaw && ["small", "medium", "large"].includes(estimatedEffortRaw)
+          ? (estimatedEffortRaw as EstimatedEffort)
+          : undefined;
+
+      const workspaceDir = resolveAgentWorkspaceDir(cfg, targetAgentId);
+      const now = new Date().toISOString();
+      const taskId = generateTaskId();
+
+      const newTask: TaskFile = {
+        id: taskId,
+        status: "backlog",
+        priority,
+        description,
+        context,
+        source: isCrossAgent ? `request:${currentAgentId}` : "self",
+        created: now,
+        lastActivity: now,
+        progress: [`Added to backlog${isCrossAgent ? ` by ${currentAgentId}` : ""}`],
+        createdBy: currentAgentId,
+        assignee: targetAgentId,
+        dependsOn: dependsOn && dependsOn.length > 0 ? dependsOn : undefined,
+        estimatedEffort,
+        startDate: startDateRaw,
+        dueDate: dueDateRaw,
+      };
+
+      await writeTask(workspaceDir, newTask);
+
+      const allBacklog = await findAllBacklogTasks(workspaceDir);
+
+      return jsonResult({
+        success: true,
+        taskId,
+        status: "backlog",
+        assignee: targetAgentId,
+        isCrossAgent,
+        priority,
+        estimatedEffort: estimatedEffort || null,
+        startDate: startDateRaw || null,
+        dueDate: dueDateRaw || null,
+        dependsOn: dependsOn || [],
+        totalBacklogItems: allBacklog.length,
+      });
+    },
+  };
+}
+
+export function createTaskPickBacklogTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  const cfg = options.config;
+  if (!cfg) {
+    return null;
+  }
+
+  const agentId = resolveSessionAgentId({
+    sessionKey: options.agentSessionKey,
+    config: cfg,
+  });
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+
+  return {
+    label: "Task Pick Backlog",
+    name: "task_pick_backlog",
+    description:
+      "Pick a task from the backlog and start working on it. If task_id is omitted, picks the highest priority task that meets all conditions (dependencies met, start_date passed).",
+    parameters: TaskPickBacklogSchema,
+    execute: async (_toolCallId, params) => {
+      const activeTask = await findActiveTask(workspaceDir);
+      if (activeTask) {
+        return jsonResult({
+          success: false,
+          error: `Already have an active task: ${activeTask.id}. Complete or block it first.`,
+          currentTaskId: activeTask.id,
+        });
+      }
+
+      const taskIdParam = readStringParam(params, "task_id");
+      let task: TaskFile | null = null;
+
+      if (taskIdParam) {
+        task = await readTask(workspaceDir, taskIdParam);
+        if (!task) {
+          return jsonResult({
+            success: false,
+            error: `Task not found: ${taskIdParam}`,
+          });
+        }
+        if (task.status !== "backlog") {
+          return jsonResult({
+            success: false,
+            error: `Task ${taskIdParam} is not in backlog. Status: ${task.status}`,
+          });
+        }
+
+        const now = new Date();
+        if (task.startDate && new Date(task.startDate) > now) {
+          return jsonResult({
+            success: false,
+            error: `Task ${taskIdParam} cannot start until ${task.startDate}`,
+          });
+        }
+
+        const { met, unmetDeps } = await checkDependenciesMet(workspaceDir, task);
+        if (!met) {
+          return jsonResult({
+            success: false,
+            error: `Task ${taskIdParam} has unmet dependencies: ${unmetDeps.join(", ")}`,
+            unmetDependencies: unmetDeps,
+          });
+        }
+      } else {
+        task = await findPickableBacklogTask(workspaceDir);
+        if (!task) {
+          const allBacklog = await findAllBacklogTasks(workspaceDir);
+          return jsonResult({
+            success: false,
+            error: allBacklog.length > 0
+              ? "No pickable backlog task (all have unmet dependencies or future start dates)"
+              : "No backlog tasks available",
+            totalBacklogItems: allBacklog.length,
+          });
+        }
+      }
+
+      const now = new Date().toISOString();
+      task.status = "in_progress";
+      task.lastActivity = now;
+      task.progress.push("Picked from backlog and started");
+
+      await writeTask(workspaceDir, task);
+      await updateCurrentTaskPointer(workspaceDir, task.id);
+
+      enableAgentManagedMode(agentId);
+
+      const remainingBacklog = await findAllBacklogTasks(workspaceDir);
+
+      return jsonResult({
+        success: true,
+        taskId: task.id,
+        description: task.description,
+        priority: task.priority,
+        pickedFromBacklog: true,
+        startedAt: now,
+        remainingBacklogItems: remainingBacklog.length,
       });
     },
   };

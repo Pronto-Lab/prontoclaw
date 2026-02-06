@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { createAgentToAgentPolicy } from "../agents/tools/sessions-helpers.js";
 import {
+  findPickableBacklogTask,
   findActiveTask,
   findBlockedTasks,
   findPendingTasks,
@@ -255,6 +256,42 @@ function formatContinuationPrompt(task: TaskFile, pendingCount: number): string 
   return lines.join("\n");
 }
 
+
+function formatBacklogPickupPrompt(task: TaskFile): string {
+  const lines = [
+    `[SYSTEM REMINDER - BACKLOG PICKUP]`,
+    ``,
+    `A backlog task is ready to be worked on:`,
+    ``,
+    `**Task ID:** ${task.id}`,
+    `**Description:** ${task.description}`,
+    `**Priority:** ${task.priority}`,
+  ];
+
+  if (task.createdBy && task.createdBy !== task.assignee) {
+    lines.push(`**Requested by:** ${task.createdBy}`);
+  }
+
+  if (task.estimatedEffort) {
+    lines.push(`**Estimated Effort:** ${task.estimatedEffort}`);
+  }
+
+  if (task.dueDate) {
+    lines.push(`**Due Date:** ${task.dueDate}`);
+  }
+
+  if (task.context) {
+    lines.push(``);
+    lines.push(`**Context:** ${task.context}`);
+  }
+
+  lines.push(``);
+  lines.push(`This task has been automatically picked from the backlog. Starting work now.`);
+  lines.push(`Use task_update() to log progress and task_complete() when finished.`);
+
+  return lines.join("\n");
+}
+
 async function checkAgentForContinuation(
   cfg: OpenClawConfig,
   agentId: string,
@@ -274,6 +311,63 @@ async function checkAgentForContinuation(
 
   const activeTask = await findActiveTask(workspaceDir);
   if (!activeTask) {
+    // No active task - check if there's a pickable backlog task
+    const backlogTask = await findPickableBacklogTask(workspaceDir);
+    if (backlogTask) {
+      log.info("Found pickable backlog task, auto-picking", {
+        agentId,
+        taskId: backlogTask.id,
+        priority: backlogTask.priority,
+      });
+
+      // Transition task to in_progress
+      backlogTask.status = "in_progress";
+      backlogTask.lastActivity = new Date().toISOString();
+      backlogTask.progress.push("Auto-picked from backlog by continuation runner");
+      await writeTask(workspaceDir, backlogTask);
+
+      // Send notification to agent
+      const prompt = formatBacklogPickupPrompt(backlogTask);
+
+      try {
+        const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
+        await agentCommand({
+          config: cfg,
+          message: prompt,
+          agentId,
+          accountId,
+          deliver: false,
+          quiet: true,
+        });
+
+        agentStates.set(agentId, {
+          lastContinuationSentMs: nowMs,
+          lastTaskId: backlogTask.id,
+          backoffUntilMs: undefined,
+          consecutiveFailures: 0,
+          lastFailureReason: undefined,
+        });
+
+        log.info("Backlog task picked and agent notified", {
+          agentId,
+          taskId: backlogTask.id,
+        });
+        return true;
+      } catch (error) {
+        // Revert task status on failure
+        backlogTask.status = "backlog";
+        backlogTask.progress.pop();
+        await writeTask(workspaceDir, backlogTask);
+
+        log.warn("Failed to notify agent of backlog pickup", {
+          agentId,
+          taskId: backlogTask.id,
+          error: String(error),
+        });
+        return false;
+      }
+    }
+
     agentStates.delete(agentId);
     return false;
   }

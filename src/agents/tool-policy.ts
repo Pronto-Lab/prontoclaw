@@ -39,6 +39,8 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "task_cancel",
     "task_block",
     "task_resume",
+    "task_backlog_add",
+    "task_pick_backlog",
   ],
   // UI helpers
   "group:ui": ["browser", "canvas"],

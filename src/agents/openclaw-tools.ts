@@ -23,6 +23,8 @@ import {
   createTaskCompleteTool,
   createTaskListTool,
   createTaskResumeTool,
+  createTaskBacklogAddTool,
+  createTaskPickBacklogTool,
   createTaskStartTool,
   createTaskStatusTool,
   createTaskUpdateTool,
@@ -221,6 +223,20 @@ export function createOpenClawTools(options?: {
   });
   if (taskResume) {
     tools.push(taskResume);
+  }
+  const taskBacklogAdd = createTaskBacklogAddTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  if (taskBacklogAdd) {
+    tools.push(taskBacklogAdd);
+  }
+  const taskPickBacklog = createTaskPickBacklogTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  if (taskPickBacklog) {
+    tools.push(taskPickBacklog);
   }
 
   const pluginTools = resolvePluginTools({
