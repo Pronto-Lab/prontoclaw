@@ -37,6 +37,8 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "task_status",
     "task_list",
     "task_cancel",
+    "task_block",
+    "task_resume",
   ],
   // UI helpers
   "group:ui": ["browser", "canvas"],
