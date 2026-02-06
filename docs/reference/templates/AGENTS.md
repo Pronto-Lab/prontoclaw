@@ -168,6 +168,11 @@ For multi-step work, use the task tools to track progress. This helps with conti
 | `task_complete` | Finish task, archive to TASK_HISTORY.md |
 | `task_status`   | Check current task state                |
 | `task_list`     | See all active tasks                    |
+| `task_approve`  | Approve pending_approval task           |
+| `task_block`    | Block task waiting for other agent      |
+| `task_resume`   | Resume blocked task                     |
+| `task_backlog_add` | Add task to backlog for later        |
+| `task_pick_backlog` | Pick and start task from backlog    |
 | `task_cancel`   | Abandon a task without completing       |
 
 ### Task Files

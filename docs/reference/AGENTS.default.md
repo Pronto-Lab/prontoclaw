@@ -90,7 +90,7 @@ For multi-step work, use task tools to track progress:
 2. `task_update "Progress..."` — log each step
 3. `task_complete "Summary"` — finish and archive
 
-**Available:** `task_start`, `task_update`, `task_complete`, `task_status`, `task_list`, `task_cancel`
+**Available:** `task_start`, `task_update`, `task_complete`, `task_status`, `task_list`, `task_cancel`, `task_approve`, `task_block`, `task_resume`, `task_backlog_add`, `task_pick_backlog`
 
 **Files:** `CURRENT_TASK.md` (focus), `tasks/*.md` (details), `TASK_HISTORY.md` (archive)
 
