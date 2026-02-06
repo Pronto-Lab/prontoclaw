@@ -14,6 +14,7 @@
  *   GET /api/agents/:agentId/tasks     - Get tasks for an agent
  *   GET /api/agents/:agentId/current   - Get current task status
  *   GET /api/agents/:agentId/history   - Get task history
+ *   GET /api/agents/:agentId/blocked   - Get blocked tasks with details
  *   GET /api/health                    - Health check
  *
  * WebSocket:
@@ -65,6 +66,7 @@ type TaskStatus =
   | "completed"
   | "cancelled";
 type TaskPriority = "low" | "medium" | "high" | "urgent";
+type EscalationState = "none" | "requesting" | "escalated" | "failed";
 
 interface TaskFile {
   id: string;
@@ -76,6 +78,14 @@ interface TaskFile {
   created: string;
   lastActivity: string;
   progress: string[];
+  // Blocked task fields
+  blockedReason?: string;
+  unblockedBy?: string[];
+  unblockedAction?: string;
+  unblockRequestCount?: number;
+  escalationState?: EscalationState;
+  lastUnblockerIndex?: number;
+  lastUnblockRequestAt?: string;
 }
 
 interface AgentInfo {
@@ -131,6 +141,14 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let created = "";
   let lastActivity = "";
   const progress: string[] = [];
+  // Blocked task fields
+  let blockedReason: string | undefined;
+  let unblockedBy: string[] | undefined;
+  let unblockedAction: string | undefined;
+  let unblockRequestCount: number | undefined;
+  let escalationState: EscalationState | undefined;
+  let lastUnblockerIndex: number | undefined;
+  let lastUnblockRequestAt: string | undefined;
 
   let currentSection = "";
 
@@ -171,6 +189,35 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (sourceMatch) {
         source = sourceMatch[1];
       }
+      // Blocked task field parsers
+      const blockedReasonMatch = trimmed.match(/^-?\s*\*\*Blocked Reason:\*\*\s*(.+)$/);
+      if (blockedReasonMatch) {
+        blockedReason = blockedReasonMatch[1];
+      }
+      const unblockedByMatch = trimmed.match(/^-?\s*\*\*Unblocked By:\*\*\s*(.+)$/);
+      if (unblockedByMatch) {
+        unblockedBy = unblockedByMatch[1].split(/,\s*/).map(s => s.trim()).filter(Boolean);
+      }
+      const unblockedActionMatch = trimmed.match(/^-?\s*\*\*Unblocked Action:\*\*\s*(.+)$/);
+      if (unblockedActionMatch) {
+        unblockedAction = unblockedActionMatch[1];
+      }
+      const unblockRequestCountMatch = trimmed.match(/^-?\s*\*\*Unblock Request Count:\*\*\s*(\d+)$/);
+      if (unblockRequestCountMatch) {
+        unblockRequestCount = parseInt(unblockRequestCountMatch[1], 10);
+      }
+      const escalationStateMatch = trimmed.match(/^-?\s*\*\*Escalation State:\*\*\s*(.+)$/);
+      if (escalationStateMatch) {
+        escalationState = escalationStateMatch[1] as EscalationState;
+      }
+      const lastUnblockerIndexMatch = trimmed.match(/^-?\s*\*\*Last Unblocker Index:\*\*\s*(-?\d+)$/);
+      if (lastUnblockerIndexMatch) {
+        lastUnblockerIndex = parseInt(lastUnblockerIndexMatch[1], 10);
+      }
+      const lastUnblockRequestAtMatch = trimmed.match(/^-?\s*\*\*Last Unblock Request At:\*\*\s*(.+)$/);
+      if (lastUnblockRequestAtMatch) {
+        lastUnblockRequestAt = lastUnblockRequestAtMatch[1];
+      }
     } else if (currentSection === "description") {
       description = trimmed;
     } else if (currentSection === "context") {
@@ -194,6 +241,13 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     created: created || new Date().toISOString(),
     lastActivity: lastActivity || created || new Date().toISOString(),
     progress,
+    blockedReason,
+    unblockedBy,
+    unblockedAction,
+    unblockRequestCount,
+    escalationState,
+    lastUnblockerIndex,
+    lastUnblockRequestAt,
   };
 }
 
@@ -450,6 +504,24 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
+    if (action === "blocked") {
+      const tasks = await listTasks(agentId, "blocked");
+      const blockedDetails = tasks.map(t => ({
+        id: t.id,
+        description: t.description,
+        blockedReason: t.blockedReason,
+        unblockedBy: t.unblockedBy,
+        unblockedAction: t.unblockedAction,
+        unblockRequestCount: t.unblockRequestCount,
+        escalationState: t.escalationState,
+        lastUnblockerIndex: t.lastUnblockerIndex,
+        lastUnblockRequestAt: t.lastUnblockRequestAt,
+        lastActivity: t.lastActivity,
+      }));
+      jsonResponse(res, { agentId, blockedTasks: blockedDetails, count: blockedDetails.length });
+      return;
+    }
+
     errorResponse(res, `Unknown action: ${action}`, 404);
     return;
   }
@@ -458,7 +530,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (pathname === "/" || pathname === "/api") {
     jsonResponse(res, {
       name: "Task Monitor API",
-      version: "1.1.0",
+      version: "1.2.0",
       endpoints: [
         "GET /api/health",
         "GET /api/agents",
@@ -466,6 +538,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents/:agentId/tasks",
         "GET /api/agents/:agentId/tasks?status=in_progress",
         "GET /api/agents/:agentId/current",
+        "GET /api/agents/:agentId/blocked",
         "GET /api/agents/:agentId/history",
         "GET /api/agents/:agentId/history?month=2026-02",
         "WS /ws",
@@ -616,6 +689,7 @@ async function main(): Promise<void> {
     GET /api/agents              - List all agents
     GET /api/agents/:id/tasks    - Get agent tasks
     GET /api/agents/:id/current  - Get current task
+    GET /api/agents/:id/blocked  - Get blocked tasks
     GET /api/agents/:id/history  - Get task history
 
   Press Ctrl+C to stop
