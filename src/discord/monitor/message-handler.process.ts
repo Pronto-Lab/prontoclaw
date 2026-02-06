@@ -32,7 +32,7 @@ import { buildUntrustedChannelMetadata } from "../../security/channel-metadata.j
 import { truncateUtf16Safe } from "../../utils.js";
 import { markDmResponded, resolveDmRetryConfig } from "../dm-retry/index.js";
 import { reactMessageDiscord, removeReactionDiscord } from "../send.js";
-import { normalizeDiscordSlug } from "./allow-list.js";
+import { normalizeDiscordSlug, resolveDiscordOwnerAllowFrom } from "./allow-list.js";
 import { resolveTimestampMs } from "./format.js";
 import {
   buildDiscordMediaPayload,
@@ -158,6 +158,11 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   );
   const groupSystemPrompt =
     systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
+  const ownerAllowFrom = resolveDiscordOwnerAllowFrom({
+    channelConfig,
+    guildInfo,
+    sender: { id: sender.id, name: sender.name, tag: sender.tag },
+  });
   const storePath = resolveStorePath(cfg.session?.store, {
     agentId: route.agentId,
   });
@@ -294,6 +299,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     UntrustedContext: untrustedChannelMetadata ? [untrustedChannelMetadata] : undefined,
     GroupSystemPrompt: isGuildMessage ? groupSystemPrompt : undefined,
     GroupSpace: isGuildMessage ? (guildInfo?.id ?? guildSlug) || undefined : undefined,
+    OwnerAllowFrom: ownerAllowFrom,
     Provider: "discord" as const,
     Surface: "discord" as const,
     WasMentioned: effectiveWasMentioned,
