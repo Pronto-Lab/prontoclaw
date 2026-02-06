@@ -86,6 +86,7 @@ interface TaskFile {
   escalationState?: EscalationState;
   lastUnblockerIndex?: number;
   lastUnblockRequestAt?: string;
+  unblockRequestFailures?: number;
 }
 
 interface AgentInfo {
@@ -149,6 +150,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let escalationState: EscalationState | undefined;
   let lastUnblockerIndex: number | undefined;
   let lastUnblockRequestAt: string | undefined;
+  let unblockRequestFailures: number | undefined;
 
   let currentSection = "";
 
@@ -228,6 +230,24 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (trimmed.startsWith("- ")) {
         progress.push(trimmed.slice(2));
       }
+    } else if (currentSection === "blocking") {
+      // Parse JSON from code block in ## Blocking section
+      // Format: ```json\n{...}\n```
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const blockingData = JSON.parse(trimmed);
+          if (blockingData.blockedReason) blockedReason = blockingData.blockedReason;
+          if (blockingData.unblockedBy) unblockedBy = blockingData.unblockedBy;
+          if (blockingData.unblockedAction) unblockedAction = blockingData.unblockedAction;
+          if (typeof blockingData.unblockRequestCount === "number") unblockRequestCount = blockingData.unblockRequestCount;
+          if (blockingData.escalationState) escalationState = blockingData.escalationState;
+          if (typeof blockingData.lastUnblockerIndex === "number") lastUnblockerIndex = blockingData.lastUnblockerIndex;
+          if (blockingData.lastUnblockRequestAt) lastUnblockRequestAt = blockingData.lastUnblockRequestAt;
+          if (typeof blockingData.unblockRequestFailures === "number") unblockRequestFailures = blockingData.unblockRequestFailures;
+        } catch {
+          // Invalid JSON, skip
+        }
+      }
     }
   }
 
@@ -248,6 +268,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     escalationState,
     lastUnblockerIndex,
     lastUnblockRequestAt,
+    unblockRequestFailures,
   };
 }
 
@@ -516,6 +537,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         escalationState: t.escalationState,
         lastUnblockerIndex: t.lastUnblockerIndex,
         lastUnblockRequestAt: t.lastUnblockRequestAt,
+        unblockRequestFailures: t.unblockRequestFailures,
         lastActivity: t.lastActivity,
       }));
       jsonResponse(res, { agentId, blockedTasks: blockedDetails, count: blockedDetails.length });

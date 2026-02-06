@@ -148,7 +148,7 @@ User → 루다: "재시작해줘"
 
 ### 6. Task Management MCP Tools ✅
 
-**Purpose:** Agent-managed task tracking with 6 MCP tools for explicit task lifecycle control.
+**Purpose:** Agent-managed task tracking with 9 MCP tools for explicit task lifecycle control.
 
 **Tools:**
 
@@ -160,12 +160,15 @@ User → 루다: "재시작해줘"
 | `task_status`   | Get task status (specific or summary)                |
 | `task_list`     | List all tasks with optional status filter           |
 | `task_cancel`   | Cancel a task with optional reason                   |
+| `task_approve`  | Approve a pending_approval task                      |
+| `task_block`    | Block task until another agent helps (see §9)        |
+| `task_resume`   | Resume a blocked task                                |
 
 **Files:**
 
 | File                            | Purpose                        |
 | ------------------------------- | ------------------------------ |
-| `src/agents/tools/task-tool.ts` | 6 MCP tool implementations     |
+| `src/agents/tools/task-tool.ts` | 9 MCP tool implementations     |
 | `src/agents/openclaw-tools.ts`  | Tool registration              |
 | `src/agents/tool-policy.ts`     | `group:task` policy group      |
 | `src/infra/task-tracker.ts`     | Agent-managed mode integration |
@@ -268,6 +271,7 @@ TASK_MONITOR_PORT=8080 bun scripts/task-monitor-server.ts
 | `GET /api/agents/:id/tasks`   | List tasks (optional `?status=`) |
 | `GET /api/agents/:id/current` | Current task status              |
 | `GET /api/agents/:id/history` | Task history                     |
+| `GET /api/agents/:id/blocked` | Blocked tasks with metadata      |
 
 **WebSocket:**
 
@@ -509,3 +513,125 @@ If a feature is generally useful, consider submitting a PR to upstream:
 ---
 
 _Last updated: 2026-02-04_
+
+---
+
+### 9. Task Blocking System (Agent-to-Agent Coordination) ✅
+
+**Purpose:** Allow agents to block on tasks that require another agent's help, with automatic unblock request system.
+
+**Tools:**
+
+| Tool          | Description                                              |
+| ------------- | -------------------------------------------------------- |
+| `task_block`  | Block current task, specify who can unblock and why      |
+| `task_resume` | Resume a blocked task (used by unblocking agent)         |
+
+**Files:**
+
+| File                                         | Purpose                                |
+| -------------------------------------------- | -------------------------------------- |
+| `src/agents/tools/task-tool.ts`              | task_block/task_resume implementations |
+| `src/infra/task-continuation-runner.ts`      | Automatic unblock request scheduler    |
+| `src/infra/task-lock.ts`                     | File-based locking for task operations |
+| `src/agents/tool-policy.ts`                  | group:task includes block/resume tools |
+
+**How it works:**
+
+1. Agent A calls `task_block({ reason: "Need code review", unblock_by: ["eden"], unblock_action: "Review PR #123" })`
+2. Task status changes to `blocked`, blocking metadata saved in `## Blocking` section as JSON
+3. Task continuation runner periodically checks blocked tasks
+4. Sends unblock request to next agent in `unblock_by` list (round-robin)
+5. After 3 failed attempts, sets `escalationState: "failed"`
+6. Unblocking agent can call `task_resume()` to resume the task
+
+**Task File Format (Blocked Task):**
+
+```markdown
+# Task: task_m1abc_xyz1
+
+## Metadata
+- **Status:** blocked
+- **Priority:** high
+- **Created:** 2026-02-06T10:00:00.000Z
+
+## Description
+Implement new feature X
+
+## Progress
+- Task started
+- [BLOCKED] Need code review from eden
+- [UNBLOCK REQUEST 1/3] Sent to eden
+
+## Last Activity
+2026-02-06T10:30:00.000Z
+
+## Blocking
+\`\`\`json
+{"blockedReason":"Need code review from eden","unblockedBy":["eden"],"unblockedAction":"Review PR #123","unblockRequestCount":1,"lastUnblockerIndex":0,"escalationState":"requesting"}
+\`\`\`
+
+---
+*Managed by task tools*
+```
+
+**Blocking Fields:**
+
+| Field                   | Type     | Description                                          |
+| ----------------------- | -------- | ---------------------------------------------------- |
+| `blockedReason`         | string   | Why the task is blocked                              |
+| `unblockedBy`           | string[] | Agent IDs who can help unblock                       |
+| `unblockedAction`       | string?  | What the unblocking agent should do                  |
+| `unblockRequestCount`   | number   | How many unblock requests have been sent             |
+| `lastUnblockerIndex`    | number   | Index in unblockedBy for round-robin                 |
+| `lastUnblockRequestAt`  | string   | ISO timestamp of last request                        |
+| `escalationState`       | string   | "none" | "requesting" | "escalated" | "failed"      |
+| `unblockRequestFailures`| number   | Count of consecutive agent command failures          |
+
+**Automatic Unblock Requests:**
+
+- Task continuation runner checks blocked tasks every interval
+- Sends unblock request to agents in `unblock_by` list using round-robin
+- Maximum 3 requests per agent before escalation
+- Failed agent commands increment `unblockRequestFailures`
+- After 3 consecutive failures, escalation state becomes "failed"
+
+**API Endpoints for Blocked Tasks:**
+
+| Endpoint                       | Description                           |
+| ------------------------------ | ------------------------------------- |
+| `GET /api/agents/:id/blocked`  | Get blocked tasks with full metadata  |
+
+**Example Response:**
+
+```json
+{
+  "agentId": "main",
+  "blockedTasks": [
+    {
+      "id": "task_m1abc_xyz1",
+      "description": "Implement new feature X",
+      "blockedReason": "Need code review from eden",
+      "unblockedBy": ["eden"],
+      "unblockedAction": "Review PR #123",
+      "unblockRequestCount": 1,
+      "escalationState": "requesting",
+      "lastUnblockerIndex": 0,
+      "lastUnblockRequestAt": "2026-02-06T10:30:00.000Z",
+      "unblockRequestFailures": 0,
+      "lastActivity": "2026-02-06T10:30:00.000Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+**Validation:**
+
+- Cannot block on yourself (self-reference check)
+- Agent IDs must exist in system
+- `unblock_by` must be non-empty array
+- Only blocked tasks can be resumed
+
+---
+
