@@ -26,7 +26,7 @@ export type TaskStatus =
   | "completed"
   | "cancelled";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
-export type EscalationState = 'none' | 'requesting' | 'escalated' | 'failed';
+export type EscalationState = "none" | "requesting" | "escalated" | "failed";
 export interface TaskFile {
   id: string;
   status: TaskStatus;
@@ -42,6 +42,7 @@ export interface TaskFile {
   unblockedBy?: string[];
   unblockedAction?: string;
   unblockRequestCount?: number;
+  lastUnblockerIndex?: number;
   escalationState?: EscalationState;
 }
 
@@ -224,7 +225,7 @@ async function readTask(workspaceDir: string, taskId: string): Promise<TaskFile 
   }
 }
 
-async function writeTask(workspaceDir: string, task: TaskFile): Promise<void> {
+export async function writeTask(workspaceDir: string, task: TaskFile): Promise<void> {
   const tasksDir = await getTasksDir(workspaceDir);
   const filePath = path.join(tasksDir, `${task.id}.md`);
   const content = formatTaskFileMd(task);
@@ -290,6 +291,10 @@ export async function findPendingTasks(workspaceDir: string): Promise<TaskFile[]
 
 export async function findPendingApprovalTasks(workspaceDir: string): Promise<TaskFile[]> {
   return listTasks(workspaceDir, "pending_approval");
+}
+
+export async function findBlockedTasks(workspaceDir: string): Promise<TaskFile[]> {
+  return listTasks(workspaceDir, "blocked");
 }
 
 async function appendToHistory(workspaceDir: string, entry: string): Promise<string> {

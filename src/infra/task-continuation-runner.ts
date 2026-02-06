@@ -1,6 +1,12 @@
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
-import { findActiveTask, findBlockedTasks, findPendingTasks, writeTask, type TaskFile } from "../agents/tools/task-tool.js";
+import {
+  findActiveTask,
+  findBlockedTasks,
+  findPendingTasks,
+  writeTask,
+  type TaskFile,
+} from "../agents/tools/task-tool.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import { agentCommand } from "../commands/agent.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -19,11 +25,11 @@ const UNBLOCK_COOLDOWN_MS = 30 * 60 * 1000;
 
 // Failure-based backoff configuration
 const BACKOFF_MS = {
-  rate_limit: 1 * 60 * 1000,     // 1 minute default (may be overridden by quota reset time)
-  billing: 60 * 60 * 1000,       // 1 hour
-  timeout: 1 * 60 * 1000,        // 1 minute
+  rate_limit: 1 * 60 * 1000, // 1 minute default (may be overridden by quota reset time)
+  billing: 60 * 60 * 1000, // 1 hour
+  timeout: 1 * 60 * 1000, // 1 minute
   context_overflow: 30 * 60 * 1000, // 30 minutes (needs manual intervention)
-  unknown: 5 * 60 * 1000,        // 5 minutes (default)
+  unknown: 5 * 60 * 1000, // 5 minutes (default)
 } as const;
 
 // Minimum backoff for rate limits to avoid hammering the API
@@ -91,11 +97,9 @@ function parseFailureReason(error: unknown): ParsedFailure {
   const message = error instanceof Error ? error.message : String(error);
 
   // Rate limit / quota exhaustion
-  if (
-    /rate.?limit|quota|429|too many requests|all models failed.*rate/i.test(message)
-  ) {
+  if (/rate.?limit|quota|429|too many requests|all models failed.*rate/i.test(message)) {
     const suggestedBackoffMs = parseQuotaResetTimeMs(message);
-    return { 
+    return {
       reason: "rate_limit",
       suggestedBackoffMs: suggestedBackoffMs !== null ? suggestedBackoffMs : undefined,
     };
@@ -124,7 +128,7 @@ function parseFailureReason(error: unknown): ParsedFailure {
  * Uses exponential backoff with a cap.
  */
 function resolveBackoffMs(
-  reason: FailureReason, 
+  reason: FailureReason,
   consecutiveFailures: number,
   suggestedBackoffMs?: number,
 ): number {
@@ -176,10 +180,7 @@ function resolveTaskContinuationConfig(cfg: OpenClawConfig): {
   return { enabled, checkIntervalMs, idleThresholdMs };
 }
 
-function formatUnblockRequestPrompt(
-  blockedAgentId: string,
-  task: TaskFile,
-): string {
+function formatUnblockRequestPrompt(blockedAgentId: string, task: TaskFile): string {
   const lines = [
     `[SYSTEM - UNBLOCK REQUEST]`,
     ``,
@@ -201,7 +202,9 @@ function formatUnblockRequestPrompt(
 
   lines.push(``);
   lines.push(`Please help unblock this task by taking the necessary action.`);
-  lines.push(`After helping, you can notify the blocked agent or let them know the blocker is resolved.`);
+  lines.push(
+    `After helping, you can notify the blocked agent or let them know the blocker is resolved.`,
+  );
 
   return lines.join("\n");
 }
@@ -281,7 +284,7 @@ async function checkAgentForContinuation(
   }
 
   const state = agentStates.get(agentId);
-  
+
   // Check failure-based backoff first
   if (state?.backoffUntilMs && nowMs < state.backoffUntilMs) {
     const remainingMs = state.backoffUntilMs - nowMs;
@@ -299,7 +302,11 @@ async function checkAgentForContinuation(
   // Check regular cooldown (only for same task, prevents spam on success)
   if (state) {
     const sinceLast = nowMs - state.lastContinuationSentMs;
-    if (sinceLast < CONTINUATION_COOLDOWN_MS && state.lastTaskId === activeTask.id && !state.backoffUntilMs) {
+    if (
+      sinceLast < CONTINUATION_COOLDOWN_MS &&
+      state.lastTaskId === activeTask.id &&
+      !state.backoffUntilMs
+    ) {
       log.debug("Continuation cooldown active", {
         agentId,
         taskId: activeTask.id,
@@ -386,8 +393,12 @@ async function checkBlockedTasksForUnblock(
     const requestCount = task.unblockRequestCount ?? 0;
 
     // Set escalationState to 'requesting' on first request
-    if (requestCount === 0 || task.escalationState === undefined || task.escalationState === 'none') {
-      task.escalationState = 'requesting';
+    if (
+      requestCount === 0 ||
+      task.escalationState === undefined ||
+      task.escalationState === "none"
+    ) {
+      task.escalationState = "requesting";
     }
     if (requestCount >= MAX_UNBLOCK_REQUESTS) {
       log.debug("Max unblock requests reached", {
@@ -395,7 +406,7 @@ async function checkBlockedTasksForUnblock(
         taskId: task.id,
         requestCount,
       });
-      task.escalationState = 'failed';
+      task.escalationState = "failed";
       await writeTask(workspaceDir, task);
       continue;
     }
@@ -412,7 +423,11 @@ async function checkBlockedTasksForUnblock(
       continue;
     }
 
-    const targetAgentId = task.unblockedBy[0];
+    // Rotation logic - cycle through unblockedBy array
+    const clampedLastIndex = Math.min(task.lastUnblockerIndex ?? -1, task.unblockedBy.length - 1);
+    const nextIndex = (clampedLastIndex + 1) % task.unblockedBy.length;
+    const targetAgentId = task.unblockedBy[nextIndex];
+    task.lastUnblockerIndex = nextIndex;
     const prompt = formatUnblockRequestPrompt(agentId, task);
 
     log.info("Sending unblock request", {
@@ -436,10 +451,12 @@ async function checkBlockedTasksForUnblock(
       task.unblockRequestCount = requestCount + 1;
       task.lastActivity = new Date().toISOString();
       // Keep escalationState as 'requesting' for subsequent attempts
-      if (task.escalationState !== 'requesting') {
-        task.escalationState = 'requesting';
+      if (task.escalationState !== "requesting") {
+        task.escalationState = "requesting";
       }
-      task.progress.push(`[UNBLOCK REQUEST ${task.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`);
+      task.progress.push(
+        `[UNBLOCK REQUEST ${task.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`,
+      );
       await writeTask(workspaceDir, task);
 
       log.info("Unblock request sent", {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskFile } from "../agents/tools/task-tool.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { startTaskContinuationRunner, __resetAgentStates } from "./task-continuation-runner.js";
-import type { TaskFile } from "../agents/tools/task-tool.js";
 
 vi.mock("../agents/tools/task-tool.js", () => ({
   findActiveTask: vi.fn(),
@@ -226,6 +226,307 @@ describe("Task Unblock with escalationState", () => {
       expect.objectContaining({
         escalationState: "requesting",
         unblockRequestCount: 1,
+      }),
+    );
+
+    runner.stop();
+  });
+});
+
+describe("Task Unblock Rotation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-05T10:00:00Z"));
+    vi.clearAllMocks();
+    __resetAgentStates();
+    vi.mocked(findBlockedTasks).mockResolvedValue([]);
+    vi.mocked(agentCommand).mockResolvedValue({
+      text: "ok",
+      sessionId: "test",
+      usage: { inputTokens: 0, outputTokens: 0 },
+    });
+    vi.mocked(getQueueSize).mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("rotates through unblockedBy array A→B→C→A", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a", "agent_b", "agent_c"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {},
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+            { id: "agent_b", name: "Agent B" },
+            { id: "agent_c", name: "Agent C" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    // First request - should go to agent_a (index 0)
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_a",
+      }),
+    );
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        lastUnblockerIndex: 0,
+        unblockRequestCount: 1,
+      }),
+    );
+
+    // Update task for next iteration
+    blockedTask.unblockRequestCount = 1;
+    blockedTask.lastUnblockerIndex = 0;
+    blockedTask.lastActivity = "2026-02-05T10:31:00Z";
+    blockedTask.escalationState = "requesting";
+    vi.clearAllMocks();
+
+    // Second request - should go to agent_b (index 1)
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_b",
+      }),
+    );
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        lastUnblockerIndex: 1,
+        unblockRequestCount: 2,
+      }),
+    );
+
+    // Update task for next iteration
+    blockedTask.unblockRequestCount = 2;
+    blockedTask.lastUnblockerIndex = 1;
+    blockedTask.lastActivity = "2026-02-05T11:02:00Z";
+    vi.clearAllMocks();
+
+    // Third request - should go to agent_c (index 2)
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_c",
+      }),
+    );
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        lastUnblockerIndex: 2,
+        unblockRequestCount: 3,
+      }),
+    );
+
+    runner.stop();
+  });
+
+  it("persists lastUnblockerIndex to TaskFile", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a", "agent_b"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {},
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+            { id: "agent_b", name: "Agent B" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        lastUnblockerIndex: 0,
+      }),
+    );
+
+    runner.stop();
+  });
+
+  it("starts at index 0 when lastUnblockerIndex is undefined", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a", "agent_b", "agent_c"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {},
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+            { id: "agent_b", name: "Agent B" },
+            { id: "agent_c", name: "Agent C" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_a",
+      }),
+    );
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        lastUnblockerIndex: 0,
+      }),
+    );
+
+    runner.stop();
+  });
+
+  it("clamps index if unblockedBy array shrinks", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+      lastUnblockerIndex: 5,
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {},
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_a",
+      }),
+    );
+    expect(writeTask).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        lastUnblockerIndex: 0,
+      }),
+    );
+
+    runner.stop();
+  });
+
+  it("always uses the same element for single-element array", async () => {
+    const blockedTask: TaskFile = {
+      id: "task_123",
+      status: "blocked",
+      priority: "high",
+      description: "Test task",
+      created: "2026-02-05T10:00:00Z",
+      lastActivity: "2026-02-05T10:00:00Z",
+      progress: ["[BLOCKED] Waiting for help"],
+      blockedReason: "Needs help",
+      unblockedBy: ["agent_a"],
+      unblockRequestCount: 0,
+      escalationState: "none",
+    };
+
+    vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+
+    const runner = startTaskContinuationRunner({
+      cfg: {
+        agents: {
+          defaults: {},
+          list: [
+            { id: "main", name: "Main Agent" },
+            { id: "agent_a", name: "Agent A" },
+          ],
+        },
+      } as OpenClawConfig,
+    });
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_a",
+      }),
+    );
+
+    blockedTask.unblockRequestCount = 1;
+    blockedTask.lastUnblockerIndex = 0;
+    blockedTask.lastActivity = "2026-02-05T10:31:00Z";
+    blockedTask.escalationState = "requesting";
+    vi.clearAllMocks();
+
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+    expect(agentCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "agent_a",
       }),
     );
 
