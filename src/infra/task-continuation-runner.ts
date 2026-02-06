@@ -6,6 +6,7 @@ import {
   findBlockedTasks,
   findPendingTasks,
   writeTask,
+  readTask,
   type TaskFile,
 } from "../agents/tools/task-tool.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
@@ -24,6 +25,9 @@ const DEFAULT_IDLE_THRESHOLD_MS = 3 * 60 * 1000;
 const CONTINUATION_COOLDOWN_MS = 5 * 60 * 1000;
 const MAX_UNBLOCK_REQUESTS = 3;
 const UNBLOCK_COOLDOWN_MS = 30 * 60 * 1000;
+const MAX_UNBLOCK_FAILURES = 3;
+const CLEANUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const STATE_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Failure-based backoff configuration
 const BACKOFF_MS = {
@@ -69,6 +73,16 @@ type AgentContinuationState = {
 };
 
 const agentStates = new Map<string, AgentContinuationState>();
+
+function cleanupStaleAgentStates(): void {
+  const now = Date.now();
+  for (const [key, state] of agentStates) {
+    if (now - state.lastContinuationSentMs > STATE_STALE_MS) {
+      agentStates.delete(key);
+      log.debug("Cleaned up stale agent state", { agentId: key });
+    }
+  }
+}
 
 /** @internal - For testing only. Clears all agent continuation state. */
 export function __resetAgentStates(): void {
@@ -397,38 +411,48 @@ async function checkBlockedTasksForUnblock(
     }
 
     try {
-    if (!task.unblockedBy || task.unblockedBy.length === 0) {
+      // Re-read task after lock to verify state (race condition fix)
+      const freshTask = await readTask(workspaceDir, task.id);
+      if (!freshTask || freshTask.status !== "blocked") {
+        log.debug("Task state changed after lock acquired, skipping", {
+          taskId: freshTask.id,
+          newStatus: freshTask?.status ?? "deleted",
+        });
+        continue;
+      }
+
+    if (!freshTask.unblockedBy || freshTask.unblockedBy.length === 0) {
       continue;
     }
 
-    const requestCount = task.unblockRequestCount ?? 0;
+    const requestCount = freshTask.unblockRequestCount ?? 0;
 
     // Set escalationState to 'requesting' on first request
     if (
       requestCount === 0 ||
-      task.escalationState === undefined ||
-      task.escalationState === "none"
+      freshTask.escalationState === undefined ||
+      freshTask.escalationState === "none"
     ) {
-      task.escalationState = "requesting";
+      freshTask.escalationState = "requesting";
     }
     if (requestCount >= MAX_UNBLOCK_REQUESTS) {
       log.debug("Max unblock requests reached", {
         blockedAgentId: agentId,
-        taskId: task.id,
+        taskId: freshTask.id,
         requestCount,
       });
-      task.escalationState = "failed";
-      await writeTask(workspaceDir, task);
+      freshTask.escalationState = "failed";
+      await writeTask(workspaceDir, freshTask);
       continue;
     }
 
-    const lastRequestAt = task.lastUnblockRequestAt;
+    const lastRequestAt = freshTask.lastUnblockRequestAt;
     if (lastRequestAt) {
       const lastRequestMs = new Date(lastRequestAt).getTime();
       if (!isNaN(lastRequestMs) && nowMs - lastRequestMs < UNBLOCK_COOLDOWN_MS) {
         log.debug("Unblock cooldown active", {
           blockedAgentId: agentId,
-          taskId: task.id,
+          taskId: freshTask.id,
           sinceLast: nowMs - lastRequestMs,
           cooldown: UNBLOCK_COOLDOWN_MS,
         });
@@ -437,39 +461,39 @@ async function checkBlockedTasksForUnblock(
     }
 
     // Rotation logic - cycle through unblockedBy array
-    const lastIndex = task.lastUnblockerIndex ?? -1;
-    const clampedLastIndex = Math.max(-1, Math.min(lastIndex, task.unblockedBy.length - 1));
-    const nextIndex = (clampedLastIndex + 1) % task.unblockedBy.length;
-    const targetAgentId = task.unblockedBy[nextIndex];
-    task.lastUnblockerIndex = nextIndex;
+    const lastIndex = freshTask.lastUnblockerIndex ?? -1;
+    const clampedLastIndex = Math.max(-1, Math.min(lastIndex, freshTask.unblockedBy.length - 1));
+    const nextIndex = (clampedLastIndex + 1) % freshTask.unblockedBy.length;
+    const targetAgentId = freshTask.unblockedBy[nextIndex];
+    freshTask.lastUnblockerIndex = nextIndex;
 
     // Check A2A policy before sending request
     if (!a2aPolicy.isAllowed(agentId, targetAgentId)) {
       log.debug("A2A policy denied unblock request", {
         blockedAgentId: agentId,
         targetAgentId,
-        taskId: task.id,
+        taskId: freshTask.id,
       });
 
       // Check if all unblockers are denied by policy
-      const allDenied = task.unblockedBy.every(
+      const allDenied = freshTask.unblockedBy.every(
         (unblocker) => !a2aPolicy.isAllowed(agentId, unblocker),
       );
 
       if (allDenied) {
-        task.escalationState = "failed";
+        freshTask.escalationState = "failed";
       }
 
-      await writeTask(workspaceDir, task);
+      await writeTask(workspaceDir, freshTask);
       continue;
     }
 
-    const prompt = formatUnblockRequestPrompt(agentId, task);
+    const prompt = formatUnblockRequestPrompt(agentId, freshTask);
 
     log.info("Sending unblock request", {
       blockedAgentId: agentId,
       targetAgentId,
-      taskId: task.id,
+      taskId: freshTask.id,
       requestCount: requestCount + 1,
     });
 
@@ -484,35 +508,51 @@ async function checkBlockedTasksForUnblock(
         quiet: true,
       });
 
-      task.lastUnblockRequestAt = new Date(nowMs).toISOString();
-      task.unblockRequestCount = requestCount + 1;
-      task.lastActivity = new Date().toISOString();
+      freshTask.lastUnblockRequestAt = new Date(nowMs).toISOString();
+      freshTask.unblockRequestCount = requestCount + 1;
+      freshTask.lastActivity = new Date().toISOString();
       // Keep escalationState as 'requesting' for subsequent attempts
-      if (task.escalationState !== "requesting") {
-        task.escalationState = "requesting";
+      if (freshTask.escalationState !== "requesting") {
+        freshTask.escalationState = "requesting";
       }
-      task.progress.push(
-        `[UNBLOCK REQUEST ${task.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`,
+      freshTask.progress.push(
+        `[UNBLOCK REQUEST ${freshTask.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`,
       );
-      await writeTask(workspaceDir, task);
+      freshTask.unblockRequestFailures = 0;
+      await writeTask(workspaceDir, freshTask);
 
       log.info("Unblock request sent", {
         blockedAgentId: agentId,
         targetAgentId,
-        taskId: task.id,
-        requestCount: task.unblockRequestCount,
+        taskId: freshTask.id,
+        requestCount: freshTask.unblockRequestCount,
       });
     } catch (error) {
+      // Track consecutive failures
+      freshTask.unblockRequestFailures = (freshTask.unblockRequestFailures ?? 0) + 1;
+      
+      if (freshTask.unblockRequestFailures >= MAX_UNBLOCK_FAILURES) {
+        freshTask.escalationState = "failed";
+        log.warn("Max unblock request failures reached, marking escalation as failed", {
+          blockedAgentId: agentId,
+          taskId: freshTask.id,
+          failures: freshTask.unblockRequestFailures,
+        });
+      }
+      
+      await writeTask(workspaceDir, freshTask);
+      
       log.warn("Failed to send unblock request", {
         blockedAgentId: agentId,
         targetAgentId,
-        taskId: task.id,
+        taskId: freshTask.id,
         error: String(error),
+        consecutiveFailures: freshTask.unblockRequestFailures,
       });
     }
     } catch (error) {
       log.error("Failed to process blocked task", {
-        taskId: task.id,
+        taskId: freshTask.id,
         error: String(error),
       });
       // Continue to next task
@@ -550,6 +590,7 @@ async function runContinuationCheck(cfg: OpenClawConfig, idleThresholdMs: number
 export function startTaskContinuationRunner(opts: { cfg: OpenClawConfig }): TaskContinuationRunner {
   let currentCfg = opts.cfg;
   let timer: NodeJS.Timeout | null = null;
+  let cleanupTimer: NodeJS.Timeout | null = null;
   let stopped = false;
 
   const scheduleNext = () => {
@@ -581,6 +622,8 @@ export function startTaskContinuationRunner(opts: { cfg: OpenClawConfig }): Task
   if (enabled) {
     log.info("Task continuation runner started");
     scheduleNext();
+    cleanupTimer = setInterval(cleanupStaleAgentStates, CLEANUP_INTERVAL_MS);
+    cleanupTimer.unref?.();
   }
 
   return {
@@ -590,6 +633,11 @@ export function startTaskContinuationRunner(opts: { cfg: OpenClawConfig }): Task
         clearTimeout(timer);
         timer = null;
       }
+      if (cleanupTimer) {
+        clearInterval(cleanupTimer);
+        cleanupTimer = null;
+      }
+      agentStates.clear();
       log.info("Task continuation runner stopped");
     },
 

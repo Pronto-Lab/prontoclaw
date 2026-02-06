@@ -45,6 +45,7 @@ export interface TaskFile {
   lastUnblockerIndex?: number;
   lastUnblockRequestAt?: string;
   escalationState?: EscalationState;
+  unblockRequestFailures?: number;
 }
 
 const TaskStartSchema = Type.Object({
@@ -121,7 +122,24 @@ function formatTaskFileMd(task: TaskFile): string {
     lines.push(`- ${item}`);
   }
 
-  lines.push("", "## Last Activity", task.lastActivity, "", "---", "*Managed by task tools*");
+  lines.push("", "## Last Activity", task.lastActivity, "");
+
+  // Serialize blocking fields if present
+  if (task.status === "blocked" || task.blockedReason || task.unblockedBy) {
+    const blockingData = {
+      blockedReason: task.blockedReason,
+      unblockedBy: task.unblockedBy,
+      unblockedAction: task.unblockedAction,
+      unblockRequestCount: task.unblockRequestCount,
+      lastUnblockerIndex: task.lastUnblockerIndex,
+      lastUnblockRequestAt: task.lastUnblockRequestAt,
+      escalationState: task.escalationState,
+      unblockRequestFailures: task.unblockRequestFailures,
+    };
+    lines.push("## Blocking", "```json", JSON.stringify(blockingData), "```", "");
+  }
+
+  lines.push("---", "*Managed by task tools*");
 
   return lines.join("\n");
 }
@@ -143,6 +161,14 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let created = "";
   let lastActivity = "";
   const progress: string[] = [];
+  let blockedReason: string | undefined;
+  let unblockedBy: string[] | undefined;
+  let unblockedAction: string | undefined;
+  let unblockRequestCount: number | undefined;
+  let lastUnblockerIndex: number | undefined;
+  let lastUnblockRequestAt: string | undefined;
+  let escalationState: EscalationState | undefined;
+  let unblockRequestFailures: number | undefined;
 
   let currentSection = "";
 
@@ -183,17 +209,33 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (sourceMatch) {
         source = sourceMatch[1];
       }
-    } else if (currentSection === "description") {
-      description = trimmed;
-    } else if (currentSection === "context") {
-      context = trimmed;
-    } else if (currentSection === "last activity") {
-      lastActivity = trimmed;
-    } else if (currentSection === "progress") {
-      if (trimmed.startsWith("- ")) {
-        progress.push(trimmed.slice(2));
-      }
-    }
+     } else if (currentSection === "description") {
+       description = trimmed;
+     } else if (currentSection === "context") {
+       context = trimmed;
+     } else if (currentSection === "last activity") {
+       lastActivity = trimmed;
+     } else if (currentSection === "progress") {
+       if (trimmed.startsWith("- ")) {
+         progress.push(trimmed.slice(2));
+       }
+     } else if (currentSection === "blocking") {
+       if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+         try {
+           const blockingData = JSON.parse(trimmed);
+           blockedReason = blockingData.blockedReason;
+           unblockedBy = blockingData.unblockedBy;
+           unblockedAction = blockingData.unblockedAction;
+           unblockRequestCount = blockingData.unblockRequestCount;
+           lastUnblockerIndex = blockingData.lastUnblockerIndex;
+           lastUnblockRequestAt = blockingData.lastUnblockRequestAt;
+           escalationState = blockingData.escalationState;
+           unblockRequestFailures = blockingData.unblockRequestFailures;
+         } catch {
+           // Ignore malformed JSON
+         }
+       }
+     }
   }
 
   if (!description || !created) {
@@ -210,6 +252,14 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     created,
     lastActivity: lastActivity || created,
     progress,
+    blockedReason,
+    unblockedBy,
+    unblockedAction,
+    unblockRequestCount,
+    lastUnblockerIndex,
+    lastUnblockRequestAt,
+    escalationState,
+    unblockRequestFailures,
   };
 }
 
@@ -219,7 +269,7 @@ async function getTasksDir(workspaceDir: string): Promise<string> {
   return tasksDir;
 }
 
-async function readTask(workspaceDir: string, taskId: string): Promise<TaskFile | null> {
+export async function readTask(workspaceDir: string, taskId: string): Promise<TaskFile | null> {
   const tasksDir = await getTasksDir(workspaceDir);
   const filePath = path.join(tasksDir, `${taskId}.md`);
   try {
@@ -233,8 +283,17 @@ async function readTask(workspaceDir: string, taskId: string): Promise<TaskFile 
 export async function writeTask(workspaceDir: string, task: TaskFile): Promise<void> {
   const tasksDir = await getTasksDir(workspaceDir);
   const filePath = path.join(tasksDir, `${task.id}.md`);
+  const tempPath = `${filePath}.tmp.${process.pid}`;
   const content = formatTaskFileMd(task);
-  await fs.writeFile(filePath, content, "utf-8");
+  
+  try {
+    await fs.writeFile(tempPath, content, "utf-8");
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    // Clean up temp file on failure
+    await fs.unlink(tempPath).catch(() => {});
+    throw error;
+  }
 }
 
 async function deleteTask(workspaceDir: string, taskId: string): Promise<void> {

@@ -189,8 +189,8 @@ export function registerTaskEnforcerHook(registry: PluginRegistry): void {
 
 export function clearTaskEnforcerState(): void {
   taskStartedSessions.clear();
+  log.debug("Task enforcer state cleared");
 }
-
 export function hasActiveTask(agentId: string, sessionKey?: string): boolean {
   const key = `${agentId}:${sessionKey ?? "main"}`;
   return taskStartedSessions.get(key) === true;

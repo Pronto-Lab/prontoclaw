@@ -143,8 +143,12 @@ export function stopTaskTracker(): void {
   if (unsubscribe) {
     unsubscribe();
     unsubscribe = null;
-    logVerbose("task-tracker: stopped");
   }
+  // Clear in-memory state to prevent memory leaks
+  runTaskContext.clear();
+  activeAgentTasks.clear();
+  agentManagedMode.clear();
+  logVerbose("task-tracker: stopped and cleared state");
 }
 
 async function handleTaskStart(
