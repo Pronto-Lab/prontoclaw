@@ -43,6 +43,7 @@ export interface TaskFile {
   unblockedAction?: string;
   unblockRequestCount?: number;
   lastUnblockerIndex?: number;
+  lastUnblockRequestAt?: string;
   escalationState?: EscalationState;
 }
 
@@ -85,6 +86,10 @@ const TaskBlockSchema = Type.Object({
   reason: Type.String(),
   unblock_by: Type.Array(Type.String()),
   unblock_action: Type.Optional(Type.String()),
+});
+
+const TaskResumeSchema = Type.Object({
+  task_id: Type.Optional(Type.String()),
 });
 
 function generateTaskId(): string {
@@ -949,6 +954,9 @@ export function createTaskBlockTool(options: {
         });
       }
 
+      // Deduplicate agent IDs
+      const uniqueUnblockedBy = [...new Set(unblockedBy)];
+
       let task: TaskFile | null = null;
 
       if (taskIdParam) {
@@ -973,9 +981,11 @@ export function createTaskBlockTool(options: {
       task.status = "blocked";
       task.lastActivity = now;
       task.blockedReason = reason;
-      task.unblockedBy = unblockedBy;
+      task.unblockedBy = uniqueUnblockedBy;
       task.unblockedAction = unblockedAction;
       task.unblockRequestCount = 0;
+      task.lastUnblockerIndex = undefined;
+      task.lastUnblockRequestAt = undefined;
       task.escalationState = "none";
       task.progress.push(`[BLOCKED] ${reason}`);
 
@@ -997,3 +1007,83 @@ export function createTaskBlockTool(options: {
     },
   };
 }
+export function createTaskResumeTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  const cfg = options.config;
+  if (!cfg) {
+    return null;
+  }
+
+  const agentId = resolveSessionAgentId({
+    sessionKey: options.agentSessionKey,
+    config: cfg,
+  });
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+
+  return {
+    label: "Task Resume",
+    name: "task_resume",
+    description:
+      "Resume a blocked task. Transitions task from blocked to in_progress status. If task_id is omitted, resumes the most recently blocked task.",
+    parameters: TaskResumeSchema,
+    execute: async (_toolCallId, params) => {
+      const taskIdParam = readStringParam(params, "task_id");
+
+      let task: TaskFile | null = null;
+
+      if (taskIdParam) {
+        task = await readTask(workspaceDir, taskIdParam);
+        if (!task) {
+          return jsonResult({
+            success: false,
+            error: `Task not found: ${taskIdParam}`,
+          });
+        }
+      } else {
+        const blockedTasks = await findBlockedTasks(workspaceDir);
+        task = blockedTasks[0] || null;
+        if (!task) {
+          return jsonResult({
+            success: false,
+            error: "No blocked task to resume.",
+          });
+        }
+      }
+
+      if (task.status !== "blocked") {
+        return jsonResult({
+          success: false,
+          error: `Task ${task.id} is not blocked. Current status: ${task.status}`,
+        });
+      }
+
+      const now = new Date().toISOString();
+      task.status = "in_progress";
+      task.lastActivity = now;
+      task.progress.push("Task resumed from blocked state");
+
+      // Clear blocking metadata
+      task.blockedReason = undefined;
+      task.unblockedBy = undefined;
+      task.unblockedAction = undefined;
+      task.unblockRequestCount = undefined;
+      task.lastUnblockerIndex = undefined;
+      task.escalationState = undefined;
+
+      await writeTask(workspaceDir, task);
+      await updateCurrentTaskPointer(workspaceDir, task.id);
+
+      enableAgentManagedMode(agentId);
+
+      return jsonResult({
+        success: true,
+        taskId: task.id,
+        resumed: true,
+        resumedAt: now,
+      });
+    },
+  };
+}
+

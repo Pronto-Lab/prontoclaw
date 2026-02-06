@@ -315,6 +315,7 @@ describe("Task Unblock Rotation", () => {
     blockedTask.unblockRequestCount = 1;
     blockedTask.lastUnblockerIndex = 0;
     blockedTask.lastActivity = "2026-02-05T10:31:00Z";
+    blockedTask.lastUnblockRequestAt = "2026-02-05T10:31:00Z";
     blockedTask.escalationState = "requesting";
     vi.clearAllMocks();
 
@@ -337,6 +338,7 @@ describe("Task Unblock Rotation", () => {
     blockedTask.unblockRequestCount = 2;
     blockedTask.lastUnblockerIndex = 1;
     blockedTask.lastActivity = "2026-02-05T11:02:00Z";
+    blockedTask.lastUnblockRequestAt = "2026-02-05T11:02:00Z";
     vi.clearAllMocks();
 
     // Third request - should go to agent_c (index 2)

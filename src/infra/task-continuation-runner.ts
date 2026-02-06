@@ -388,6 +388,7 @@ async function checkBlockedTasksForUnblock(
   const a2aPolicy = createAgentToAgentPolicy(cfg);
 
   for (const task of blockedTasks) {
+    try {
     if (!task.unblockedBy || task.unblockedBy.length === 0) {
       continue;
     }
@@ -413,20 +414,23 @@ async function checkBlockedTasksForUnblock(
       continue;
     }
 
-    const lastActivityMs = new Date(task.lastActivity).getTime();
-    const sinceLast = nowMs - lastActivityMs;
-    if (sinceLast < UNBLOCK_COOLDOWN_MS) {
-      log.debug("Unblock cooldown active", {
-        blockedAgentId: agentId,
-        taskId: task.id,
-        sinceLast,
-        cooldown: UNBLOCK_COOLDOWN_MS,
-      });
-      continue;
+    const lastRequestAt = task.lastUnblockRequestAt;
+    if (lastRequestAt) {
+      const lastRequestMs = new Date(lastRequestAt).getTime();
+      if (!isNaN(lastRequestMs) && nowMs - lastRequestMs < UNBLOCK_COOLDOWN_MS) {
+        log.debug("Unblock cooldown active", {
+          blockedAgentId: agentId,
+          taskId: task.id,
+          sinceLast: nowMs - lastRequestMs,
+          cooldown: UNBLOCK_COOLDOWN_MS,
+        });
+        continue;
+      }
     }
 
     // Rotation logic - cycle through unblockedBy array
-    const clampedLastIndex = Math.min(task.lastUnblockerIndex ?? -1, task.unblockedBy.length - 1);
+    const lastIndex = task.lastUnblockerIndex ?? -1;
+    const clampedLastIndex = Math.max(-1, Math.min(lastIndex, task.unblockedBy.length - 1));
     const nextIndex = (clampedLastIndex + 1) % task.unblockedBy.length;
     const targetAgentId = task.unblockedBy[nextIndex];
     task.lastUnblockerIndex = nextIndex;
@@ -446,10 +450,9 @@ async function checkBlockedTasksForUnblock(
 
       if (allDenied) {
         task.escalationState = "failed";
-        await writeTask(workspaceDir, task);
-        log.warn("All unblockers denied by A2A policy", { taskId: task.id });
       }
 
+      await writeTask(workspaceDir, task);
       continue;
     }
 
@@ -473,6 +476,7 @@ async function checkBlockedTasksForUnblock(
         quiet: true,
       });
 
+      task.lastUnblockRequestAt = new Date(nowMs).toISOString();
       task.unblockRequestCount = requestCount + 1;
       task.lastActivity = new Date().toISOString();
       // Keep escalationState as 'requesting' for subsequent attempts
@@ -497,6 +501,13 @@ async function checkBlockedTasksForUnblock(
         taskId: task.id,
         error: String(error),
       });
+    }
+    } catch (error) {
+      log.error("Failed to process blocked task", {
+        taskId: task.id,
+        error: String(error),
+      });
+      // Continue to next task
     }
   }
 }
