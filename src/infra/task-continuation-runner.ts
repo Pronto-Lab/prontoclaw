@@ -1,6 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
-import { findActiveTask, findPendingTasks, type TaskFile } from "../agents/tools/task-tool.js";
+import { findActiveTask, findBlockedTasks, findPendingTasks, writeTask, type TaskFile } from "../agents/tools/task-tool.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import { agentCommand } from "../commands/agent.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -14,17 +14,28 @@ const log = createSubsystemLogger("task-continuation");
 const DEFAULT_CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const DEFAULT_IDLE_THRESHOLD_MS = 3 * 60 * 1000;
 const CONTINUATION_COOLDOWN_MS = 5 * 60 * 1000;
+const MAX_UNBLOCK_REQUESTS = 3;
+const UNBLOCK_COOLDOWN_MS = 30 * 60 * 1000;
 
 // Failure-based backoff configuration
 const BACKOFF_MS = {
-  rate_limit: 20 * 60 * 1000,    // 20 minutes
+  rate_limit: 1 * 60 * 1000,     // 1 minute default (may be overridden by quota reset time)
   billing: 60 * 60 * 1000,       // 1 hour
   timeout: 1 * 60 * 1000,        // 1 minute
   context_overflow: 30 * 60 * 1000, // 30 minutes (needs manual intervention)
   unknown: 5 * 60 * 1000,        // 5 minutes (default)
 } as const;
 
+// Minimum backoff for rate limits to avoid hammering the API
+const MIN_RATE_LIMIT_BACKOFF_MS = 10 * 1000; // 10 seconds
+
 type FailureReason = keyof typeof BACKOFF_MS;
+
+type ParsedFailure = {
+  reason: FailureReason;
+  /** Suggested backoff from error message (e.g., "reset after 30s") */
+  suggestedBackoffMs?: number;
+};
 
 export type TaskContinuationConfig = {
   checkInterval?: string;
@@ -57,43 +68,77 @@ export function __resetAgentStates(): void {
 }
 
 /**
+ * Parse quota reset time from error message.
+ * Looks for patterns like "reset after 30s", "reset after 0s", "retry after 60 seconds"
+ */
+function parseQuotaResetTimeMs(message: string): number | null {
+  // Match patterns like "reset after 30s", "reset after 0s", "retry after 60 seconds"
+  const match = message.match(/(?:reset|retry)\s+after\s+(\d+)\s*s(?:econds?)?/i);
+  if (match) {
+    const seconds = parseInt(match[1], 10);
+    if (!isNaN(seconds) && seconds >= 0) {
+      return seconds * 1000;
+    }
+  }
+  return null;
+}
+
+/**
  * Parse failure reason from error message.
  * Returns a categorized reason for backoff calculation.
  */
-function parseFailureReason(error: unknown): FailureReason {
+function parseFailureReason(error: unknown): ParsedFailure {
   const message = error instanceof Error ? error.message : String(error);
-  const lowerMessage = message.toLowerCase();
 
   // Rate limit / quota exhaustion
   if (
     /rate.?limit|quota|429|too many requests|all models failed.*rate/i.test(message)
   ) {
-    return "rate_limit";
+    const suggestedBackoffMs = parseQuotaResetTimeMs(message);
+    return { 
+      reason: "rate_limit",
+      suggestedBackoffMs: suggestedBackoffMs !== null ? suggestedBackoffMs : undefined,
+    };
   }
 
   // Billing / payment issues
   if (/billing|payment|insufficient|credit/i.test(message)) {
-    return "billing";
+    return { reason: "billing" };
   }
 
   // Timeout
   if (/timeout|timed out|deadline exceeded/i.test(message)) {
-    return "timeout";
+    return { reason: "timeout" };
   }
 
   // Context overflow
   if (/context.*overflow|token.*limit|too long|max.*token/i.test(message)) {
-    return "context_overflow";
+    return { reason: "context_overflow" };
   }
 
-  return "unknown";
+  return { reason: "unknown" };
 }
 
 /**
  * Calculate backoff duration based on failure reason and consecutive failures.
  * Uses exponential backoff with a cap.
  */
-function resolveBackoffMs(reason: FailureReason, consecutiveFailures: number): number {
+function resolveBackoffMs(
+  reason: FailureReason, 
+  consecutiveFailures: number,
+  suggestedBackoffMs?: number,
+): number {
+  // For rate limits with a suggested backoff from the error message, use it
+  if (reason === "rate_limit" && suggestedBackoffMs !== undefined) {
+    // Apply minimum backoff to avoid hammering, but respect the API's suggestion
+    const effectiveBackoff = Math.max(suggestedBackoffMs, MIN_RATE_LIMIT_BACKOFF_MS);
+    log.debug("Using quota reset time from error message", {
+      suggestedMs: suggestedBackoffMs,
+      effectiveMs: effectiveBackoff,
+    });
+    return effectiveBackoff;
+  }
+
   const baseMs = BACKOFF_MS[reason];
   // Exponential backoff: base * 2^(failures-1), capped at 2 hours
   const multiplier = Math.min(Math.pow(2, Math.max(0, consecutiveFailures - 1)), 8);
@@ -129,6 +174,36 @@ function resolveTaskContinuationConfig(cfg: OpenClawConfig): {
   }
 
   return { enabled, checkIntervalMs, idleThresholdMs };
+}
+
+function formatUnblockRequestPrompt(
+  blockedAgentId: string,
+  task: TaskFile,
+): string {
+  const lines = [
+    `[SYSTEM - UNBLOCK REQUEST]`,
+    ``,
+    `Agent "${blockedAgentId}" needs your help to continue their task.`,
+    ``,
+    `**Blocked Task ID:** ${task.id}`,
+    `**Task Description:** ${task.description}`,
+    `**Blocked Reason:** ${task.blockedReason || "No reason provided"}`,
+  ];
+
+  if (task.unblockedAction) {
+    lines.push(`**Required Action:** ${task.unblockedAction}`);
+  }
+
+  if (task.progress.length > 0) {
+    const lastProgress = task.progress[task.progress.length - 1];
+    lines.push(`**Latest Progress:** ${lastProgress}`);
+  }
+
+  lines.push(``);
+  lines.push(`Please help unblock this task by taking the necessary action.`);
+  lines.push(`After helping, you can notify the blocked agent or let them know the blocker is resolved.`);
+
+  return lines.join("\n");
 }
 
 function formatContinuationPrompt(task: TaskFile, pendingCount: number): string {
@@ -184,8 +259,8 @@ async function checkAgentForContinuation(
     return false;
   }
 
-  if (activeTask.status === "pending_approval") {
-    log.debug("Task is pending approval, skipping continuation", {
+  if (activeTask.status === "pending_approval" || activeTask.status === "blocked") {
+    log.debug("Task is pending_approval or blocked, skipping continuation", {
       agentId,
       taskId: activeTask.id,
     });
@@ -210,11 +285,11 @@ async function checkAgentForContinuation(
   // Check failure-based backoff first
   if (state?.backoffUntilMs && nowMs < state.backoffUntilMs) {
     const remainingMs = state.backoffUntilMs - nowMs;
-    const remainingMin = Math.ceil(remainingMs / 60000);
+    const remainingSec = Math.ceil(remainingMs / 1000);
     log.debug("Continuation backoff active", {
       agentId,
       taskId: activeTask.id,
-      remainingMinutes: remainingMin,
+      remainingSeconds: remainingSec,
       reason: state.lastFailureReason,
       consecutiveFailures: state.consecutiveFailures,
     });
@@ -268,10 +343,10 @@ async function checkAgentForContinuation(
     return true;
   } catch (error) {
     // Failure - apply backoff based on failure reason
-    const reason = parseFailureReason(error);
+    const { reason, suggestedBackoffMs } = parseFailureReason(error);
     const prevState = agentStates.get(agentId);
     const consecutiveFailures = (prevState?.consecutiveFailures ?? 0) + 1;
-    const backoffMs = resolveBackoffMs(reason, consecutiveFailures);
+    const backoffMs = resolveBackoffMs(reason, consecutiveFailures, suggestedBackoffMs);
     const backoffUntilMs = nowMs + backoffMs;
 
     agentStates.set(agentId, {
@@ -288,9 +363,99 @@ async function checkAgentForContinuation(
       error: String(error),
       reason,
       consecutiveFailures,
-      backoffMinutes: Math.round(backoffMs / 60000),
+      backoffSeconds: Math.round(backoffMs / 1000),
+      suggestedBackoffMs,
     });
     return false;
+  }
+}
+
+async function checkBlockedTasksForUnblock(
+  cfg: OpenClawConfig,
+  agentId: string,
+  nowMs: number,
+): Promise<void> {
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+  const blockedTasks = await findBlockedTasks(workspaceDir);
+
+  for (const task of blockedTasks) {
+    if (!task.unblockedBy || task.unblockedBy.length === 0) {
+      continue;
+    }
+
+    const requestCount = task.unblockRequestCount ?? 0;
+
+    // Set escalationState to 'requesting' on first request
+    if (requestCount === 0 || task.escalationState === undefined || task.escalationState === 'none') {
+      task.escalationState = 'requesting';
+    }
+    if (requestCount >= MAX_UNBLOCK_REQUESTS) {
+      log.debug("Max unblock requests reached", {
+        blockedAgentId: agentId,
+        taskId: task.id,
+        requestCount,
+      });
+      task.escalationState = 'failed';
+      await writeTask(workspaceDir, task);
+      continue;
+    }
+
+    const lastActivityMs = new Date(task.lastActivity).getTime();
+    const sinceLast = nowMs - lastActivityMs;
+    if (sinceLast < UNBLOCK_COOLDOWN_MS) {
+      log.debug("Unblock cooldown active", {
+        blockedAgentId: agentId,
+        taskId: task.id,
+        sinceLast,
+        cooldown: UNBLOCK_COOLDOWN_MS,
+      });
+      continue;
+    }
+
+    const targetAgentId = task.unblockedBy[0];
+    const prompt = formatUnblockRequestPrompt(agentId, task);
+
+    log.info("Sending unblock request", {
+      blockedAgentId: agentId,
+      targetAgentId,
+      taskId: task.id,
+      requestCount: requestCount + 1,
+    });
+
+    try {
+      const accountId = resolveAgentBoundAccountId(cfg, targetAgentId, "discord");
+      await agentCommand({
+        config: cfg,
+        message: prompt,
+        agentId: targetAgentId,
+        accountId,
+        deliver: false,
+        quiet: true,
+      });
+
+      task.unblockRequestCount = requestCount + 1;
+      task.lastActivity = new Date().toISOString();
+      // Keep escalationState as 'requesting' for subsequent attempts
+      if (task.escalationState !== 'requesting') {
+        task.escalationState = 'requesting';
+      }
+      task.progress.push(`[UNBLOCK REQUEST ${task.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`);
+      await writeTask(workspaceDir, task);
+
+      log.info("Unblock request sent", {
+        blockedAgentId: agentId,
+        targetAgentId,
+        taskId: task.id,
+        requestCount: task.unblockRequestCount,
+      });
+    } catch (error) {
+      log.warn("Failed to send unblock request", {
+        blockedAgentId: agentId,
+        targetAgentId,
+        taskId: task.id,
+        error: String(error),
+      });
+    }
   }
 }
 
@@ -312,6 +477,7 @@ async function runContinuationCheck(cfg: OpenClawConfig, idleThresholdMs: number
   for (const agentId of agentIds) {
     try {
       await checkAgentForContinuation(cfg, agentId, idleThresholdMs, nowMs);
+      await checkBlockedTasksForUnblock(cfg, agentId, nowMs);
     } catch (error) {
       log.warn("Error checking agent for continuation", { agentId, error: String(error) });
     }

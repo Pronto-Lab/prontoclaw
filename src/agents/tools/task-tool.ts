@@ -4,7 +4,7 @@ import path from "node:path";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { AnyAgentTool } from "./common.js";
 import { disableAgentManagedMode, enableAgentManagedMode } from "../../infra/task-tracker.js";
-import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../agent-scope.js";
+import { resolveAgentWorkspaceDir, resolveSessionAgentId, listAgentIds } from "../agent-scope.js";
 import { jsonResult, readStringParam } from "./common.js";
 
 const TASKS_DIR = "tasks";
@@ -26,7 +26,7 @@ export type TaskStatus =
   | "completed"
   | "cancelled";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
-
+export type EscalationState = 'none' | 'requesting' | 'escalated' | 'failed';
 export interface TaskFile {
   id: string;
   status: TaskStatus;
@@ -37,6 +37,12 @@ export interface TaskFile {
   created: string;
   lastActivity: string;
   progress: string[];
+  // Blocked task fields for unblock request automation
+  blockedReason?: string;
+  unblockedBy?: string[];
+  unblockedAction?: string;
+  unblockRequestCount?: number;
+  escalationState?: EscalationState;
 }
 
 const TaskStartSchema = Type.Object({
@@ -71,6 +77,13 @@ const TaskCancelSchema = Type.Object({
 
 const TaskApproveSchema = Type.Object({
   task_id: Type.String(),
+});
+
+const TaskBlockSchema = Type.Object({
+  task_id: Type.Optional(Type.String()),
+  reason: Type.String(),
+  unblock_by: Type.Array(Type.String()),
+  unblock_action: Type.Optional(Type.String()),
 });
 
 function generateTaskId(): string {
@@ -859,6 +872,122 @@ export function createTaskApproveTool(options: {
         taskId: task.id,
         approved: true,
         startedAt: now,
+      });
+    },
+  };
+}
+
+export function createTaskBlockTool(options: {
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}): AnyAgentTool | null {
+  const cfg = options.config;
+  if (!cfg) {
+    return null;
+  }
+
+  const agentId = resolveSessionAgentId({
+    sessionKey: options.agentSessionKey,
+    config: cfg,
+  });
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+
+  return {
+    label: "Task Block",
+    name: "task_block",
+    description:
+      "Block a task that cannot proceed without another agent's help. Specify unblock_by with agent IDs who can help unblock. The system will automatically send unblock requests to those agents (up to 3 times).",
+    parameters: TaskBlockSchema,
+    execute: async (_toolCallId, params) => {
+      const taskIdParam = readStringParam(params, "task_id");
+      const reason = readStringParam(params, "reason", { required: true });
+      const unblockedAction = readStringParam(params, "unblock_action");
+
+      const rawUnblockBy = (params as Record<string, unknown>).unblock_by;
+      const unblockedBy = Array.isArray(rawUnblockBy)
+        ? rawUnblockBy.filter((s): s is string => typeof s === "string")
+        : [];
+
+      if (unblockedBy.length === 0) {
+        return jsonResult({
+          success: false,
+          error: "unblock_by must be a non-empty array of agent IDs",
+        });
+      }
+
+      // Validate agent IDs
+      const validAgentIds = listAgentIds(cfg);
+      const currentAgentId = agentId;
+      const invalidIds: string[] = [];
+      const selfReferences: string[] = [];
+
+      for (const agentIdToCheck of unblockedBy) {
+        if (!validAgentIds.includes(agentIdToCheck)) {
+          invalidIds.push(agentIdToCheck);
+        }
+        if (agentIdToCheck === currentAgentId) {
+          selfReferences.push(agentIdToCheck);
+        }
+      }
+
+      if (invalidIds.length > 0) {
+        return jsonResult({
+          success: false,
+          error: `Invalid agent ID(s) in unblock_by: ${invalidIds.join(", ")}. Valid agents: ${validAgentIds.join(", ")}`,
+        });
+      }
+
+      if (selfReferences.length > 0) {
+        return jsonResult({
+          success: false,
+          error: `Agent cannot unblock itself. Remove "${selfReferences.join(", ")}" from unblock_by.`,
+        });
+      }
+
+      let task: TaskFile | null = null;
+
+      if (taskIdParam) {
+        task = await readTask(workspaceDir, taskIdParam);
+        if (!task) {
+          return jsonResult({
+            success: false,
+            error: `Task not found: ${taskIdParam}`,
+          });
+        }
+      } else {
+        task = await findActiveTask(workspaceDir);
+        if (!task) {
+          return jsonResult({
+            success: false,
+            error: "No active task to block. Use task_start first or specify task_id.",
+          });
+        }
+      }
+
+      const now = new Date().toISOString();
+      task.status = "blocked";
+      task.lastActivity = now;
+      task.blockedReason = reason;
+      task.unblockedBy = unblockedBy;
+      task.unblockedAction = unblockedAction;
+      task.unblockRequestCount = 0;
+      task.escalationState = "none";
+      task.progress.push(`[BLOCKED] ${reason}`);
+
+      await writeTask(workspaceDir, task);
+      await updateCurrentTaskPointer(workspaceDir, task.id);
+
+      disableAgentManagedMode(agentId);
+
+      return jsonResult({
+        success: true,
+        taskId: task.id,
+        status: "blocked",
+        blockedReason: reason,
+        unblockedBy,
+        unblockedAction: unblockedAction || null,
+        unblockRequestCount: 0,
+        message: `Task blocked. Unblock requests will be sent to: ${unblockedBy.join(", ")}`,
       });
     },
   };
