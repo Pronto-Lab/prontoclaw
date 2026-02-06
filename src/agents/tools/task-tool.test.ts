@@ -14,6 +14,7 @@ vi.mock("node:fs/promises", () => ({
 vi.mock("../agent-scope.js", () => ({
   resolveAgentWorkspaceDir: vi.fn((_cfg, _agentId) => "/workspace/main"),
   resolveSessionAgentId: vi.fn(() => "main"),
+  listAgentIds: vi.fn(() => ["main", "agent1", "agent2"]),
 }));
 
 vi.mock("../../infra/task-tracker.js", () => ({
@@ -23,6 +24,7 @@ vi.mock("../../infra/task-tracker.js", () => ({
 
 import {
   createTaskApproveTool,
+  createTaskBlockTool,
   createTaskCancelTool,
   createTaskCompleteTool,
   createTaskListTool,
@@ -664,6 +666,212 @@ Active task
       const parsed = result.details as Record<string, unknown>;
       expect(parsed.success).toBe(false);
       expect(parsed.error).toContain("not found");
+    });
+  });
+
+  describe("createTaskBlockTool", () => {
+    it("returns null when config is missing", () => {
+      const tool = createTaskBlockTool({});
+      expect(tool).toBeNull();
+    });
+
+    it("rejects non-existent agent ID in unblock_by", async () => {
+      const activeTask = `# Task: task_active123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readFile).mockResolvedValue(activeTask);
+
+      const tool = createTaskBlockTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        task_id: "task_active123",
+        reason: "Waiting for external API",
+        unblock_by: ["invalid_agent"],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("Invalid agent ID");
+      expect(parsed.error).toContain("invalid_agent");
+      expect(parsed.error).toContain("Valid agents");
+    });
+
+    it("rejects self-reference (agent blocking with itself as unblocker)", async () => {
+      const activeTask = `# Task: task_active123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readFile).mockResolvedValue(activeTask);
+
+      const tool = createTaskBlockTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        task_id: "task_active123",
+        reason: "Waiting for something",
+        unblock_by: ["main"],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("Agent cannot unblock itself");
+      expect(parsed.error).toContain("main");
+    });
+
+    it("accepts valid agent IDs", async () => {
+      const activeTask = `# Task: task_active123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readFile).mockResolvedValue(activeTask);
+
+      const tool = createTaskBlockTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        task_id: "task_active123",
+        reason: "Waiting for agent1 to complete their task",
+        unblock_by: ["agent1", "agent2"],
+        unblock_action: "notify_agents",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.status).toBe("blocked");
+      expect(parsed.blockedReason).toBe("Waiting for agent1 to complete their task");
+      expect(parsed.unblockedBy).toEqual(["agent1", "agent2"]);
+      expect(parsed.unblockedAction).toBe("notify_agents");
+
+      const writeCall = vi
+        .mocked(fs.writeFile)
+        .mock.calls.find((call) => (call[0] as string).includes("task_active123"));
+      const content = writeCall![1] as string;
+      expect(content).toContain("- **Status:** blocked");
+      expect(content).toContain("[BLOCKED] Waiting for agent1 to complete their task");
+    });
+
+    it("returns clear error message with invalid ID listed", async () => {
+      const activeTask = `# Task: task_active123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readFile).mockResolvedValue(activeTask);
+
+      const tool = createTaskBlockTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        task_id: "task_active123",
+        reason: "Waiting for help",
+        unblock_by: ["agent1", "nonexistent_agent", "another_invalid"],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("nonexistent_agent");
+      expect(parsed.error).toContain("another_invalid");
+      expect(parsed.error).toContain("Valid agents");
+      expect(parsed.error).toContain("main");
+      expect(parsed.error).toContain("agent1");
+      expect(parsed.error).toContain("agent2");
+    });
+
+    it("blocks current task when task_id is not specified", async () => {
+      const currentTaskPointer = "task_active123";
+      const activeTask = `# Task: task_active123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Active task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_active123.md"]);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("CURRENT_TASK")) {
+          return currentTaskPointer;
+        }
+        if ((filePath as string).includes("task_active123")) {
+          return activeTask;
+        }
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskBlockTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        reason: "Waiting for external service",
+        unblock_by: ["agent1"],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.status).toBe("blocked");
+      expect(parsed.taskId).toBe("task_active123");
     });
   });
 });
