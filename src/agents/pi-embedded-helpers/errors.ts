@@ -614,6 +614,16 @@ export function isAuthAssistantError(msg: AssistantMessage | undefined): boolean
   return isAuthErrorMessage(msg.errorMessage ?? "");
 }
 
+export function isModelDeprecatedErrorMessage(raw: string): boolean {
+  const lower = raw.toLowerCase();
+  return (
+    lower.includes("no longer available") ||
+    lower.includes("is deprecated") ||
+    lower.includes("has been removed") ||
+    lower.includes("please switch to")
+  );
+}
+
 export function classifyFailoverReason(raw: string): FailoverReason | null {
   if (isImageDimensionErrorMessage(raw)) {
     return null;
@@ -638,6 +648,9 @@ export function classifyFailoverReason(raw: string): FailoverReason | null {
   }
   if (isAuthErrorMessage(raw)) {
     return "auth";
+  }
+  if (isModelDeprecatedErrorMessage(raw)) {
+    return "unknown";
   }
   return null;
 }
