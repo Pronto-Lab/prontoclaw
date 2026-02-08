@@ -15,6 +15,7 @@ export type VoicePipelineHandle = {
   stt: SpeechToText;
   bridge: VoiceBridge;
   tts: TextToSpeech;
+  interrupt: InterruptHandler;
   destroy: () => void;
 };
 
@@ -97,7 +98,14 @@ export async function initVoicePipeline(
   }
   const tts = new TextToSpeech({ cfg, connection });
 
-  // 5. Wire up the pipeline
+  // 5. Create InterruptHandler
+  const interrupt = new InterruptHandler({
+    voiceSession,
+    tts,
+    bridge,
+    stt,
+  });
+  // 6. Wire up the pipeline
   //    audioData -> STT
   voiceSession.on("audioData", (buf: Buffer) => {
     stt.sendAudio(buf);
@@ -142,12 +150,15 @@ export async function initVoicePipeline(
     console.error("[VoicePipeline] tts error", { error: err.message });
   });
 
-  // 6. Build handle
+  // Start interrupt handler
+  interrupt.start();
+
+  // 7. Build handle
   const destroy = (): void => {
-    destroyVoicePipeline({ voiceSession, stt, bridge, tts, destroy });
+    destroyVoicePipeline({ voiceSession, stt, bridge, tts, interrupt, destroy });
   };
 
-  return { voiceSession, stt, bridge, tts, destroy };
+  return { voiceSession, stt, bridge, tts, interrupt, destroy };
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +166,11 @@ export async function initVoicePipeline(
 // ---------------------------------------------------------------------------
 
 export function destroyVoicePipeline(handle: VoicePipelineHandle): void {
+  try {
+    handle.interrupt.stop();
+  } catch {
+    // already stopped
+  }
   try {
     handle.stt.stop();
   } catch {
