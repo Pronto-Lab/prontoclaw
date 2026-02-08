@@ -130,7 +130,8 @@ function resolveDiscordGatewayIntents(
     GatewayIntents.MessageContent |
     GatewayIntents.DirectMessages |
     GatewayIntents.GuildMessageReactions |
-    GatewayIntents.DirectMessageReactions;
+    GatewayIntents.DirectMessageReactions |
+    GatewayIntents.GuildVoiceStates;
   if (intentsConfig?.presence) {
     intents |= GatewayIntents.GuildPresences;
   }
