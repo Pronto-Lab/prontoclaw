@@ -106,14 +106,24 @@ export class VoiceSessionManager extends EventEmitter {
         guildId: this.config.guildId,
         adapterCreator,
         selfDeaf: false,
-        selfMute: true,
+        selfMute: false,
       });
 
       this.connection = conn;
+
+      // Debug: log all state transitions
+      conn.on("stateChange", (oldState: any, newState: any) => {
+        console.log("[VoiceConn] state:", oldState.status, "->", newState.status);
+      });
+      conn.on("error", (err: Error) => {
+        console.error("[VoiceConn] error:", err.message);
+      });
+
       this.setupConnectionListeners(conn);
 
       // Wait until the connection is ready (max 20 s)
       await entersState(conn, VoiceConnectionStatus.Ready, 20_000);
+      console.log("[VoiceConn] Ready!");
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       this.emit("error", error);

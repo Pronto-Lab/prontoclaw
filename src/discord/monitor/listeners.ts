@@ -1,3 +1,4 @@
+import type { VoicePlugin } from "@buape/carbon/voice";
 import {
   ChannelType,
   type Client,
@@ -6,6 +7,7 @@ import {
   MessageReactionRemoveListener,
   PresenceUpdateListener,
   VoiceStateUpdateListener,
+  VoiceServerUpdateListener,
 } from "@buape/carbon";
 import type { VoicePipelineHandle } from "../voice/voice-commands.js";
 import { danger } from "../../globals.js";
@@ -331,6 +333,7 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
 export type VoiceStateContext = {
   botUserId: string;
   targetChannelId: string;
+  voicePlugin: VoicePlugin;
   getCurrentPipeline: () => VoicePipelineHandle | null;
   onJoinNeeded: (guildId: string, channelId: string, userId: string) => Promise<void>;
   onLeaveNeeded: () => void;
@@ -366,6 +369,17 @@ export class DiscordVoiceStateListener extends VoiceStateUpdateListener {
       // Update tracked state
       userVoiceChannels.set(userId, data.channel_id ?? null);
 
+      // Forward raw event to @discordjs/voice adapter (Carbon does not do this)
+      const adapter = this.context.voicePlugin.adapters.get(guildId);
+      if (adapter) {
+        adapter.onMessage({
+          op: 0,
+          t: "VOICE_STATE_UPDATE",
+          d: data,
+          s: 0,
+        });
+      }
+
       handleVoiceStateUpdate({
         oldChannelId,
         newChannelId,
@@ -387,6 +401,34 @@ export class DiscordVoiceStateListener extends VoiceStateUpdateListener {
         listener: this.constructor.name,
         event: this.type,
         durationMs: Date.now() - startedAt,
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Voice Server Update Listener — forward to @discordjs/voice adapter
+// ---------------------------------------------------------------------------
+
+export class DiscordVoiceServerListener extends VoiceServerUpdateListener {
+  constructor(
+    private voicePlugin: VoicePlugin,
+    private logger?: Logger,
+  ) {
+    super();
+  }
+
+  async handle(data: Parameters<VoiceServerUpdateListener["handle"]>[0], _client: Client) {
+    const guildId = (data as any).guild_id;
+    if (!guildId) return;
+
+    const adapter = this.voicePlugin.adapters.get(guildId);
+    if (adapter) {
+      adapter.onMessage({
+        op: 0,
+        t: "VOICE_SERVER_UPDATE",
+        d: data,
+        s: 0,
       });
     }
   }

@@ -35,6 +35,7 @@ import {
   DiscordPresenceListener,
   DiscordReactionListener,
   DiscordReactionRemoveListener,
+  DiscordVoiceServerListener,
   DiscordVoiceStateListener,
   registerDiscordListener,
   type VoiceStateContext,
@@ -604,6 +605,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       const voiceContext: VoiceStateContext = {
         botUserId,
         targetChannelId: voiceTargetChannel,
+        voicePlugin,
         getCurrentPipeline: () => voicePipeline,
         onJoinNeeded: async (guildId: string, channelId: string, userId: string) => {
           if (voicePipeline) {
@@ -636,6 +638,10 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       registerDiscordListener(
         client.listeners,
         new DiscordVoiceStateListener(voiceContext, logger),
+      );
+      registerDiscordListener(
+        client.listeners,
+        new DiscordVoiceServerListener(voicePlugin, logger),
       );
       runtime.log?.(`discord: voice listener registered for channel ${voiceTargetChannel}`);
     } else {
