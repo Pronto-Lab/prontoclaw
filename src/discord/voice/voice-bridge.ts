@@ -15,7 +15,9 @@ type VoiceBridgeConfig = {
   agentId?: string;
   accountId?: string;
   userId: string;
+  botUserId: string;
   guildId?: string;
+  channelId?: string;
 };
 
 /**
@@ -55,6 +57,9 @@ export class VoiceBridge extends EventEmitter {
   private currentAbortController: AbortController | null = null;
   private processing = false;
 
+  private readonly botUserId: string;
+  private readonly channelId: string | undefined;
+
   constructor(config: VoiceBridgeConfig) {
     super();
     this.cfg = config.cfg;
@@ -62,7 +67,9 @@ export class VoiceBridge extends EventEmitter {
     this.agentId = config.agentId;
     this.accountId = config.accountId;
     this.userId = config.userId;
+    this.botUserId = config.botUserId;
     this.guildId = config.guildId;
+    this.channelId = config.channelId;
   }
 
   // ---- public API --------------------------------------------------------
@@ -72,6 +79,7 @@ export class VoiceBridge extends EventEmitter {
    * text chunks via the `textChunk` event.
    */
   async sendMessage(text: string): Promise<void> {
+    console.log("[VoiceBridge] sendMessage called", { text });
     const ctx: MsgContext = {
       Body: text,
       BodyForAgent: text,
@@ -82,10 +90,14 @@ export class VoiceBridge extends EventEmitter {
       Provider: "discord",
       Surface: "discord",
       OriginatingChannel: "discord",
-      ChatType: "direct",
+      ChatType: "channel",
       CommandAuthorized: true,
-      MessageSid: randomUUID().slice(0, 8),
+      MessageSid: randomUUID(),
       SenderId: this.userId,
+      AccountId: this.accountId,
+      From: "discord:" + this.userId,
+      To: "discord:" + this.botUserId,
+      OriginatingTo: "discord:voice:" + (this.guildId ?? "") + ":" + (this.channelId ?? ""),
     };
 
     const abortController = new AbortController();
@@ -94,9 +106,14 @@ export class VoiceBridge extends EventEmitter {
 
     const dispatcher = createReplyDispatcher({
       deliver: async (payload, info) => {
+        console.log("[VoiceBridge] deliver called", {
+          kind: info.kind,
+          text: payload.text?.slice(0, 80),
+        });
         if (info.kind === "final" || info.kind === "block") {
           const chunk = payload.text?.trim();
           if (chunk) {
+            console.log("[VoiceBridge] processStreamingText", { chunk: chunk.slice(0, 80) });
             this.processStreamingText(chunk);
           }
         }
@@ -107,6 +124,7 @@ export class VoiceBridge extends EventEmitter {
     });
 
     this.emit("responseStart");
+    console.log("[VoiceBridge] calling dispatchInboundMessage");
 
     try {
       await dispatchInboundMessage({
@@ -117,7 +135,9 @@ export class VoiceBridge extends EventEmitter {
       });
 
       // Wait for dispatcher queue to drain before flushing.
+      console.log("[VoiceBridge] dispatchInboundMessage returned, waiting for idle");
       await dispatcher.waitForIdle();
+      console.log("[VoiceBridge] dispatcher idle");
     } catch (err) {
       if (!abortController.signal.aborted) {
         this.emit("error", err instanceof Error ? err : new Error(String(err)));

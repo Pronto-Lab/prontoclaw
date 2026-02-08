@@ -89,7 +89,9 @@ export async function initVoicePipeline(
     agentId,
     accountId,
     userId,
+    botUserId,
     guildId,
+    channelId,
   });
 
   // 4. Create TTS (requires a live connection)

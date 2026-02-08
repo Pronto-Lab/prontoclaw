@@ -618,7 +618,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
             botUserId: botUserId!,
             userId,
             cfg,
-            sessionKey: `discord:voice:${guildId}:${channelId}`,
+            sessionKey: `agent:luda:discord:channel:voice:${guildId}:${channelId}:${userId}`,
             agentId: undefined,
             accountId: account.accountId,
             adapterCreator,
