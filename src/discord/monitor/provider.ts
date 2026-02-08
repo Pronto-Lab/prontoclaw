@@ -595,7 +595,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   // ---------------------------------------------------------------------------
   const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
   const voiceTargetChannel = process.env.DISCORD_VOICE_CHANNEL_ID;
-  const voiceAgentId = process.env.DISCORD_VOICE_AGENT_ID || "ruda";
+  const voiceAgentId = process.env.DISCORD_VOICE_AGENT_ID || "luda";
   let voicePipeline: VoicePipelineHandle | null = null;
 
   if (deepgramApiKey && voiceTargetChannel && botUserId && account.accountId === voiceAgentId) {
