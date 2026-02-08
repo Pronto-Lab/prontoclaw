@@ -1,6 +1,7 @@
 import type { DiscordGatewayAdapterCreator } from "@discordjs/voice";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { VoiceSessionConfig } from "./types.js";
+import { InterruptHandler } from "./interrupt-handler.js";
 import { SpeechToText } from "./speech-to-text.js";
 import { TextToSpeech } from "./text-to-speech.js";
 import { VoiceBridge } from "./voice-bridge.js";
