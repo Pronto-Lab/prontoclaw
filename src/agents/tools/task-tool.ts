@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { AnyAgentTool } from "./common.js";
+import { acquireTaskLock } from "../../infra/task-lock.js";
 import { disableAgentManagedMode, enableAgentManagedMode } from "../../infra/task-tracker.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId, listAgentIds } from "../agent-scope.js";
 import { jsonResult, readStringParam } from "./common.js";
@@ -49,12 +50,12 @@ export interface TaskFile {
   escalationState?: EscalationState;
   unblockRequestFailures?: number;
   // Backlog task fields
-  createdBy?: string;           // Who added this task (user/agent id)
-  assignee?: string;            // Whose backlog (for cross-agent requests)
-  dependsOn?: string[];         // Task IDs that must complete first
+  createdBy?: string; // Who added this task (user/agent id)
+  assignee?: string; // Whose backlog (for cross-agent requests)
+  dependsOn?: string[]; // Task IDs that must complete first
   estimatedEffort?: EstimatedEffort;
-  startDate?: string;           // ISO date - don't start before this date
-  dueDate?: string;             // ISO date - deadline
+  startDate?: string; // ISO date - don't start before this date
+  dueDate?: string; // ISO date - deadline
 }
 
 const TaskStartSchema = Type.Object({
@@ -164,7 +165,14 @@ function formatTaskFileMd(task: TaskFile): string {
   }
 
   // Serialize backlog fields if present
-  if (task.status === "backlog" || task.createdBy || task.assignee || task.dependsOn || task.startDate || task.dueDate) {
+  if (
+    task.status === "backlog" ||
+    task.createdBy ||
+    task.assignee ||
+    task.dependsOn ||
+    task.startDate ||
+    task.dueDate
+  ) {
     const backlogData = {
       createdBy: task.createdBy,
       assignee: task.assignee,
@@ -252,47 +260,47 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (sourceMatch) {
         source = sourceMatch[1];
       }
-     } else if (currentSection === "description") {
-       description = trimmed;
-     } else if (currentSection === "context") {
-       context = trimmed;
-     } else if (currentSection === "last activity") {
-       lastActivity = trimmed;
-     } else if (currentSection === "progress") {
-       if (trimmed.startsWith("- ")) {
-         progress.push(trimmed.slice(2));
-       }
-     } else if (currentSection === "blocking") {
-       if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-         try {
-           const blockingData = JSON.parse(trimmed);
-           blockedReason = blockingData.blockedReason;
-           unblockedBy = blockingData.unblockedBy;
-           unblockedAction = blockingData.unblockedAction;
-           unblockRequestCount = blockingData.unblockRequestCount;
-           lastUnblockerIndex = blockingData.lastUnblockerIndex;
-           lastUnblockRequestAt = blockingData.lastUnblockRequestAt;
-           escalationState = blockingData.escalationState;
-           unblockRequestFailures = blockingData.unblockRequestFailures;
-         } catch {
-           // Ignore malformed JSON
-         }
-       }
-     } else if (currentSection === "backlog") {
-       if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-         try {
-           const backlogData = JSON.parse(trimmed);
-           createdBy = backlogData.createdBy;
-           assignee = backlogData.assignee;
-           dependsOn = backlogData.dependsOn;
-           estimatedEffort = backlogData.estimatedEffort;
-           startDate = backlogData.startDate;
-           dueDate = backlogData.dueDate;
-         } catch {
-           // Ignore malformed JSON
-         }
-       }
-     }
+    } else if (currentSection === "description") {
+      description = description ? `${description}\n${trimmed}` : trimmed;
+    } else if (currentSection === "context") {
+      context = context ? `${context}\n${trimmed}` : trimmed;
+    } else if (currentSection === "last activity") {
+      lastActivity = trimmed;
+    } else if (currentSection === "progress") {
+      if (trimmed.startsWith("- ")) {
+        progress.push(trimmed.slice(2));
+      }
+    } else if (currentSection === "blocking") {
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const blockingData = JSON.parse(trimmed);
+          blockedReason = blockingData.blockedReason;
+          unblockedBy = blockingData.unblockedBy;
+          unblockedAction = blockingData.unblockedAction;
+          unblockRequestCount = blockingData.unblockRequestCount;
+          lastUnblockerIndex = blockingData.lastUnblockerIndex;
+          lastUnblockRequestAt = blockingData.lastUnblockRequestAt;
+          escalationState = blockingData.escalationState;
+          unblockRequestFailures = blockingData.unblockRequestFailures;
+        } catch {
+          // Ignore malformed JSON
+        }
+      }
+    } else if (currentSection === "backlog") {
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const backlogData = JSON.parse(trimmed);
+          createdBy = backlogData.createdBy;
+          assignee = backlogData.assignee;
+          dependsOn = backlogData.dependsOn;
+          estimatedEffort = backlogData.estimatedEffort;
+          startDate = backlogData.startDate;
+          dueDate = backlogData.dueDate;
+        } catch {
+          // Ignore malformed JSON
+        }
+      }
+    }
   }
 
   if (!description || !created) {
@@ -343,12 +351,14 @@ export async function readTask(workspaceDir: string, taskId: string): Promise<Ta
   }
 }
 
+let writeCounter = 0;
+
 export async function writeTask(workspaceDir: string, task: TaskFile): Promise<void> {
   const tasksDir = await getTasksDir(workspaceDir);
   const filePath = path.join(tasksDir, `${task.id}.md`);
-  const tempPath = `${filePath}.tmp.${process.pid}`;
+  const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${++writeCounter}`;
   const content = formatTaskFileMd(task);
-  
+
   try {
     await fs.writeFile(tempPath, content, "utf-8");
     await fs.rename(tempPath, filePath);
@@ -376,12 +386,18 @@ async function listTasks(
   const tasksDir = await getTasksDir(workspaceDir);
   const tasks: TaskFile[] = [];
 
+  let files: string[] = [];
   try {
-    const files = await fs.readdir(tasksDir);
-    for (const file of files) {
-      if (!file.endsWith(".md") || !file.startsWith("task_")) {
-        continue;
-      }
+    files = await fs.readdir(tasksDir);
+  } catch {
+    return tasks;
+  }
+
+  for (const file of files) {
+    if (!file.endsWith(".md") || !file.startsWith("task_")) {
+      continue;
+    }
+    try {
       const filePath = path.join(tasksDir, file);
       const content = await fs.readFile(filePath, "utf-8");
       const task = parseTaskFileMd(content, file);
@@ -390,9 +406,9 @@ async function listTasks(
           tasks.push(task);
         }
       }
+    } catch {
+      // File may have been deleted between readdir and readFile
     }
-  } catch {
-    // Directory doesn't exist or is empty
   }
 
   tasks.sort((a, b) => {
@@ -401,7 +417,7 @@ async function listTasks(
     if (priorityDiff !== 0) {
       return priorityDiff;
     }
-    
+
     // For backlog tasks: due_date > start_date > created
     if (a.dueDate || b.dueDate) {
       const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
@@ -410,7 +426,7 @@ async function listTasks(
         return aDue - bDue;
       }
     }
-    
+
     if (a.startDate || b.startDate) {
       const aStart = a.startDate ? new Date(a.startDate).getTime() : Infinity;
       const bStart = b.startDate ? new Date(b.startDate).getTime() : Infinity;
@@ -418,7 +434,7 @@ async function listTasks(
         return aStart - bStart;
       }
     }
-    
+
     return new Date(a.created).getTime() - new Date(b.created).getTime();
   });
 
@@ -471,7 +487,11 @@ export async function checkDependenciesMet(
   const unmetDeps: string[] = [];
   for (const depId of task.dependsOn) {
     const depTask = await readTask(workspaceDir, depId);
-    if (!depTask || depTask.status !== "completed") {
+    if (!depTask) {
+      // Task file deleted = completed/cancelled and archived to task-history
+      continue;
+    }
+    if (depTask.status !== "completed") {
       unmetDeps.push(depId);
     }
   }
@@ -481,14 +501,14 @@ export async function checkDependenciesMet(
 
 export async function findPickableBacklogTask(workspaceDir: string): Promise<TaskFile | null> {
   const backlogTasks = await findBacklogTasks(workspaceDir);
-  
+
   for (const task of backlogTasks) {
     const { met } = await checkDependenciesMet(workspaceDir, task);
     if (met) {
       return task;
     }
   }
-  
+
   return null;
 }
 
@@ -499,16 +519,21 @@ async function appendToHistory(workspaceDir: string, entry: string): Promise<str
   const filename = getMonthlyHistoryFilename();
   const filePath = path.join(historyDir, filename);
 
-  let existingContent = "";
+  let needsHeader = false;
   try {
-    existingContent = await fs.readFile(filePath, "utf-8");
+    await fs.access(filePath);
   } catch {
-    const now = new Date();
-    const monthName = now.toLocaleString("en-US", { month: "long", year: "numeric" });
-    existingContent = `# Task History - ${monthName}\n`;
+    needsHeader = true;
   }
 
-  await fs.writeFile(filePath, existingContent + entry, "utf-8");
+  if (needsHeader) {
+    const now = new Date();
+    const monthName = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+    const header = `# Task History - ${monthName}\n`;
+    await fs.appendFile(filePath, header, "utf-8");
+  }
+
+  await fs.appendFile(filePath, entry, "utf-8");
   return `${TASK_HISTORY_DIR}/${filename}`;
 }
 
@@ -795,32 +820,46 @@ export function createTaskCompleteTool(options: {
         }
       }
 
-      task.progress.push("Task completed");
-      task.status = "completed";
-
-      const historyEntry = formatTaskHistoryEntry(task, summary);
-      const archivedTo = await appendToHistory(workspaceDir, historyEntry);
-
-      await deleteTask(workspaceDir, task.id);
-
-      const remainingTasks = await listTasks(workspaceDir);
-      const nextTask = remainingTasks.find((t) => t.status === "in_progress") || null;
-
-      await updateCurrentTaskPointer(workspaceDir, nextTask?.id || null);
-
-      if (!(await hasActiveTasks(workspaceDir))) {
-        disableAgentManagedMode(agentId);
+      const lock = await acquireTaskLock(workspaceDir, task.id);
+      if (!lock) {
+        return jsonResult({
+          success: false,
+          error: `Task ${task.id} is locked by another operation`,
+        });
       }
 
-      return jsonResult({
-        success: true,
-        taskId: task.id,
-        archived: true,
-        archivedTo,
-        completedAt: new Date().toISOString(),
-        remainingTasks: remainingTasks.length,
-        nextTaskId: nextTask?.id || null,
-      });
+      try {
+        task.progress.push("Task completed");
+        task.status = "completed";
+
+        await writeTask(workspaceDir, task);
+
+        const historyEntry = formatTaskHistoryEntry(task, summary);
+        const archivedTo = await appendToHistory(workspaceDir, historyEntry);
+
+        await deleteTask(workspaceDir, task.id);
+
+        const remainingTasks = await listTasks(workspaceDir);
+        const nextTask = remainingTasks.find((t) => t.status === "in_progress") || null;
+
+        await updateCurrentTaskPointer(workspaceDir, nextTask?.id || null);
+
+        if (!(await hasActiveTasks(workspaceDir))) {
+          disableAgentManagedMode(agentId);
+        }
+
+        return jsonResult({
+          success: true,
+          taskId: task.id,
+          archived: true,
+          archivedTo,
+          completedAt: new Date().toISOString(),
+          remainingTasks: remainingTasks.length,
+          nextTaskId: nextTask?.id || null,
+        });
+      } finally {
+        await lock.release();
+      }
     },
   };
 }
@@ -931,6 +970,7 @@ export function createTaskListTool(options: {
         "pending_approval",
         "in_progress",
         "blocked",
+        "backlog",
       ].includes(statusParam)
         ? (statusParam as TaskStatus | "all")
         : "all";
@@ -987,33 +1027,47 @@ export function createTaskCancelTool(options: {
         });
       }
 
-      task.status = "cancelled";
-      task.progress.push(`Task cancelled${reason ? `: ${reason}` : ""}`);
-
-      const historyEntry = formatTaskHistoryEntry(
-        task,
-        reason ? `Cancelled: ${reason}` : "Cancelled",
-      );
-      await appendToHistory(workspaceDir, historyEntry);
-
-      await deleteTask(workspaceDir, task.id);
-
-      const remainingTasks = await listTasks(workspaceDir);
-      const nextTask = remainingTasks.find((t) => t.status === "in_progress") || null;
-
-      await updateCurrentTaskPointer(workspaceDir, nextTask?.id || null);
-
-      if (!(await hasActiveTasks(workspaceDir))) {
-        disableAgentManagedMode(agentId);
+      const lock = await acquireTaskLock(workspaceDir, task.id);
+      if (!lock) {
+        return jsonResult({
+          success: false,
+          error: `Task ${task.id} is locked by another operation`,
+        });
       }
 
-      return jsonResult({
-        success: true,
-        taskId: task.id,
-        cancelled: true,
-        reason: reason || null,
-        remainingTasks: remainingTasks.length,
-      });
+      try {
+        task.status = "cancelled";
+        task.progress.push(`Task cancelled${reason ? `: ${reason}` : ""}`);
+
+        await writeTask(workspaceDir, task);
+
+        const historyEntry = formatTaskHistoryEntry(
+          task,
+          reason ? `Cancelled: ${reason}` : "Cancelled",
+        );
+        await appendToHistory(workspaceDir, historyEntry);
+
+        await deleteTask(workspaceDir, task.id);
+
+        const remainingTasks = await listTasks(workspaceDir);
+        const nextTask = remainingTasks.find((t) => t.status === "in_progress") || null;
+
+        await updateCurrentTaskPointer(workspaceDir, nextTask?.id || null);
+
+        if (!(await hasActiveTasks(workspaceDir))) {
+          disableAgentManagedMode(agentId);
+        }
+
+        return jsonResult({
+          success: true,
+          taskId: task.id,
+          cancelled: true,
+          reason: reason || null,
+          remainingTasks: remainingTasks.length,
+        });
+      } finally {
+        await lock.release();
+      }
     },
   };
 }
@@ -1167,33 +1221,45 @@ export function createTaskBlockTool(options: {
         }
       }
 
-      const now = new Date().toISOString();
-      task.status = "blocked";
-      task.lastActivity = now;
-      task.blockedReason = reason;
-      task.unblockedBy = uniqueUnblockedBy;
-      task.unblockedAction = unblockedAction;
-      task.unblockRequestCount = 0;
-      task.lastUnblockerIndex = undefined;
-      task.lastUnblockRequestAt = undefined;
-      task.escalationState = "none";
-      task.progress.push(`[BLOCKED] ${reason}`);
+      const lock = await acquireTaskLock(workspaceDir, task.id);
+      if (!lock) {
+        return jsonResult({
+          success: false,
+          error: `Task ${task.id} is locked by another operation`,
+        });
+      }
 
-      await writeTask(workspaceDir, task);
-      await updateCurrentTaskPointer(workspaceDir, task.id);
+      try {
+        const now = new Date().toISOString();
+        task.status = "blocked";
+        task.lastActivity = now;
+        task.blockedReason = reason;
+        task.unblockedBy = uniqueUnblockedBy;
+        task.unblockedAction = unblockedAction;
+        task.unblockRequestCount = 0;
+        task.lastUnblockerIndex = undefined;
+        task.lastUnblockRequestAt = undefined;
+        task.escalationState = "none";
+        task.progress.push(`[BLOCKED] ${reason}`);
 
-      disableAgentManagedMode(agentId);
+        await writeTask(workspaceDir, task);
+        await updateCurrentTaskPointer(workspaceDir, task.id);
 
-      return jsonResult({
-        success: true,
-        taskId: task.id,
-        status: "blocked",
-        blockedReason: reason,
-        unblockedBy,
-        unblockedAction: unblockedAction || null,
-        unblockRequestCount: 0,
-        message: `Task blocked. Unblock requests will be sent to: ${unblockedBy.join(", ")}`,
-      });
+        disableAgentManagedMode(agentId);
+
+        return jsonResult({
+          success: true,
+          taskId: task.id,
+          status: "blocked",
+          blockedReason: reason,
+          unblockedBy,
+          unblockedAction: unblockedAction || null,
+          unblockRequestCount: 0,
+          message: `Task blocked. Unblock requests will be sent to: ${unblockedBy.join(", ")}`,
+        });
+      } finally {
+        await lock.release();
+      }
     },
   };
 }
@@ -1249,30 +1315,41 @@ export function createTaskResumeTool(options: {
         });
       }
 
-      const now = new Date().toISOString();
-      task.status = "in_progress";
-      task.lastActivity = now;
-      task.progress.push("Task resumed from blocked state");
+      const lock = await acquireTaskLock(workspaceDir, task.id);
+      if (!lock) {
+        return jsonResult({
+          success: false,
+          error: `Task ${task.id} is locked by another operation`,
+        });
+      }
 
-      // Clear blocking metadata
-      task.blockedReason = undefined;
-      task.unblockedBy = undefined;
-      task.unblockedAction = undefined;
-      task.unblockRequestCount = undefined;
-      task.lastUnblockerIndex = undefined;
-      task.escalationState = undefined;
+      try {
+        const now = new Date().toISOString();
+        task.status = "in_progress";
+        task.lastActivity = now;
+        task.progress.push("Task resumed from blocked state");
 
-      await writeTask(workspaceDir, task);
-      await updateCurrentTaskPointer(workspaceDir, task.id);
+        task.blockedReason = undefined;
+        task.unblockedBy = undefined;
+        task.unblockedAction = undefined;
+        task.unblockRequestCount = undefined;
+        task.lastUnblockerIndex = undefined;
+        task.escalationState = undefined;
 
-      enableAgentManagedMode(agentId);
+        await writeTask(workspaceDir, task);
+        await updateCurrentTaskPointer(workspaceDir, task.id);
 
-      return jsonResult({
-        success: true,
-        taskId: task.id,
-        resumed: true,
-        resumedAt: now,
-      });
+        enableAgentManagedMode(agentId);
+
+        return jsonResult({
+          success: true,
+          taskId: task.id,
+          resumed: true,
+          resumedAt: now,
+        });
+      } finally {
+        await lock.release();
+      }
     },
   };
 }
@@ -1326,9 +1403,9 @@ export function createTaskBacklogAddTool(options: {
 
       const priority: TaskPriority = isCrossAgent
         ? "low"
-        : (["low", "medium", "high", "urgent"].includes(priorityRaw)
-            ? (priorityRaw as TaskPriority)
-            : "medium");
+        : ["low", "medium", "high", "urgent"].includes(priorityRaw)
+          ? (priorityRaw as TaskPriority)
+          : "medium";
 
       const estimatedEffort: EstimatedEffort | undefined =
         estimatedEffortRaw && ["small", "medium", "large"].includes(estimatedEffortRaw)
@@ -1449,36 +1526,53 @@ export function createTaskPickBacklogTool(options: {
           const allBacklog = await findAllBacklogTasks(workspaceDir);
           return jsonResult({
             success: false,
-            error: allBacklog.length > 0
-              ? "No pickable backlog task (all have unmet dependencies or future start dates)"
-              : "No backlog tasks available",
+            error:
+              allBacklog.length > 0
+                ? "No pickable backlog task (all have unmet dependencies or future start dates)"
+                : "No backlog tasks available",
             totalBacklogItems: allBacklog.length,
           });
         }
       }
 
-      const now = new Date().toISOString();
-      task.status = "in_progress";
-      task.lastActivity = now;
-      task.progress.push("Picked from backlog and started");
+      const lock = await acquireTaskLock(workspaceDir, task.id);
+      if (!lock) {
+        return jsonResult({
+          success: false,
+          error: `Task ${task.id} is locked by another operation`,
+        });
+      }
 
-      await writeTask(workspaceDir, task);
-      await updateCurrentTaskPointer(workspaceDir, task.id);
+      try {
+        const freshTask = await readTask(workspaceDir, task.id);
+        if (!freshTask || freshTask.status !== "backlog") {
+          return jsonResult({ success: false, error: `Task ${task.id} is no longer in backlog` });
+        }
 
-      enableAgentManagedMode(agentId);
+        const now = new Date().toISOString();
+        freshTask.status = "in_progress";
+        freshTask.lastActivity = now;
+        freshTask.progress.push("Picked from backlog and started");
 
-      const remainingBacklog = await findAllBacklogTasks(workspaceDir);
+        await writeTask(workspaceDir, freshTask);
+        await updateCurrentTaskPointer(workspaceDir, freshTask.id);
 
-      return jsonResult({
-        success: true,
-        taskId: task.id,
-        description: task.description,
-        priority: task.priority,
-        pickedFromBacklog: true,
-        startedAt: now,
-        remainingBacklogItems: remainingBacklog.length,
-      });
+        enableAgentManagedMode(agentId);
+
+        const remainingBacklog = await findAllBacklogTasks(workspaceDir);
+
+        return jsonResult({
+          success: true,
+          taskId: freshTask.id,
+          description: freshTask.description,
+          priority: freshTask.priority,
+          pickedFromBacklog: true,
+          startedAt: now,
+          remainingBacklogItems: remainingBacklog.length,
+        });
+      } finally {
+        await lock.release();
+      }
     },
   };
 }
-

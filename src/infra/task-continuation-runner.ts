@@ -6,6 +6,7 @@ import {
   findActiveTask,
   findBlockedTasks,
   findPendingTasks,
+  findPendingApprovalTasks,
   writeTask,
   readTask,
   type TaskFile,
@@ -256,7 +257,6 @@ function formatContinuationPrompt(task: TaskFile, pendingCount: number): string 
   return lines.join("\n");
 }
 
-
 function formatBacklogPickupPrompt(task: TaskFile): string {
   const lines = [
     `[SYSTEM REMINDER - BACKLOG PICKUP]`,
@@ -286,8 +286,10 @@ function formatBacklogPickupPrompt(task: TaskFile): string {
   }
 
   lines.push(``);
-  lines.push(`This task has been automatically picked from the backlog. Starting work now.`);
-  lines.push(`Use task_update() to log progress and task_complete() when finished.`);
+  lines.push(`**IMPORTANT:** This task is already set to in_progress with Task ID ${task.id}.`);
+  lines.push(`DO NOT call task_start() — the task already exists.`);
+  lines.push(`Use task_update(task_id="${task.id}", progress="...") to log progress.`);
+  lines.push(`Use task_complete(task_id="${task.id}", result="...") when finished.`);
 
   return lines.join("\n");
 }
@@ -311,72 +313,89 @@ async function checkAgentForContinuation(
 
   const activeTask = await findActiveTask(workspaceDir);
   if (!activeTask) {
-    // No active task - check if there's a pickable backlog task
+    const pendingTasks = await findPendingTasks(workspaceDir);
+    const approvalTasks = await findPendingApprovalTasks(workspaceDir);
+    if (pendingTasks.length > 0 || approvalTasks.length > 0) {
+      log.debug("Agent has pending/approval tasks, skipping backlog pickup", { agentId });
+      return false;
+    }
+
     const backlogTask = await findPickableBacklogTask(workspaceDir);
     if (backlogTask) {
-      log.info("Found pickable backlog task, auto-picking", {
-        agentId,
-        taskId: backlogTask.id,
-        priority: backlogTask.priority,
-      });
-
-      // Transition task to in_progress
-      backlogTask.status = "in_progress";
-      backlogTask.lastActivity = new Date().toISOString();
-      backlogTask.progress.push("Auto-picked from backlog by continuation runner");
-      await writeTask(workspaceDir, backlogTask);
-
-      // Send notification to agent
-      const prompt = formatBacklogPickupPrompt(backlogTask);
-
-      try {
-        const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
-        await agentCommand({
-          config: cfg,
-          message: prompt,
-          agentId,
-          accountId,
-          deliver: false,
-          quiet: true,
-        });
-
-        agentStates.set(agentId, {
-          lastContinuationSentMs: nowMs,
-          lastTaskId: backlogTask.id,
-          backoffUntilMs: undefined,
-          consecutiveFailures: 0,
-          lastFailureReason: undefined,
-        });
-
-        log.info("Backlog task picked and agent notified", {
+      const lock = await acquireTaskLock(workspaceDir, backlogTask.id);
+      if (!lock) {
+        log.debug("Could not acquire lock for backlog task, skipping", {
           agentId,
           taskId: backlogTask.id,
-        });
-        return true;
-      } catch (error) {
-        // Revert task status on failure
-        backlogTask.status = "backlog";
-        backlogTask.progress.pop();
-        await writeTask(workspaceDir, backlogTask);
-
-        log.warn("Failed to notify agent of backlog pickup", {
-          agentId,
-          taskId: backlogTask.id,
-          error: String(error),
         });
         return false;
+      }
+
+      try {
+        const freshTask = await readTask(workspaceDir, backlogTask.id);
+        if (!freshTask || freshTask.status !== "backlog") {
+          log.debug("Backlog task state changed after lock, skipping", {
+            agentId,
+            taskId: backlogTask.id,
+          });
+          return false;
+        }
+
+        log.info("Found pickable backlog task, auto-picking", {
+          agentId,
+          taskId: freshTask.id,
+          priority: freshTask.priority,
+        });
+
+        freshTask.status = "in_progress";
+        freshTask.lastActivity = new Date().toISOString();
+        freshTask.progress.push("Auto-picked from backlog by continuation runner");
+        await writeTask(workspaceDir, freshTask);
+
+        const prompt = formatBacklogPickupPrompt(freshTask);
+
+        try {
+          const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
+          await agentCommand({
+            config: cfg,
+            message: prompt,
+            agentId,
+            accountId,
+            deliver: false,
+            quiet: true,
+          });
+
+          agentStates.set(agentId, {
+            lastContinuationSentMs: nowMs,
+            lastTaskId: freshTask.id,
+            backoffUntilMs: undefined,
+            consecutiveFailures: 0,
+            lastFailureReason: undefined,
+          });
+
+          log.info("Backlog task picked and agent notified", {
+            agentId,
+            taskId: freshTask.id,
+          });
+          return true;
+        } catch (error) {
+          freshTask.status = "backlog";
+          freshTask.progress.pop();
+          await writeTask(workspaceDir, freshTask);
+
+          log.warn("Failed to notify agent of backlog pickup", {
+            agentId,
+            taskId: freshTask.id,
+            error: String(error),
+          });
+          return false;
+        }
+      } finally {
+        await lock.release();
       }
     }
 
     agentStates.delete(agentId);
-    return false;
-  }
-
-  if (activeTask.status === "pending_approval" || activeTask.status === "blocked") {
-    log.debug("Task is pending_approval or blocked, skipping continuation", {
-      agentId,
-      taskId: activeTask.id,
-    });
     return false;
   }
 
@@ -487,6 +506,115 @@ async function checkAgentForContinuation(
   }
 }
 
+const BLOCKED_RESUME_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+const blockedResumeLastSentMs = new Map<string, number>();
+
+function formatBlockedResumeReminderPrompt(task: TaskFile): string {
+  const lines = [
+    `[SYSTEM REMINDER - BLOCKED TASK RESUME CHECK]`,
+    ``,
+    `You have a blocked task that may already be resolved:`,
+    ``,
+    `**Task ID:** ${task.id}`,
+    `**Description:** ${task.description}`,
+    `**Blocked Reason:** ${task.blockedReason || "No reason provided"}`,
+  ];
+
+  if (task.unblockedBy && task.unblockedBy.length > 0) {
+    lines.push(`**Unblock requested from:** ${task.unblockedBy.join(", ")}`);
+  }
+
+  lines.push(``);
+  lines.push(`An unblock request was already sent. The blocking condition may have been resolved.`);
+  lines.push(
+    `**Check if the blocker is resolved.** If yes, call task_resume(task_id="${task.id}") immediately to continue working.`,
+  );
+  lines.push(`If the blocker is NOT yet resolved, do nothing — the system will retry later.`);
+
+  return lines.join("\n");
+}
+
+async function checkBlockedTasksForResume(
+  cfg: OpenClawConfig,
+  agentId: string,
+  nowMs: number,
+): Promise<void> {
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+  const blockedTasks = await findBlockedTasks(workspaceDir);
+
+  // Check agent-specific queue
+  const agentLane = `session:agent:${agentId}:main`;
+  const agentQueueSize = getQueueSize(agentLane);
+  if (agentQueueSize > 0) {
+    return; // Agent busy
+  }
+
+  for (const task of blockedTasks) {
+    // Only remind for tasks where unblock requests have been sent
+    if (!task.unblockRequestCount || task.unblockRequestCount < 1) {
+      continue;
+    }
+
+    // Skip if escalation already failed
+    if (task.escalationState === "failed") {
+      continue;
+    }
+
+    // Cooldown check
+    const resumeKey = `${agentId}:${task.id}`;
+    const lastSent = blockedResumeLastSentMs.get(resumeKey) ?? 0;
+    if (nowMs - lastSent < BLOCKED_RESUME_COOLDOWN_MS) {
+      continue;
+    }
+
+    const lock = await acquireTaskLock(workspaceDir, task.id);
+    if (!lock) {
+      continue;
+    }
+
+    try {
+      const freshTask = await readTask(workspaceDir, task.id);
+      if (!freshTask || freshTask.status !== "blocked") {
+        continue;
+      }
+
+      const prompt = formatBlockedResumeReminderPrompt(freshTask);
+
+      log.info("Sending blocked task resume reminder to blocked agent", {
+        agentId,
+        taskId: freshTask.id,
+        unblockRequestCount: freshTask.unblockRequestCount,
+      });
+
+      try {
+        const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
+        await agentCommand({
+          config: cfg,
+          message: prompt,
+          agentId,
+          accountId,
+          deliver: false,
+          quiet: true,
+        });
+        blockedResumeLastSentMs.set(resumeKey, nowMs);
+
+        log.info("Blocked task resume reminder sent", {
+          agentId,
+          taskId: freshTask.id,
+        });
+      } catch (error) {
+        log.warn("Failed to send blocked task resume reminder", {
+          agentId,
+          taskId: freshTask.id,
+          error: String(error),
+        });
+      }
+    } finally {
+      await lock.release();
+    }
+  }
+}
+
 async function checkBlockedTasksForUnblock(
   cfg: OpenClawConfig,
   agentId: string,
@@ -509,147 +637,146 @@ async function checkBlockedTasksForUnblock(
       const freshTask = await readTask(workspaceDir, task.id);
       if (!freshTask || freshTask.status !== "blocked") {
         log.debug("Task state changed after lock acquired, skipping", {
-          taskId: freshTask.id,
+          taskId: task.id,
           newStatus: freshTask?.status ?? "deleted",
         });
         continue;
       }
 
-    if (!freshTask.unblockedBy || freshTask.unblockedBy.length === 0) {
-      continue;
-    }
-
-    const requestCount = freshTask.unblockRequestCount ?? 0;
-
-    // Set escalationState to 'requesting' on first request
-    if (
-      requestCount === 0 ||
-      freshTask.escalationState === undefined ||
-      freshTask.escalationState === "none"
-    ) {
-      freshTask.escalationState = "requesting";
-    }
-    if (requestCount >= MAX_UNBLOCK_REQUESTS) {
-      log.debug("Max unblock requests reached", {
-        blockedAgentId: agentId,
-        taskId: freshTask.id,
-        requestCount,
-      });
-      freshTask.escalationState = "failed";
-      await writeTask(workspaceDir, freshTask);
-      continue;
-    }
-
-    const lastRequestAt = freshTask.lastUnblockRequestAt;
-    if (lastRequestAt) {
-      const lastRequestMs = new Date(lastRequestAt).getTime();
-      if (!isNaN(lastRequestMs) && nowMs - lastRequestMs < UNBLOCK_COOLDOWN_MS) {
-        log.debug("Unblock cooldown active", {
-          blockedAgentId: agentId,
-          taskId: freshTask.id,
-          sinceLast: nowMs - lastRequestMs,
-          cooldown: UNBLOCK_COOLDOWN_MS,
-        });
+      if (!freshTask.unblockedBy || freshTask.unblockedBy.length === 0) {
         continue;
       }
-    }
 
-    // Rotation logic - cycle through unblockedBy array
-    const lastIndex = freshTask.lastUnblockerIndex ?? -1;
-    const clampedLastIndex = Math.max(-1, Math.min(lastIndex, freshTask.unblockedBy.length - 1));
-    const nextIndex = (clampedLastIndex + 1) % freshTask.unblockedBy.length;
-    const targetAgentId = freshTask.unblockedBy[nextIndex];
-    freshTask.lastUnblockerIndex = nextIndex;
+      const requestCount = freshTask.unblockRequestCount ?? 0;
 
-    // Check A2A policy before sending request
-    if (!a2aPolicy.isAllowed(agentId, targetAgentId)) {
-      log.debug("A2A policy denied unblock request", {
-        blockedAgentId: agentId,
-        targetAgentId,
-        taskId: freshTask.id,
-      });
-
-      // Check if all unblockers are denied by policy
-      const allDenied = freshTask.unblockedBy.every(
-        (unblocker) => !a2aPolicy.isAllowed(agentId, unblocker),
-      );
-
-      if (allDenied) {
-        freshTask.escalationState = "failed";
-      }
-
-      await writeTask(workspaceDir, freshTask);
-      continue;
-    }
-
-    const prompt = formatUnblockRequestPrompt(agentId, freshTask);
-
-    log.info("Sending unblock request", {
-      blockedAgentId: agentId,
-      targetAgentId,
-      taskId: freshTask.id,
-      requestCount: requestCount + 1,
-    });
-
-    try {
-      const accountId = resolveAgentBoundAccountId(cfg, targetAgentId, "discord");
-      await agentCommand({
-        config: cfg,
-        message: prompt,
-        agentId: targetAgentId,
-        accountId,
-        deliver: false,
-        quiet: true,
-      });
-
-      freshTask.lastUnblockRequestAt = new Date(nowMs).toISOString();
-      freshTask.unblockRequestCount = requestCount + 1;
-      freshTask.lastActivity = new Date().toISOString();
-      // Keep escalationState as 'requesting' for subsequent attempts
-      if (freshTask.escalationState !== "requesting") {
+      // Set escalationState to 'requesting' on first request
+      if (
+        requestCount === 0 ||
+        freshTask.escalationState === undefined ||
+        freshTask.escalationState === "none"
+      ) {
         freshTask.escalationState = "requesting";
       }
-      freshTask.progress.push(
-        `[UNBLOCK REQUEST ${freshTask.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`,
-      );
-      freshTask.unblockRequestFailures = 0;
-      await writeTask(workspaceDir, freshTask);
-
-      log.info("Unblock request sent", {
-        blockedAgentId: agentId,
-        targetAgentId,
-        taskId: freshTask.id,
-        requestCount: freshTask.unblockRequestCount,
-      });
-    } catch (error) {
-      // Track consecutive failures
-      freshTask.unblockRequestFailures = (freshTask.unblockRequestFailures ?? 0) + 1;
-      
-      if (freshTask.unblockRequestFailures >= MAX_UNBLOCK_FAILURES) {
-        freshTask.escalationState = "failed";
-        log.warn("Max unblock request failures reached, marking escalation as failed", {
+      if (requestCount >= MAX_UNBLOCK_REQUESTS) {
+        log.debug("Max unblock requests reached", {
           blockedAgentId: agentId,
           taskId: freshTask.id,
-          failures: freshTask.unblockRequestFailures,
+          requestCount,
         });
+        freshTask.escalationState = "failed";
+        await writeTask(workspaceDir, freshTask);
+        continue;
       }
-      
-      await writeTask(workspaceDir, freshTask);
-      
-      log.warn("Failed to send unblock request", {
+
+      const lastRequestAt = freshTask.lastUnblockRequestAt;
+      if (lastRequestAt) {
+        const lastRequestMs = new Date(lastRequestAt).getTime();
+        if (!isNaN(lastRequestMs) && nowMs - lastRequestMs < UNBLOCK_COOLDOWN_MS) {
+          log.debug("Unblock cooldown active", {
+            blockedAgentId: agentId,
+            taskId: freshTask.id,
+            sinceLast: nowMs - lastRequestMs,
+            cooldown: UNBLOCK_COOLDOWN_MS,
+          });
+          continue;
+        }
+      }
+
+      // Rotation logic - cycle through unblockedBy array
+      const lastIndex = freshTask.lastUnblockerIndex ?? -1;
+      const clampedLastIndex = Math.max(-1, Math.min(lastIndex, freshTask.unblockedBy.length - 1));
+      const nextIndex = (clampedLastIndex + 1) % freshTask.unblockedBy.length;
+      const targetAgentId = freshTask.unblockedBy[nextIndex];
+      freshTask.lastUnblockerIndex = nextIndex;
+
+      // Check A2A policy before sending request
+      if (!a2aPolicy.isAllowed(agentId, targetAgentId)) {
+        log.debug("A2A policy denied unblock request", {
+          blockedAgentId: agentId,
+          targetAgentId,
+          taskId: freshTask.id,
+        });
+
+        // Check if all unblockers are denied by policy
+        const allDenied = freshTask.unblockedBy.every(
+          (unblocker) => !a2aPolicy.isAllowed(agentId, unblocker),
+        );
+
+        if (allDenied) {
+          freshTask.escalationState = "failed";
+        }
+
+        await writeTask(workspaceDir, freshTask);
+        continue;
+      }
+
+      const prompt = formatUnblockRequestPrompt(agentId, freshTask);
+
+      log.info("Sending unblock request", {
         blockedAgentId: agentId,
         targetAgentId,
         taskId: freshTask.id,
-        error: String(error),
-        consecutiveFailures: freshTask.unblockRequestFailures,
+        requestCount: requestCount + 1,
       });
-    }
+
+      try {
+        const accountId = resolveAgentBoundAccountId(cfg, targetAgentId, "discord");
+        await agentCommand({
+          config: cfg,
+          message: prompt,
+          agentId: targetAgentId,
+          accountId,
+          deliver: false,
+          quiet: true,
+        });
+
+        freshTask.lastUnblockRequestAt = new Date(nowMs).toISOString();
+        freshTask.unblockRequestCount = requestCount + 1;
+        freshTask.lastActivity = new Date().toISOString();
+        // Keep escalationState as 'requesting' for subsequent attempts
+        if (freshTask.escalationState !== "requesting") {
+          freshTask.escalationState = "requesting";
+        }
+        freshTask.progress.push(
+          `[UNBLOCK REQUEST ${freshTask.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`,
+        );
+        freshTask.unblockRequestFailures = 0;
+        await writeTask(workspaceDir, freshTask);
+
+        log.info("Unblock request sent", {
+          blockedAgentId: agentId,
+          targetAgentId,
+          taskId: freshTask.id,
+          requestCount: freshTask.unblockRequestCount,
+        });
+      } catch (error) {
+        // Track consecutive failures
+        freshTask.unblockRequestFailures = (freshTask.unblockRequestFailures ?? 0) + 1;
+
+        if (freshTask.unblockRequestFailures >= MAX_UNBLOCK_FAILURES) {
+          freshTask.escalationState = "failed";
+          log.warn("Max unblock request failures reached, marking escalation as failed", {
+            blockedAgentId: agentId,
+            taskId: freshTask.id,
+            failures: freshTask.unblockRequestFailures,
+          });
+        }
+
+        await writeTask(workspaceDir, freshTask);
+
+        log.warn("Failed to send unblock request", {
+          blockedAgentId: agentId,
+          targetAgentId,
+          taskId: freshTask.id,
+          error: String(error),
+          consecutiveFailures: freshTask.unblockRequestFailures,
+        });
+      }
     } catch (error) {
       log.error("Failed to process blocked task", {
-        taskId: freshTask.id,
+        taskId: task.id,
         error: String(error),
       });
-      // Continue to next task
     } finally {
       await lock.release();
     }
@@ -675,6 +802,7 @@ async function runContinuationCheck(cfg: OpenClawConfig, idleThresholdMs: number
     try {
       await checkAgentForContinuation(cfg, agentId, idleThresholdMs, nowMs);
       await checkBlockedTasksForUnblock(cfg, agentId, nowMs);
+      await checkBlockedTasksForResume(cfg, agentId, nowMs);
     } catch (error) {
       log.warn("Error checking agent for continuation", { agentId, error: String(error) });
     }

@@ -63,6 +63,7 @@ type TaskStatus =
   | "pending_approval"
   | "in_progress"
   | "blocked"
+  | "backlog"
   | "completed"
   | "cancelled";
 type TaskPriority = "low" | "medium" | "high" | "urgent";
@@ -87,6 +88,13 @@ interface TaskFile {
   lastUnblockerIndex?: number;
   lastUnblockRequestAt?: string;
   unblockRequestFailures?: number;
+  // Backlog task fields
+  createdBy?: string;
+  assignee?: string;
+  dependsOn?: string[];
+  estimatedEffort?: string;
+  startDate?: string;
+  dueDate?: string;
 }
 
 interface AgentInfo {
@@ -151,6 +159,13 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let lastUnblockerIndex: number | undefined;
   let lastUnblockRequestAt: string | undefined;
   let unblockRequestFailures: number | undefined;
+  // Backlog task fields
+  let createdBy: string | undefined;
+  let assignee: string | undefined;
+  let dependsOn: string[] | undefined;
+  let estimatedEffort: string | undefined;
+  let startDate: string | undefined;
+  let dueDate: string | undefined;
 
   let currentSection = "";
 
@@ -198,13 +213,18 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       }
       const unblockedByMatch = trimmed.match(/^-?\s*\*\*Unblocked By:\*\*\s*(.+)$/);
       if (unblockedByMatch) {
-        unblockedBy = unblockedByMatch[1].split(/,\s*/).map(s => s.trim()).filter(Boolean);
+        unblockedBy = unblockedByMatch[1]
+          .split(/,\s*/)
+          .map((s) => s.trim())
+          .filter(Boolean);
       }
       const unblockedActionMatch = trimmed.match(/^-?\s*\*\*Unblocked Action:\*\*\s*(.+)$/);
       if (unblockedActionMatch) {
         unblockedAction = unblockedActionMatch[1];
       }
-      const unblockRequestCountMatch = trimmed.match(/^-?\s*\*\*Unblock Request Count:\*\*\s*(\d+)$/);
+      const unblockRequestCountMatch = trimmed.match(
+        /^-?\s*\*\*Unblock Request Count:\*\*\s*(\d+)$/,
+      );
       if (unblockRequestCountMatch) {
         unblockRequestCount = parseInt(unblockRequestCountMatch[1], 10);
       }
@@ -212,18 +232,22 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (escalationStateMatch) {
         escalationState = escalationStateMatch[1] as EscalationState;
       }
-      const lastUnblockerIndexMatch = trimmed.match(/^-?\s*\*\*Last Unblocker Index:\*\*\s*(-?\d+)$/);
+      const lastUnblockerIndexMatch = trimmed.match(
+        /^-?\s*\*\*Last Unblocker Index:\*\*\s*(-?\d+)$/,
+      );
       if (lastUnblockerIndexMatch) {
         lastUnblockerIndex = parseInt(lastUnblockerIndexMatch[1], 10);
       }
-      const lastUnblockRequestAtMatch = trimmed.match(/^-?\s*\*\*Last Unblock Request At:\*\*\s*(.+)$/);
+      const lastUnblockRequestAtMatch = trimmed.match(
+        /^-?\s*\*\*Last Unblock Request At:\*\*\s*(.+)$/,
+      );
       if (lastUnblockRequestAtMatch) {
         lastUnblockRequestAt = lastUnblockRequestAtMatch[1];
       }
     } else if (currentSection === "description") {
-      description = trimmed;
+      description = description ? `${description}\n${trimmed}` : trimmed;
     } else if (currentSection === "context") {
-      context = trimmed;
+      context = context ? `${context}\n${trimmed}` : trimmed;
     } else if (currentSection === "last activity") {
       lastActivity = trimmed;
     } else if (currentSection === "progress") {
@@ -239,11 +263,29 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
           if (blockingData.blockedReason) blockedReason = blockingData.blockedReason;
           if (blockingData.unblockedBy) unblockedBy = blockingData.unblockedBy;
           if (blockingData.unblockedAction) unblockedAction = blockingData.unblockedAction;
-          if (typeof blockingData.unblockRequestCount === "number") unblockRequestCount = blockingData.unblockRequestCount;
+          if (typeof blockingData.unblockRequestCount === "number")
+            unblockRequestCount = blockingData.unblockRequestCount;
           if (blockingData.escalationState) escalationState = blockingData.escalationState;
-          if (typeof blockingData.lastUnblockerIndex === "number") lastUnblockerIndex = blockingData.lastUnblockerIndex;
-          if (blockingData.lastUnblockRequestAt) lastUnblockRequestAt = blockingData.lastUnblockRequestAt;
-          if (typeof blockingData.unblockRequestFailures === "number") unblockRequestFailures = blockingData.unblockRequestFailures;
+          if (typeof blockingData.lastUnblockerIndex === "number")
+            lastUnblockerIndex = blockingData.lastUnblockerIndex;
+          if (blockingData.lastUnblockRequestAt)
+            lastUnblockRequestAt = blockingData.lastUnblockRequestAt;
+          if (typeof blockingData.unblockRequestFailures === "number")
+            unblockRequestFailures = blockingData.unblockRequestFailures;
+        } catch {
+          // Invalid JSON, skip
+        }
+      }
+    } else if (currentSection === "backlog") {
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const backlogData = JSON.parse(trimmed);
+          if (backlogData.createdBy) createdBy = backlogData.createdBy;
+          if (backlogData.assignee) assignee = backlogData.assignee;
+          if (backlogData.dependsOn) dependsOn = backlogData.dependsOn;
+          if (backlogData.estimatedEffort) estimatedEffort = backlogData.estimatedEffort;
+          if (backlogData.startDate) startDate = backlogData.startDate;
+          if (backlogData.dueDate) dueDate = backlogData.dueDate;
         } catch {
           // Invalid JSON, skip
         }
@@ -269,6 +311,12 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     lastUnblockerIndex,
     lastUnblockRequestAt,
     unblockRequestFailures,
+    createdBy,
+    assignee,
+    dependsOn,
+    estimatedEffort,
+    startDate,
+    dueDate,
   };
 }
 
@@ -365,12 +413,18 @@ async function listTasks(agentId: string, statusFilter?: TaskStatus): Promise<Ta
   const tasksDir = path.join(workspaceDir, TASKS_DIR);
   const tasks: TaskFile[] = [];
 
+  let files: string[] = [];
   try {
-    const files = await fs.readdir(tasksDir);
-    for (const file of files) {
-      if (!file.endsWith(".md") || !file.startsWith("task_")) {
-        continue;
-      }
+    files = await fs.readdir(tasksDir);
+  } catch {
+    return tasks;
+  }
+
+  for (const file of files) {
+    if (!file.endsWith(".md") || !file.startsWith("task_")) {
+      continue;
+    }
+    try {
       const filePath = path.join(tasksDir, file);
       const content = await fs.readFile(filePath, "utf-8");
       const task = parseTaskFileMd(content, file);
@@ -379,9 +433,9 @@ async function listTasks(agentId: string, statusFilter?: TaskStatus): Promise<Ta
           tasks.push(task);
         }
       }
+    } catch {
+      // File may have been deleted between readdir and readFile
     }
-  } catch {
-    // Directory doesn't exist
   }
 
   // Sort by priority then creation time
@@ -527,7 +581,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
     if (action === "blocked") {
       const tasks = await listTasks(agentId, "blocked");
-      const blockedDetails = tasks.map(t => ({
+      const blockedDetails = tasks.map((t) => ({
         id: t.id,
         description: t.description,
         blockedReason: t.blockedReason,
@@ -609,7 +663,11 @@ function setupWebSocket(server: http.Server): WebSocketServer {
     const json = JSON.stringify(message);
     for (const client of clients) {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(json);
+        try {
+          client.send(json);
+        } catch {
+          clients.delete(client);
+        }
       }
     }
   }
