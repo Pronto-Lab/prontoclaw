@@ -6,3 +6,5 @@ export type {
   VoiceSessionEvents,
 } from "./types.js";
 export { VoiceSessionManager } from "./voice-session.js";
+export { TextToSpeech } from "./text-to-speech.js";
+export type { TextToSpeechOptions, TextToSpeechEvents } from "./text-to-speech.js";
