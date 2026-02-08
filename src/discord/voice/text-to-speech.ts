@@ -55,7 +55,9 @@ export class TextToSpeech extends EventEmitter<TextToSpeechEvents> {
 
   /** Enqueue a sentence for TTS playback. */
   speak(text: string): void {
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      return;
+    }
     this.queue.push(text);
     if (!this.isProcessing) {
       void this.processQueue();
@@ -89,7 +91,9 @@ export class TextToSpeech extends EventEmitter<TextToSpeechEvents> {
   // ── internals ──────────────────────────────────────────────
 
   private async processQueue(): Promise<void> {
-    if (this.isProcessing) return;
+    if (this.isProcessing) {
+      return;
+    }
     this.isProcessing = true;
     this.stopped = false;
 
@@ -99,12 +103,22 @@ export class TextToSpeech extends EventEmitter<TextToSpeechEvents> {
       const sentence = this.queue.shift()!;
 
       try {
+        console.log("[TTS] calling textToSpeechTelephony", { sentence: sentence.slice(0, 60) });
         const result: TtsTelephonyResult = await textToSpeechTelephony({
           text: sentence,
           cfg: this.cfg,
         });
+        console.log("[TTS] textToSpeechTelephony result", {
+          success: result.success,
+          provider: result.provider,
+          sampleRate: result.sampleRate,
+          bufferSize: result.audioBuffer?.length,
+          error: result.error,
+        });
 
-        if (this.stopped) break;
+        if (this.stopped) {
+          break;
+        }
 
         if (!result.success || !result.audioBuffer) {
           this.emit("error", new Error(result.error ?? "TTS returned no audio buffer"));
@@ -129,7 +143,9 @@ export class TextToSpeech extends EventEmitter<TextToSpeechEvents> {
 
         await waitForPlayerIdle(this.player);
 
-        if (this.stopped) break;
+        if (this.stopped) {
+          break;
+        }
 
         this.playedSentences.push(sentence);
         this.currentSentenceIndex++;

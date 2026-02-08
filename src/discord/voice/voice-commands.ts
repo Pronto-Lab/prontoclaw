@@ -126,17 +126,24 @@ export async function initVoicePipeline(
 
   //    responseStart -> speaking state
   bridge.on("responseStart", () => {
-    voiceSession.setState("speaking");
+    try {
+      voiceSession.setState("speaking");
+    } catch {
+      // May already be in speaking or idle state
+    }
   });
 
   //    textChunk -> TTS
   bridge.on("textChunk", (text: string) => {
+    console.log("[VoicePipeline] textChunk -> tts.speak", { text: text.slice(0, 60) });
     tts.speak(text);
   });
 
   //    speakingEnd -> idle state
   tts.on("speakingEnd", () => {
-    voiceSession.setState("idle");
+    if (voiceSession.getState() !== "idle") {
+      voiceSession.setState("idle");
+    }
   });
 
   //    error forwarding

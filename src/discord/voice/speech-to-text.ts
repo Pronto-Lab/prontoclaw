@@ -49,7 +49,25 @@ export class SpeechToText extends EventEmitter {
     this.reconnecting = false;
   }
 
+  private _sendCount = 0;
   sendAudio(pcmBuffer: Buffer): void {
+    this._sendCount++;
+    if (this._sendCount === 1 || this._sendCount === 10 || this._sendCount % 500 === 0) {
+      // Check if audio has actual content (not silence)
+      let maxAmp = 0;
+      for (let i = 0; i < pcmBuffer.length - 1; i += 2) {
+        const sample = Math.abs(pcmBuffer.readInt16LE(i));
+        if (sample > maxAmp) {
+          maxAmp = sample;
+        }
+      }
+      console.log("[SpeechToText] sendAudio", {
+        count: this._sendCount,
+        bytes: pcmBuffer.length,
+        maxAmplitude: maxAmp,
+        connected: this.connection?.isConnected(),
+      });
+    }
     if (this.connection && this.connection.isConnected()) {
       // Deepgram send() expects string | ArrayBufferLike | Blob.
       // Convert Node Buffer to ArrayBuffer to satisfy the type contract.
@@ -140,18 +158,29 @@ export class SpeechToText extends EventEmitter {
 
   private handleTranscript(data: unknown): void {
     const result = data as DeepgramTranscriptResult;
-
     const alternative = result?.channel?.alternatives?.[0];
-    if (!alternative) return;
+    const transcript = alternative?.transcript?.trim() ?? "";
+    const confidence = alternative?.confidence ?? 0;
+    const isFinal = result?.is_final ?? false;
+    const speechFinal = result?.speech_final ?? false;
 
-    const transcript = alternative.transcript?.trim();
-    if (!transcript || transcript.length < MIN_TEXT_LENGTH) return;
+    console.log("[SpeechToText] transcript", {
+      text: transcript,
+      confidence,
+      isFinal,
+      speechFinal,
+      len: transcript.length,
+    });
 
-    const confidence = alternative.confidence ?? 0;
-    if (confidence < MIN_CONFIDENCE) return;
-
-    const isFinal = result.is_final ?? false;
-    const speechFinal = result.speech_final ?? false;
+    if (!alternative) {
+      return;
+    }
+    if (!transcript || transcript.length < MIN_TEXT_LENGTH) {
+      return;
+    }
+    if (confidence < MIN_CONFIDENCE) {
+      return;
+    }
 
     if (isFinal) {
       const event: TranscriptEvent = {
@@ -188,7 +217,9 @@ export class SpeechToText extends EventEmitter {
 
   private flushUtterance(): void {
     const text = this.accumulatedText.trim();
+    console.log("[SpeechToText] flushUtterance", { text, len: text.length });
     if (text.length > 0) {
+      console.log("[SpeechToText] emitting utteranceEnd", { text });
       this.emit("utteranceEnd", text, this.userId);
       this.accumulatedText = "";
     }
@@ -197,7 +228,9 @@ export class SpeechToText extends EventEmitter {
   // ---- reconnection ------------------------------------------------------
 
   private async attemptReconnect(): Promise<void> {
-    if (this.stopped || this.reconnecting) return;
+    if (this.stopped || this.reconnecting) {
+      return;
+    }
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       console.error("[SpeechToText] Max reconnection attempts reached", { userId: this.userId });
       this.emit("error", new Error("Max Deepgram reconnection attempts reached"));

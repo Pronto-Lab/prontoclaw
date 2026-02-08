@@ -77,6 +77,7 @@ export class VoiceSessionManager extends EventEmitter {
   private activeUserId: string | null = null;
 
   /** Per-user opus subscription cleanup handles */
+  private _audioLoggedOnce = false;
   private readonly subscriptionCleanups = new Map<string, () => void>();
 
   constructor(config: VoiceSessionConfig) {
@@ -217,9 +218,14 @@ export class VoiceSessionManager extends EventEmitter {
   private setupAudioReceiver(conn: VoiceConnection): void {
     const receiver = conn.receiver;
 
+    console.log("[VoiceSession] setupAudioReceiver: waiting for speaking events");
+
     receiver.speaking.on("start", (userId: string) => {
+      console.log("[VoiceSession] speaking.start", { userId, botUserId: this.config.botUserId });
       // Ignore audio from the bot itself
-      if (userId === this.config.botUserId) return;
+      if (userId === this.config.botUserId) {
+        return;
+      }
 
       // 1:1 enforcement — lock to first speaker
       if (this.activeUserId === null) {
@@ -227,7 +233,9 @@ export class VoiceSessionManager extends EventEmitter {
         this.emit("userJoined", userId);
       }
 
-      if (userId !== this.activeUserId) return;
+      if (userId !== this.activeUserId) {
+        return;
+      }
 
       // Transition to listening if idle
       if (this.state === "idle") {
@@ -235,13 +243,17 @@ export class VoiceSessionManager extends EventEmitter {
       }
 
       // Only subscribe once per user
-      if (this.subscriptionCleanups.has(userId)) return;
+      if (this.subscriptionCleanups.has(userId)) {
+        return;
+      }
 
       this.subscribeToUser(conn, userId);
     });
 
     receiver.speaking.on("end", (userId: string) => {
-      if (userId === this.config.botUserId) return;
+      if (userId === this.config.botUserId) {
+        return;
+      }
 
       // If the active user stops speaking we keep the subscription alive;
       // the STT module decides when an utterance truly ends.
@@ -262,9 +274,34 @@ export class VoiceSessionManager extends EventEmitter {
 
       const downsampler = new PcmDownsampleTransform();
 
+      let opusChunks = 0;
+      let decoderChunks = 0;
+      opusStream.on("data", () => {
+        opusChunks++;
+        if (opusChunks === 1 || opusChunks % 200 === 0) {
+          console.log("[VoiceSession] opusStream data", { opusChunks });
+        }
+      });
+      decoder.on("data", (buf: Buffer) => {
+        decoderChunks++;
+        if (decoderChunks === 1) {
+          let maxAmp = 0;
+          for (let i = 0; i < buf.length - 1; i += 2) {
+            const s = Math.abs(buf.readInt16LE(i));
+            if (s > maxAmp) {
+              maxAmp = s;
+            }
+          }
+          console.log("[VoiceSession] decoder first chunk", { bytes: buf.length, maxAmp });
+        }
+      });
       opusStream.pipe(decoder).pipe(downsampler);
 
       downsampler.on("data", (pcm: Buffer) => {
+        if (!this._audioLoggedOnce) {
+          console.log("[VoiceSession] first audioData chunk", { userId, bytes: pcm.length });
+          this._audioLoggedOnce = true;
+        }
         this.emit("audioData", pcm, userId);
       });
 
@@ -308,7 +345,9 @@ export class VoiceSessionManager extends EventEmitter {
   }
 
   private internalSetState(newState: VoiceSessionState): void {
-    if (newState === this.state) return;
+    if (newState === this.state) {
+      return;
+    }
     const from = this.state;
     this.state = newState;
     this.emit("stateChanged", from, newState);

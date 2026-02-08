@@ -11,7 +11,7 @@ import {
 } from "@buape/carbon";
 import type { VoicePipelineHandle } from "../voice/voice-commands.js";
 import { danger } from "../../globals.js";
-import { formatDurationSeconds } from "../../infra/format-duration.js";
+import { formatDurationSeconds } from "../../infra/format-time/format-duration.ts";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
@@ -415,7 +415,9 @@ export class DiscordVoiceServerListener extends VoiceServerUpdateListener {
 
   async handle(data: Parameters<VoiceServerUpdateListener["handle"]>[0], _client: Client) {
     const guildId = (data as any).guild_id;
-    if (!guildId) return;
+    if (!guildId) {
+      return;
+    }
 
     const adapter = this.voicePlugin.adapters.get(guildId);
     if (adapter) {
