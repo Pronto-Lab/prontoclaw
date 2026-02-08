@@ -1,5 +1,6 @@
 import { Client } from "@buape/carbon";
 import { GatewayIntents, GatewayPlugin } from "@buape/carbon/gateway";
+import { VoicePlugin } from "@buape/carbon/voice";
 import { Routes } from "discord-api-types/v10";
 import { inspect } from "node:util";
 import type { HistoryEntry } from "../../auto-reply/reply/history.js";
@@ -26,6 +27,7 @@ import { fetchDiscordApplicationId } from "../probe.js";
 import { resolveDiscordChannelAllowlist } from "../resolve-channels.js";
 import { resolveDiscordUserAllowlist } from "../resolve-users.js";
 import { normalizeDiscordToken } from "../token.js";
+import { initVoicePipeline, type VoicePipelineHandle } from "../voice/voice-commands.js";
 import { createExecApprovalButton, DiscordExecApprovalHandler } from "./exec-approvals.js";
 import { registerGateway, unregisterGateway } from "./gateway-registry.js";
 import {
@@ -33,7 +35,9 @@ import {
   DiscordPresenceListener,
   DiscordReactionListener,
   DiscordReactionRemoveListener,
+  DiscordVoiceStateListener,
   registerDiscordListener,
+  type VoiceStateContext,
 } from "./listeners.js";
 import { createDiscordMessageHandler } from "./message-handler.js";
 import {
@@ -510,6 +514,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         intents: resolveDiscordGatewayIntents(discordCfg.intents),
         autoInteractions: true,
       }),
+      new VoicePlugin(),
     ],
   );
 
@@ -583,6 +588,65 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       new DiscordPresenceListener({ logger, accountId: account.accountId }),
     );
     runtime.log?.("discord: GuildPresences intent enabled — presence listener registered");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Voice pipeline wiring
+  // ---------------------------------------------------------------------------
+  const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
+  const voiceTargetChannel = process.env.DISCORD_VOICE_CHANNEL_ID;
+  let voicePipeline: VoicePipelineHandle | null = null;
+
+  if (deepgramApiKey && voiceTargetChannel && botUserId) {
+    const voicePlugin = client.getPlugin<VoicePlugin>("voice");
+    if (voicePlugin) {
+      const voiceContext: VoiceStateContext = {
+        botUserId,
+        targetChannelId: voiceTargetChannel,
+        getCurrentPipeline: () => voicePipeline,
+        onJoinNeeded: async (guildId: string, channelId: string, userId: string) => {
+          if (voicePipeline) {
+            return; // already running
+          }
+          const adapterCreator = voicePlugin.getGatewayAdapterCreator(guildId);
+          voicePipeline = await initVoicePipeline({
+            guildId,
+            channelId,
+            botUserId: botUserId!,
+            userId,
+            cfg,
+            sessionKey: `discord:voice:${guildId}:${channelId}`,
+            agentId: undefined,
+            accountId: account.accountId,
+            adapterCreator,
+            deepgramApiKey,
+          });
+          runtime.log?.(`discord: voice pipeline started in channel ${channelId}`);
+        },
+        onLeaveNeeded: () => {
+          if (voicePipeline) {
+            voicePipeline.destroy();
+            voicePipeline = null;
+            runtime.log?.("discord: voice pipeline destroyed");
+          }
+        },
+      };
+
+      registerDiscordListener(
+        client.listeners,
+        new DiscordVoiceStateListener(voiceContext, logger),
+      );
+      runtime.log?.(`discord: voice listener registered for channel ${voiceTargetChannel}`);
+    } else {
+      runtime.log?.("discord: VoicePlugin not found — voice features disabled");
+    }
+  } else {
+    if (!deepgramApiKey) {
+      runtime.log?.("discord: DEEPGRAM_API_KEY not set — voice features disabled");
+    }
+    if (!voiceTargetChannel) {
+      runtime.log?.("discord: DISCORD_VOICE_CHANNEL_ID not set — voice features disabled");
+    }
   }
 
   runtime.log?.(`logged in to discord${botUserId ? ` as ${botUserId}` : ""}`);

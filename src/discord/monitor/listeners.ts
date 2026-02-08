@@ -5,12 +5,15 @@ import {
   MessageReactionAddListener,
   MessageReactionRemoveListener,
   PresenceUpdateListener,
+  VoiceStateUpdateListener,
 } from "@buape/carbon";
+import type { VoicePipelineHandle } from "../voice/voice-commands.js";
 import { danger } from "../../globals.js";
 import { formatDurationSeconds } from "../../infra/format-duration.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
+import { handleVoiceStateUpdate } from "../voice/voice-commands.js";
 import {
   normalizeDiscordSlug,
   resolveDiscordChannelConfigWithFallback,
@@ -317,6 +320,74 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
     } catch (err) {
       const logger = this.logger ?? discordEventQueueLog;
       logger.error(danger(`discord presence handler failed: ${String(err)}`));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Voice State Listener — auto-join / auto-leave voice pipeline
+// ---------------------------------------------------------------------------
+
+export type VoiceStateContext = {
+  botUserId: string;
+  targetChannelId: string;
+  getCurrentPipeline: () => VoicePipelineHandle | null;
+  onJoinNeeded: (guildId: string, channelId: string, userId: string) => Promise<void>;
+  onLeaveNeeded: () => void;
+};
+
+/**
+ * Track per-user voice channel membership so we can derive old/new transitions
+ * from the single channel_id field in VOICE_STATE_UPDATE.
+ */
+const userVoiceChannels = new Map<string, string | null>();
+
+export class DiscordVoiceStateListener extends VoiceStateUpdateListener {
+  constructor(
+    private context: VoiceStateContext,
+    private logger?: Logger,
+  ) {
+    super();
+  }
+
+  async handle(data: Parameters<VoiceStateUpdateListener["handle"]>[0], _client: Client) {
+    const startedAt = Date.now();
+    try {
+      const userId = data.user_id;
+      const guildId = data.guild_id;
+      if (!userId || !guildId) {
+        return;
+      }
+
+      // Derive old/new channel from tracked state
+      const oldChannelId = userVoiceChannels.get(userId) ?? undefined;
+      const newChannelId = data.channel_id ?? undefined;
+
+      // Update tracked state
+      userVoiceChannels.set(userId, data.channel_id ?? null);
+
+      handleVoiceStateUpdate({
+        oldChannelId,
+        newChannelId,
+        userId,
+        guildId,
+        botUserId: this.context.botUserId,
+        targetChannelId: this.context.targetChannelId,
+        currentPipeline: this.context.getCurrentPipeline(),
+        onJoinNeeded: () =>
+          this.context.onJoinNeeded(guildId, this.context.targetChannelId, userId),
+        onLeaveNeeded: () => this.context.onLeaveNeeded(),
+      });
+    } catch (err) {
+      const logger = this.logger ?? discordEventQueueLog;
+      logger.error(danger("discord voice state handler failed: " + String(err)));
+    } finally {
+      logSlowDiscordListener({
+        logger: this.logger,
+        listener: this.constructor.name,
+        event: this.type,
+        durationMs: Date.now() - startedAt,
+      });
     }
   }
 }
