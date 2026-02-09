@@ -220,9 +220,31 @@ function formatUnblockRequestPrompt(blockedAgentId: string, task: TaskFile): str
 
   lines.push(``);
   lines.push(`Please help unblock this task by taking the necessary action.`);
-  lines.push(
-    `After helping, you can notify the blocked agent or let them know the blocker is resolved.`,
-  );
+  lines.push(``);
+  lines.push(`**IMPORTANT:** After completing the required action, you MUST notify agent "${blockedAgentId}" so they can resume their blocked task.`);
+  lines.push(`Use sessions_send(target="agent:${blockedAgentId}:main", message="[UNBLOCK RESOLVED] I have completed the required action for task ${task.id}. You can now call task_resume(task_id=\"${task.id}\") to continue your work.") to notify them.`);
+
+  return lines.join("\n");
+}
+
+function formatUnblockEscalationPrompt(blockedAgentId: string, task: TaskFile, targetAgentId: string): string {
+  const lines = [
+    `[ESCALATION - UNBLOCK REQUEST (Final Attempt)]`,
+    ``,
+    `⚠️ Agent "${blockedAgentId}"의 작업이 차단되어 있으며, 이전 내부 요청(2회)으로 해결되지 않았습니다.`,
+    `이것은 마지막 자동 시도입니다. 해결되지 않으면 수동 개입이 필요합니다.`,
+    ``,
+    `**차단된 태스크:** ${task.description}`,
+    `**차단 사유:** ${task.blockedReason || "사유 없음"}`,
+  ];
+
+  if (task.unblockedAction) {
+    lines.push(`**필요한 조치:** ${task.unblockedAction}`);
+  }
+
+  lines.push(``);
+  lines.push(`${targetAgentId}에게: 위 조치를 완료한 후 반드시 agent "${blockedAgentId}"에게 알려주세요.`);
+  lines.push(`Use sessions_send(target="agent:${blockedAgentId}:main", message="[UNBLOCK RESOLVED] Task ${task.id} resolved. Call task_resume(task_id=\"${task.id}\") to continue.") to notify them.`);
 
   return lines.join("\n");
 }
@@ -506,7 +528,7 @@ async function checkAgentForContinuation(
   }
 }
 
-const BLOCKED_RESUME_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+const BLOCKED_RESUME_COOLDOWN_MS = 3 * 60 * 1000; // 3 minutes (reduced from 10 for faster resume checks)
 const blockedResumeLastSentMs = new Map<string, number>();
 
 function formatBlockedResumeReminderPrompt(task: TaskFile): string {
@@ -525,11 +547,14 @@ function formatBlockedResumeReminderPrompt(task: TaskFile): string {
   }
 
   lines.push(``);
-  lines.push(`An unblock request was already sent. The blocking condition may have been resolved.`);
-  lines.push(
-    `**Check if the blocker is resolved.** If yes, call task_resume(task_id="${task.id}") immediately to continue working.`,
-  );
-  lines.push(`If the blocker is NOT yet resolved, do nothing — the system will retry later.`);
+  lines.push(`An unblock request was already sent to the agents listed above. The blocking condition may have been resolved.`);
+  lines.push(``);
+  lines.push(`**YOU MUST DO THE FOLLOWING:**`);
+  lines.push(`1. Check if the blocking condition has been resolved (review recent messages, check if required work was completed).`);
+  lines.push(`2. If the blocker IS resolved → Call task_resume(task_id="${task.id}") IMMEDIATELY to continue working.`);
+  lines.push(`3. If the blocker is NOT resolved → Do nothing. The system will check again in 3 minutes.`);
+  lines.push(``);
+  lines.push(`**Do NOT wait passively.** Actively verify the blocker status and resume if possible.`);
 
   return lines.join("\n");
 }
@@ -720,14 +745,19 @@ async function checkBlockedTasksForUnblock(
       });
 
       try {
+        const isLastAttempt = (requestCount + 1) >= MAX_UNBLOCK_REQUESTS;
+        const escalationPrompt = isLastAttempt
+          ? formatUnblockEscalationPrompt(agentId, freshTask, targetAgentId)
+          : prompt;
+
         const accountId = resolveAgentBoundAccountId(cfg, targetAgentId, "discord");
         await agentCommand({
           config: cfg,
-          message: prompt,
+          message: escalationPrompt,
           agentId: targetAgentId,
           accountId,
-          deliver: false,
-          quiet: true,
+          deliver: isLastAttempt,
+          quiet: !isLastAttempt,
         });
 
         freshTask.lastUnblockRequestAt = new Date(nowMs).toISOString();
@@ -737,8 +767,9 @@ async function checkBlockedTasksForUnblock(
         if (freshTask.escalationState !== "requesting") {
           freshTask.escalationState = "requesting";
         }
+        const escalationTag = isLastAttempt ? " [ESCALATED TO DISCORD]" : "";
         freshTask.progress.push(
-          `[UNBLOCK REQUEST ${freshTask.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}`,
+          `[UNBLOCK REQUEST ${freshTask.unblockRequestCount}/${MAX_UNBLOCK_REQUESTS}] Sent to ${targetAgentId}${escalationTag}`,
         );
         freshTask.unblockRequestFailures = 0;
         await writeTask(workspaceDir, freshTask);
