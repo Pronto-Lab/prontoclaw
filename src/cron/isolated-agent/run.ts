@@ -406,7 +406,7 @@ export async function runCronIsolatedAgentTurn(params: {
           sessionKey: agentSessionKey,
           agentId,
           messageChannel,
-          agentAccountId: resolvedDelivery.accountId,
+          agentAccountId: resolvedDelivery.accountId ?? params.cfg.bindings?.find(b => b.agentId === agentId && b.match?.channel === messageChannel)?.match?.accountId,
           sessionFile,
           workspaceDir,
           config: cfgWithAgentDefaults,
