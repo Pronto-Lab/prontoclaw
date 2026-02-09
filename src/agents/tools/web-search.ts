@@ -513,24 +513,35 @@ export function createWebSearchTool(options?: {
           docs: "https://docs.openclaw.ai/tools/web",
         });
       }
-      const result = await runWebSearch({
-        query,
-        count: resolveSearchCount(count, DEFAULT_SEARCH_COUNT),
-        apiKey,
-        timeoutSeconds: resolveTimeoutSeconds(search?.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS),
-        cacheTtlMs: resolveCacheTtlMs(search?.cacheTtlMinutes, DEFAULT_CACHE_TTL_MINUTES),
-        provider,
-        country,
-        search_lang,
-        ui_lang,
-        freshness,
-        perplexityBaseUrl: resolvePerplexityBaseUrl(
-          perplexityConfig,
-          perplexityAuth?.source,
-          perplexityAuth?.apiKey,
-        ),
-        perplexityModel: resolvePerplexityModel(perplexityConfig),
-      });
+      let result: Record<string, unknown>;
+      try {
+        result = await runWebSearch({
+          query,
+          count: resolveSearchCount(count, DEFAULT_SEARCH_COUNT),
+          apiKey,
+          timeoutSeconds: resolveTimeoutSeconds(search?.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS),
+          cacheTtlMs: resolveCacheTtlMs(search?.cacheTtlMinutes, DEFAULT_CACHE_TTL_MINUTES),
+          provider,
+          country,
+          search_lang,
+          ui_lang,
+          freshness,
+          perplexityBaseUrl: resolvePerplexityBaseUrl(
+            perplexityConfig,
+            perplexityAuth?.source,
+            perplexityAuth?.apiKey,
+          ),
+          perplexityModel: resolvePerplexityModel(perplexityConfig),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return jsonResult({
+          error: 'web_search_failed',
+          message: `Web search failed: ${message}. Do NOT retry this search — the service may be rate-limited or temporarily unavailable.`,
+          query,
+          provider,
+        });
+      }
       return jsonResult(result);
     },
   };
