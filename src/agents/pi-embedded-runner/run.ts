@@ -5,6 +5,7 @@ import type { EmbeddedPiAgentMeta, EmbeddedPiRunResult } from "./types.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
+import { resolveAgentModelFallbacksOverride } from "../agent-scope.js";
 import {
   isProfileInCooldown,
   markAuthProfileFailure,
@@ -177,7 +178,10 @@ export async function runEmbeddedPiAgent(
       const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
       const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
       const fallbackConfigured =
-        (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
+        (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0 ||
+        (params.config && params.agentId
+          ? (resolveAgentModelFallbacksOverride(params.config, params.agentId)?.length ?? 0)
+          : 0) > 0;
       await ensureOpenClawModelsJson(params.config, agentDir);
 
       const { model, error, authStorage, modelRegistry } = resolveModel(

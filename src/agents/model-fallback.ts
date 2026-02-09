@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { FailoverReason } from "./pi-embedded-helpers.js";
 import {
+  clearAuthProfileCooldown,
   ensureAuthProfileStore,
   isProfileInCooldown,
   resolveAuthProfileOrder,
@@ -297,6 +298,17 @@ export async function runWithModelFallback<T>(params: {
           continue;
         }
         // Different model family — cooldown likely doesn't apply; attempt anyway.
+        // Clear cooldown on all profiles for this provider so the embedded runner
+        // doesn't reject the attempt during its own auth profile resolution.
+        for (const pid of profileIds) {
+          if (isProfileInCooldown(authStore, pid)) {
+            await clearAuthProfileCooldown({
+              store: authStore,
+              profileId: pid,
+              agentDir: params.agentDir,
+            });
+          }
+        }
       }
     }
     try {
