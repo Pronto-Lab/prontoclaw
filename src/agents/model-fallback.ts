@@ -204,6 +204,32 @@ function resolveFallbackCandidates(params: {
   return candidates;
 }
 
+/**
+ * Extract a model "family" prefix from a model identifier.
+ * Models in the same family share quota (e.g., "claude-opus-4-6-thinking" → "claude",
+ * "gemini-3-flash" → "gemini"). Models in different families may have independent
+ * quotas even under the same provider, so a cooldown caused by one family should
+ * not block attempts for another family.
+ */
+function extractModelFamily(model: string): string {
+  const normalized = model.toLowerCase();
+  if (normalized.startsWith("claude")) {
+    return "claude";
+  }
+  if (normalized.startsWith("gemini")) {
+    return "gemini";
+  }
+  if (normalized.startsWith("gpt")) {
+    return "gpt";
+  }
+  if (normalized.startsWith("o1") || normalized.startsWith("o3") || normalized.startsWith("o4")) {
+    return "openai-reasoning";
+  }
+  // Fallback: use the first segment before any dash/digit boundary as family
+  const match = normalized.match(/^([a-z]+)/);
+  return match ? match[1] : normalized;
+}
+
 export async function runWithModelFallback<T>(params: {
   cfg: OpenClawConfig | undefined;
   provider: string;
@@ -248,14 +274,29 @@ export async function runWithModelFallback<T>(params: {
       const isAnyProfileAvailable = profileIds.some((id) => !isProfileInCooldown(authStore, id));
 
       if (profileIds.length > 0 && !isAnyProfileAvailable) {
-        // All profiles for this provider are in cooldown; skip without attempting
-        attempts.push({
-          provider: candidate.provider,
-          model: candidate.model,
-          error: `Provider ${candidate.provider} is in cooldown (all profiles unavailable)`,
-          reason: "rate_limit",
-        });
-        continue;
+        // All profiles for this provider are in cooldown.
+        // However, cooldown may have been caused by a specific model family
+        // (e.g., Claude 429). If this candidate is a *different* model family,
+        // the quota might be independent — allow the attempt instead of skipping.
+        const candidateFamily = extractModelFamily(candidate.model);
+        const failedFamilies = attempts
+          .filter((a) => a.provider === candidate.provider && a.reason === "rate_limit")
+          .map((a) => extractModelFamily(a.model));
+        const isSameFamilyAsFailed =
+          failedFamilies.length > 0 && failedFamilies.includes(candidateFamily);
+
+        if (isSameFamilyAsFailed || failedFamilies.length === 0) {
+          // Same model family as a previous rate-limited failure, or no prior
+          // rate-limit failures recorded (cooldown from a previous session) — skip.
+          attempts.push({
+            provider: candidate.provider,
+            model: candidate.model,
+            error: `Provider ${candidate.provider} is in cooldown (all profiles unavailable)`,
+            reason: "rate_limit",
+          });
+          continue;
+        }
+        // Different model family — cooldown likely doesn't apply; attempt anyway.
       }
     }
     try {
