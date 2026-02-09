@@ -260,18 +260,30 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
         try {
           const blockingData = JSON.parse(trimmed);
-          if (blockingData.blockedReason) blockedReason = blockingData.blockedReason;
-          if (blockingData.unblockedBy) unblockedBy = blockingData.unblockedBy;
-          if (blockingData.unblockedAction) unblockedAction = blockingData.unblockedAction;
-          if (typeof blockingData.unblockRequestCount === "number")
+          if (blockingData.blockedReason) {
+            blockedReason = blockingData.blockedReason;
+          }
+          if (blockingData.unblockedBy) {
+            unblockedBy = blockingData.unblockedBy;
+          }
+          if (blockingData.unblockedAction) {
+            unblockedAction = blockingData.unblockedAction;
+          }
+          if (typeof blockingData.unblockRequestCount === "number") {
             unblockRequestCount = blockingData.unblockRequestCount;
-          if (blockingData.escalationState) escalationState = blockingData.escalationState;
-          if (typeof blockingData.lastUnblockerIndex === "number")
+          }
+          if (blockingData.escalationState) {
+            escalationState = blockingData.escalationState;
+          }
+          if (typeof blockingData.lastUnblockerIndex === "number") {
             lastUnblockerIndex = blockingData.lastUnblockerIndex;
-          if (blockingData.lastUnblockRequestAt)
+          }
+          if (blockingData.lastUnblockRequestAt) {
             lastUnblockRequestAt = blockingData.lastUnblockRequestAt;
-          if (typeof blockingData.unblockRequestFailures === "number")
+          }
+          if (typeof blockingData.unblockRequestFailures === "number") {
             unblockRequestFailures = blockingData.unblockRequestFailures;
+          }
         } catch {
           // Invalid JSON, skip
         }
@@ -280,12 +292,24 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
         try {
           const backlogData = JSON.parse(trimmed);
-          if (backlogData.createdBy) createdBy = backlogData.createdBy;
-          if (backlogData.assignee) assignee = backlogData.assignee;
-          if (backlogData.dependsOn) dependsOn = backlogData.dependsOn;
-          if (backlogData.estimatedEffort) estimatedEffort = backlogData.estimatedEffort;
-          if (backlogData.startDate) startDate = backlogData.startDate;
-          if (backlogData.dueDate) dueDate = backlogData.dueDate;
+          if (backlogData.createdBy) {
+            createdBy = backlogData.createdBy;
+          }
+          if (backlogData.assignee) {
+            assignee = backlogData.assignee;
+          }
+          if (backlogData.dependsOn) {
+            dependsOn = backlogData.dependsOn;
+          }
+          if (backlogData.estimatedEffort) {
+            estimatedEffort = backlogData.estimatedEffort;
+          }
+          if (backlogData.startDate) {
+            startDate = backlogData.startDate;
+          }
+          if (backlogData.dueDate) {
+            dueDate = backlogData.dueDate;
+          }
         } catch {
           // Invalid JSON, skip
         }
@@ -451,6 +475,80 @@ async function listTasks(agentId: string, statusFilter?: TaskStatus): Promise<Ta
   return tasks;
 }
 
+async function getTaskById(agentId: string, taskId: string): Promise<TaskFile | null> {
+  const workspaceDir = path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}${agentId}`);
+
+  // 1. Check active tasks directory first
+  const tasksDir = path.join(workspaceDir, TASKS_DIR);
+  const taskFilePath = path.join(tasksDir, `${taskId}.md`);
+  try {
+    const content = await fs.readFile(taskFilePath, "utf-8");
+    const task = parseTaskFileMd(content, `${taskId}.md`);
+    if (task) {
+      return task;
+    }
+  } catch {
+    // Not in active tasks, check history
+  }
+
+  // 2. Fallback: search task-history files
+  const historyDir = path.join(workspaceDir, TASK_HISTORY_DIR);
+  try {
+    const files = await fs.readdir(historyDir);
+    const monthFiles = files
+      .filter((f: string) => /^\d{4}-\d{2}\.md$/.test(f))
+      .toSorted()
+      .toReversed();
+
+    for (const monthFile of monthFiles) {
+      const historyPath = path.join(historyDir, monthFile);
+      const content = await fs.readFile(historyPath, "utf-8");
+
+      // Split into entries and search for matching task ID
+      const entries = content.split(/(?=^## \[)/m);
+      for (const entry of entries) {
+        const taskIdMatch = entry.match(/\*\*Task ID:\*\*\s*(task_[a-z0-9_]+)/);
+        if (taskIdMatch && taskIdMatch[1] === taskId) {
+          // Parse completed task from history entry
+          const statusMatch = entry.match(/\*\*Completed:\*\*\s*(.+)/);
+          const priorityMatch = entry.match(/\*\*Priority:\*\*\s*(.+)/);
+          const startedMatch = entry.match(/\*\*Started:\*\*\s*(.+)/);
+          const titleMatch = entry.match(/^## \[.+?\]\s*(.+)$/m);
+          const summaryMatch = entry.match(/### Summary\n([\s\S]*?)(?=\n---|\n## |$)/);
+
+          const progressLines: string[] = [];
+          const progressSection = entry.match(/### Progress\n([\s\S]*?)(?=\n### |$)/);
+          if (progressSection) {
+            const pLines = progressSection[1].split("\n");
+            for (const pl of pLines) {
+              const trimmed = pl.trim();
+              if (trimmed.startsWith("- ")) {
+                progressLines.push(trimmed.slice(2));
+              }
+            }
+          }
+
+          return {
+            id: taskId,
+            status: "completed" as TaskStatus,
+            priority: (priorityMatch?.[1]?.trim() || "medium") as TaskPriority,
+            description: titleMatch?.[1]?.trim() || "(no description)",
+            context: summaryMatch?.[1]?.trim(),
+            source: "history",
+            created: startedMatch?.[1]?.trim() || "",
+            lastActivity: statusMatch?.[1]?.trim() || "",
+            progress: progressLines,
+          };
+        }
+      }
+    }
+  } catch {
+    // No history directory
+  }
+
+  return null;
+}
+
 async function getTaskHistory(
   agentId: string,
   options: { limit?: number; month?: string } = {},
@@ -465,8 +563,8 @@ async function getTaskHistory(
     months = files
       .filter((f) => /^\d{4}-\d{2}\.md$/.test(f))
       .map((f) => f.replace(".md", ""))
-      .sort()
-      .reverse();
+      .toSorted()
+      .toReversed();
   } catch {
     return { entries: "", months: [] };
   }
@@ -547,6 +645,19 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
+    // Single task by ID: /api/agents/:agentId/tasks/:taskId
+    const taskIdMatch = action.match(/^tasks\/(.+)$/);
+    if (taskIdMatch) {
+      const taskId = taskIdMatch[1];
+      const task = await getTaskById(agentId, taskId);
+      if (task) {
+        jsonResponse(res, { agentId, task, source: task.source || "active" });
+      } else {
+        jsonResponse(res, { agentId, task: null, source: "not_found" });
+      }
+      return;
+    }
+
     if (action === "tasks") {
       const status = url.searchParams.get("status") as TaskStatus | null;
       const tasks = await listTasks(agentId, status || undefined);
@@ -612,6 +723,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents",
         "GET /api/agents/:agentId/info",
         "GET /api/agents/:agentId/tasks",
+        "GET /api/agents/:agentId/tasks/:taskId",
         "GET /api/agents/:agentId/tasks?status=in_progress",
         "GET /api/agents/:agentId/current",
         "GET /api/agents/:agentId/blocked",
