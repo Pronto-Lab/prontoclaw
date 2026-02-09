@@ -102,4 +102,6 @@ export type RunEmbeddedPiAgentParams = {
   streamParams?: AgentStreamParams;
   ownerNumbers?: string[];
   enforceFinalTag?: boolean;
+  /** When true, skip initial auth profile cooldown check (used for cross-model-family fallback). */
+  skipCooldownCheck?: boolean;
 };

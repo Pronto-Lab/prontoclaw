@@ -1,7 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { FailoverReason } from "./pi-embedded-helpers.js";
 import {
-  clearAuthProfileCooldown,
   ensureAuthProfileStore,
   isProfileInCooldown,
   resolveAuthProfileOrder,
@@ -206,6 +205,12 @@ function resolveFallbackCandidates(params: {
 }
 
 /**
+ * Module-level flag set by runWithModelFallback to signal cross-family fallback.
+ * The embedded runner checks this to skip cooldown for the current attempt.
+ */
+export let _crossFamilyFallbackActive = false;
+
+/**
  * Extract a model "family" prefix from a model identifier.
  * Models in the same family share quota (e.g., "claude-opus-4-6-thinking" → "claude",
  * "gemini-3-flash" → "gemini"). Models in different families may have independent
@@ -298,20 +303,16 @@ export async function runWithModelFallback<T>(params: {
           continue;
         }
         // Different model family — cooldown likely doesn't apply; attempt anyway.
-        // Clear cooldown on all profiles for this provider so the embedded runner
-        // doesn't reject the attempt during its own auth profile resolution.
-        for (const pid of profileIds) {
-          if (isProfileInCooldown(authStore, pid)) {
-            await clearAuthProfileCooldown({
-              store: authStore,
-              profileId: pid,
-              agentDir: params.agentDir,
-            });
-          }
-        }
       }
     }
+    const isCrossFamilyAttempt =
+      i > 0 &&
+      authStore &&
+      extractModelFamily(candidate.model) !== extractModelFamily(candidates[0].model);
     try {
+      if (isCrossFamilyAttempt) {
+        _crossFamilyFallbackActive = true;
+      }
       const result = await params.run(candidate.provider, candidate.model);
       return {
         result,
@@ -349,6 +350,8 @@ export async function runWithModelFallback<T>(params: {
         attempt: i + 1,
         total: candidates.length,
       });
+    } finally {
+      _crossFamilyFallbackActive = false;
     }
   }
 

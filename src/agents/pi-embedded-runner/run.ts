@@ -26,6 +26,7 @@ import {
   resolveAuthProfileOrder,
   type ResolvedProviderAuth,
 } from "../model-auth.js";
+import { _crossFamilyFallbackActive } from "../model-fallback.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import {
@@ -337,7 +338,11 @@ export async function runEmbeddedPiAgent(
         let nextIndex = profileIndex + 1;
         while (nextIndex < profileCandidates.length) {
           const candidate = profileCandidates[nextIndex];
-          if (candidate && isProfileInCooldown(authStore, candidate)) {
+          if (
+            candidate &&
+            !(params.skipCooldownCheck || _crossFamilyFallbackActive) &&
+            isProfileInCooldown(authStore, candidate)
+          ) {
             nextIndex += 1;
             continue;
           }
@@ -363,6 +368,7 @@ export async function runEmbeddedPiAgent(
           if (
             candidate &&
             candidate !== lockedProfileId &&
+            !(params.skipCooldownCheck || _crossFamilyFallbackActive) &&
             isProfileInCooldown(authStore, candidate)
           ) {
             profileIndex += 1;
