@@ -1,4 +1,4 @@
-import { Client } from "@buape/carbon";
+import { Client, type BaseMessageInteractiveComponent } from "@buape/carbon";
 import { GatewayIntents, GatewayPlugin } from "@buape/carbon/gateway";
 import { VoicePlugin } from "@buape/carbon/voice";
 import { Routes } from "discord-api-types/v10";
@@ -28,6 +28,7 @@ import { resolveDiscordChannelAllowlist } from "../resolve-channels.js";
 import { resolveDiscordUserAllowlist } from "../resolve-users.js";
 import { normalizeDiscordToken } from "../token.js";
 import { initVoicePipeline, type VoicePipelineHandle } from "../voice/voice-commands.js";
+import { createAgentComponentButton, createAgentSelectMenu } from "./agent-components.js";
 import { createExecApprovalButton, DiscordExecApprovalHandler } from "./exec-approvals.js";
 import { registerGateway, unregisterGateway } from "./gateway-registry.js";
 import {
@@ -481,7 +482,10 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       })
     : null;
 
-  const components = [
+  const agentComponentsConfig = discordCfg.agentComponents ?? {};
+  const agentComponentsEnabled = agentComponentsConfig.enabled ?? true;
+
+  const components: BaseMessageInteractiveComponent[] = [
     createDiscordCommandArgFallbackButton({
       cfg,
       discordConfig: discordCfg,
@@ -492,6 +496,27 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
 
   if (execApprovalsHandler) {
     components.push(createExecApprovalButton({ handler: execApprovalsHandler }));
+  }
+
+  if (agentComponentsEnabled) {
+    components.push(
+      createAgentComponentButton({
+        cfg,
+        accountId: account.accountId,
+        guildEntries,
+        allowFrom,
+        dmPolicy,
+      }),
+    );
+    components.push(
+      createAgentSelectMenu({
+        cfg,
+        accountId: account.accountId,
+        guildEntries,
+        allowFrom,
+        dmPolicy,
+      }),
+    );
   }
 
   const client = new Client(
@@ -511,7 +536,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     [
       new GatewayPlugin({
         reconnect: {
-          maxAttempts: Number.POSITIVE_INFINITY,
+          maxAttempts: 50,
         },
         intents: resolveDiscordGatewayIntents(discordCfg.intents),
         autoInteractions: true,
