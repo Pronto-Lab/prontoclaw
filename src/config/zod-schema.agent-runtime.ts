@@ -428,6 +428,13 @@ export const MemorySearchSchema = z
   })
   .strict()
   .optional();
+
+const AgentMemoryAccessSchema = z
+  .object({
+    allowReadFrom: z.array(z.string()).optional(),
+  })
+  .strict()
+  .optional();
 export const AgentModelSchema = z.union([
   z.string(),
   z
@@ -437,20 +444,31 @@ export const AgentModelSchema = z.union([
     })
     .strict(),
 ]);
+export const AgentDiscordSchema = z
+  .object({
+    responseWebhook: z.string().url().optional(),
+    responseWebhookAvatar: z.string().url().optional(),
+  })
+  .strict()
+  .optional();
+
 export const AgentEntrySchema = z
   .object({
     id: z.string(),
     default: z.boolean().optional(),
     name: z.string().optional(),
+    description: z.string().optional(),
     workspace: z.string().optional(),
     agentDir: z.string().optional(),
     model: AgentModelSchema.optional(),
     skills: z.array(z.string()).optional(),
+    memory: AgentMemoryAccessSchema,
     memorySearch: MemorySearchSchema,
     humanDelay: HumanDelaySchema.optional(),
     heartbeat: HeartbeatSchema,
     identity: IdentitySchema,
     groupChat: GroupChatSchema,
+    discord: AgentDiscordSchema,
     subagents: z
       .object({
         allowAgents: z.array(z.string()).optional(),

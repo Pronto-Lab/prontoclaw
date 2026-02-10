@@ -9,6 +9,11 @@ import type {
 } from "./types.sandbox.js";
 import type { AgentToolsConfig, MemorySearchConfig } from "./types.tools.js";
 
+export type AgentDiscordConfig = {
+  responseWebhook?: string;
+  responseWebhookAvatar?: string;
+};
+
 export type AgentModelConfig =
   | string
   | {
@@ -22,11 +27,18 @@ export type AgentConfig = {
   id: string;
   default?: boolean;
   name?: string;
+  /** Human-readable description of agent capabilities for dynamic discovery. */
+  description?: string;
   workspace?: string;
   agentDir?: string;
   model?: AgentModelConfig;
   /** Optional allowlist of skills for this agent (omit = all skills; empty = none). */
   skills?: string[];
+  /** Optional per-agent memory access controls. */
+  memory?: {
+    /** Allow this agent to read memory from other agents (ids or "*"). */
+    allowReadFrom?: string[];
+  };
   memorySearch?: MemorySearchConfig;
   /** Human-like delay between block replies for this agent. */
   humanDelay?: HumanDelayConfig;
@@ -34,6 +46,7 @@ export type AgentConfig = {
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   identity?: IdentityConfig;
   groupChat?: GroupChatConfig;
+  discord?: AgentDiscordConfig;
   subagents?: {
     /** Allow spawning sub-agents under other agent ids. Use "*" to allow any. */
     allowAgents?: string[];
