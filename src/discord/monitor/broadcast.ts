@@ -43,7 +43,7 @@ export function buildBroadcastRoute(params: {
   authorId: string;
 }): ReturnType<typeof resolveAgentRoute> {
   const normalizedAgentId = normalizeAgentId(params.agentId);
-  const peerKind = params.isDirectMessage ? "dm" : "channel";
+  const peerKind = params.isDirectMessage ? "direct" : "channel";
   const peerId = params.isDirectMessage ? params.authorId : params.channelId;
 
   const sessionKey = buildAgentSessionKey({
