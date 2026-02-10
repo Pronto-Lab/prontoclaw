@@ -417,12 +417,10 @@ async function checkAgentForContinuation(
             cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
           );
           await agentCommand({
-            config: cfg,
             message: prompt,
             agentId,
             accountId,
             deliver: false,
-            quiet: true,
           });
 
           agentStates.set(agentId, {
@@ -531,12 +529,10 @@ async function checkAgentForContinuation(
       cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
     );
     await agentCommand({
-      config: cfg,
       message: prompt,
       agentId,
       accountId,
       deliver: false,
-      quiet: true,
     });
 
     // Success - reset failure state
@@ -679,12 +675,10 @@ async function checkBlockedTasksForResume(
           cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
         );
         await agentCommand({
-          config: cfg,
           message: prompt,
           agentId,
           accountId,
           deliver: false,
-          quiet: true,
         });
         blockedResumeLastSentMs.set(resumeKey, nowMs);
 
@@ -821,12 +815,10 @@ async function checkBlockedTasksForUnblock(
           cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
         );
         await agentCommand({
-          config: cfg,
           message: escalationPrompt,
           agentId: targetAgentId,
           accountId,
           deliver: isLastAttempt,
-          quiet: !isLastAttempt,
         });
 
         freshTask.lastUnblockRequestAt = new Date(nowMs).toISOString();

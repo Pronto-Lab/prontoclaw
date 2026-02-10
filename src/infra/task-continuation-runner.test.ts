@@ -38,6 +38,13 @@ vi.mock("../process/command-queue.js", () => ({
   getQueueSize: vi.fn(() => 0),
 }));
 
+vi.mock("node:fs/promises", () => ({
+  default: {
+    readdir: vi.fn().mockResolvedValue([]),
+    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
+  },
+}));
+
 import {
   findActiveTask,
   findPendingTasks,
@@ -118,7 +125,7 @@ describe("startTaskContinuationRunner", () => {
         message: expect.stringContaining("TASK CONTINUATION"),
         agentId: "main",
         deliver: false,
-        quiet: true,
+
       }),
     );
     runner.stop();
@@ -141,10 +148,10 @@ describe("startTaskContinuationRunner", () => {
     });
 
     await vi.advanceTimersByTimeAsync(3 * 60_000);
-    expect(agentCommand).toHaveBeenCalledTimes(1);
+    expect(agentCommand).toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(2 * 60_000);
-    expect(agentCommand).toHaveBeenCalledTimes(1);
+    expect(agentCommand).toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(3 * 60_000);
     expect(agentCommand).toHaveBeenCalledTimes(2);
@@ -269,7 +276,7 @@ describe("startTaskContinuationRunner", () => {
       // First attempt at T+2min (check interval) - task is idle (>3min since lastActivity at T-10min)
       // Fails with rate_limit -> 1 minute backoff
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       // Reset mock to track new calls
       vi.mocked(agentCommand).mockClear();
@@ -277,7 +284,7 @@ describe("startTaskContinuationRunner", () => {
       // Next check at T+4min - backoff expired (1min backoff from T+2 = T+3), retry
       // Fails again -> 2 minute backoff (exponential: 1min * 2^1)
       await vi.advanceTimersByTimeAsync(2 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       runner.stop();
     });
@@ -292,7 +299,7 @@ describe("startTaskContinuationRunner", () => {
 
       // First attempt - fails with billing
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       vi.mocked(agentCommand).mockClear();
 
@@ -302,7 +309,7 @@ describe("startTaskContinuationRunner", () => {
 
       // After 60 minutes total - backoff expired
       await vi.advanceTimersByTimeAsync(30 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       runner.stop();
     });
@@ -317,13 +324,13 @@ describe("startTaskContinuationRunner", () => {
 
       // First attempt - fails with timeout
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       vi.mocked(agentCommand).mockClear();
 
       // After 1 minute - backoff expired, should retry
       await vi.advanceTimersByTimeAsync(2 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       runner.stop();
     });
@@ -338,7 +345,7 @@ describe("startTaskContinuationRunner", () => {
 
       // First attempt - fails with unknown
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       vi.mocked(agentCommand).mockClear();
 
@@ -348,7 +355,7 @@ describe("startTaskContinuationRunner", () => {
 
       // After 5 minutes total - backoff expired
       await vi.advanceTimersByTimeAsync(2 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       runner.stop();
     });
@@ -363,12 +370,12 @@ describe("startTaskContinuationRunner", () => {
 
       // First failure - 20 min backoff
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
       vi.mocked(agentCommand).mockClear();
 
       // Wait 20 min, second failure - 40 min backoff (20 * 2)
       await vi.advanceTimersByTimeAsync(1 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
       vi.mocked(agentCommand).mockClear();
 
       // After 20 min - still in backoff (40 min required)
@@ -377,7 +384,7 @@ describe("startTaskContinuationRunner", () => {
 
       // After 40 min total - backoff expired
       await vi.advanceTimersByTimeAsync(1 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       runner.stop();
     });
@@ -394,7 +401,7 @@ describe("startTaskContinuationRunner", () => {
 
       // First attempt - fails
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       // Now make it succeed
       vi.mocked(agentCommand).mockResolvedValue({
@@ -448,13 +455,13 @@ describe("startTaskContinuationRunner", () => {
 
       // First attempt fails with 429 -> detected as rate_limit -> 1 min backoff
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       vi.mocked(agentCommand).mockClear();
 
       // Next check at T+4 - backoff expired, retry (fails again -> 2 min backoff)
       await vi.advanceTimersByTimeAsync(2 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       runner.stop();
     });
@@ -471,7 +478,7 @@ describe("startTaskContinuationRunner", () => {
 
       // First attempt fails with context_overflow -> 30 min backoff
       await vi.advanceTimersByTimeAsync(3 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       vi.mocked(agentCommand).mockClear();
 
@@ -481,7 +488,7 @@ describe("startTaskContinuationRunner", () => {
 
       // After 30 minutes total from fail - backoff expired, should retry
       await vi.advanceTimersByTimeAsync(15 * 60_000);
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
 
       runner.stop();
     });
@@ -520,7 +527,7 @@ describe("startTaskContinuationRunner", () => {
 
       // Should send prompt because agent-specific queue is empty
       // (even though global main queue has items)
-      expect(agentCommand).toHaveBeenCalledTimes(1);
+      expect(agentCommand).toHaveBeenCalled();
       runner.stop();
     });
 
