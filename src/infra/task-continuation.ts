@@ -121,7 +121,8 @@ export async function loadPendingTasks(cfg: ReturnType<typeof loadConfig>): Prom
         }
         try {
           const content = await fs.readFile(path.join(tasksDir, file), "utf-8");
-          const statusMatch = content.match(/\*\*Status:\*\*\s*(\S+)/);
+          const metaBlock = content.split("## ").find((s) => s.startsWith("Metadata")) || "";
+          const statusMatch = metaBlock.match(/\*\*Status:\*\*\s*(\S+)/);
           const status = statusMatch?.[1];
           if (status !== "in_progress" && status !== "blocked") {
             continue;

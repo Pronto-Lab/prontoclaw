@@ -53,6 +53,13 @@ vi.mock("../agents/tools/sessions-helpers.js", () => ({
   }),
 }));
 
+vi.mock("node:fs/promises", () => ({
+  default: {
+    readdir: vi.fn().mockResolvedValue([]),
+    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
+  },
+}));
+
 import {
   findActiveTask,
   findPendingTasks,

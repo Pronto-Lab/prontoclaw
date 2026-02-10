@@ -20,7 +20,10 @@ import { getQueueSize } from "../process/command-queue.js";
 // CommandLane import removed - using agent-specific lanes
 import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { emit } from "./events/bus.js";
+import { EVENT_TYPES } from "./events/schemas.js";
 import { acquireTaskLock } from "./task-lock.js";
+import { updateAgentEntry, readTeamState, findLeadAgent } from "./team-state.js";
 
 const log = createSubsystemLogger("task-continuation");
 
@@ -358,220 +361,261 @@ async function checkAgentForContinuation(
 ): Promise<boolean> {
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
 
-  // Check agent-specific queue, not global main queue
-  // Agent lanes follow pattern: session:agent:{agentId}:main
-  const agentLane = `session:agent:${agentId}:main`;
-  const agentQueueSize = getQueueSize(agentLane);
-  if (agentQueueSize > 0) {
-    log.debug("Agent busy, skipping continuation check", { agentId, queueSize: agentQueueSize });
+  // Fix #1: Per-agent lock to prevent duplicate continuation prompts
+  const continuationLock = await acquireTaskLock(workspaceDir, `continuation_${agentId}`);
+  if (!continuationLock) {
+    log.debug("Continuation check already running for agent, skipping", { agentId });
     return false;
   }
 
-  const activeTask = await findActiveTask(workspaceDir);
-  if (!activeTask) {
-    const pendingTasks = await findPendingTasks(workspaceDir);
-    const approvalTasks = await findPendingApprovalTasks(workspaceDir);
-    if (pendingTasks.length > 0 || approvalTasks.length > 0) {
-      log.debug("Agent has pending/approval tasks, skipping backlog pickup", { agentId });
+  try {
+    // Check agent-specific queue, not global main queue
+    // Agent lanes follow pattern: session:agent:{agentId}:main
+    const agentLane = `session:agent:${agentId}:main`;
+    const agentQueueSize = getQueueSize(agentLane);
+    if (agentQueueSize > 0) {
+      log.debug("Agent busy, skipping continuation check", { agentId, queueSize: agentQueueSize });
       return false;
     }
 
-    const backlogTask = await findPickableBacklogTask(workspaceDir);
-    if (backlogTask) {
-      const lock = await acquireTaskLock(workspaceDir, backlogTask.id);
-      if (!lock) {
-        log.debug("Could not acquire lock for backlog task, skipping", {
-          agentId,
-          taskId: backlogTask.id,
-        });
+    const activeTask = await findActiveTask(workspaceDir);
+    if (!activeTask) {
+      const pendingTasks = await findPendingTasks(workspaceDir);
+      const approvalTasks = await findPendingApprovalTasks(workspaceDir);
+      if (pendingTasks.length > 0 || approvalTasks.length > 0) {
+        log.debug("Agent has pending/approval tasks, skipping backlog pickup", { agentId });
         return false;
       }
 
-      try {
-        const freshTask = await readTask(workspaceDir, backlogTask.id);
-        if (!freshTask || freshTask.status !== "backlog") {
-          log.debug("Backlog task state changed after lock, skipping", {
+      const backlogTask = await findPickableBacklogTask(workspaceDir);
+      if (backlogTask) {
+        const lock = await acquireTaskLock(workspaceDir, backlogTask.id);
+        if (!lock) {
+          log.debug("Could not acquire lock for backlog task, skipping", {
             agentId,
             taskId: backlogTask.id,
           });
           return false;
         }
 
-        log.info("Found pickable backlog task, auto-picking", {
-          agentId,
-          taskId: freshTask.id,
-          priority: freshTask.priority,
-        });
-
-        freshTask.status = "in_progress";
-        freshTask.lastActivity = new Date().toISOString();
-        freshTask.progress.push("Auto-picked from backlog by continuation runner");
-        await writeTask(workspaceDir, freshTask);
-
-        const prompt = formatBacklogPickupPrompt(freshTask);
-
         try {
-          const accountId = resolveAgentBoundAccountId(
-            cfg,
-            agentId,
-            cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
-          );
-          await agentCommand({
-            message: prompt,
-            agentId,
-            accountId,
-            deliver: false,
-          });
+          const freshTask = await readTask(workspaceDir, backlogTask.id);
+          if (!freshTask || freshTask.status !== "backlog") {
+            log.debug("Backlog task state changed after lock, skipping", {
+              agentId,
+              taskId: backlogTask.id,
+            });
+            return false;
+          }
 
-          agentStates.set(agentId, {
-            lastContinuationSentMs: nowMs,
-            lastTaskId: freshTask.id,
-            backoffUntilMs: undefined,
-            consecutiveFailures: 0,
-            lastFailureReason: undefined,
-          });
-
-          log.info("Backlog task picked and agent notified", {
+          log.info("Found pickable backlog task, auto-picking", {
             agentId,
             taskId: freshTask.id,
+            priority: freshTask.priority,
           });
-          return true;
-        } catch (error) {
-          freshTask.status = "backlog";
-          freshTask.progress.pop();
+
+          freshTask.status = "in_progress";
+          freshTask.lastActivity = new Date().toISOString();
+          freshTask.progress.push("Auto-picked from backlog by continuation runner");
           await writeTask(workspaceDir, freshTask);
 
-          log.warn("Failed to notify agent of backlog pickup", {
-            agentId,
-            taskId: freshTask.id,
-            error: String(error),
-          });
-          return false;
+          const prompt = formatBacklogPickupPrompt(freshTask);
+
+          try {
+            const accountId = resolveAgentBoundAccountId(
+              cfg,
+              agentId,
+              cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+            );
+            await agentCommand({
+              message: prompt,
+              agentId,
+              accountId,
+              deliver: false,
+            });
+
+            agentStates.set(agentId, {
+              lastContinuationSentMs: nowMs,
+              lastTaskId: freshTask.id,
+              backoffUntilMs: undefined,
+              consecutiveFailures: 0,
+              lastFailureReason: undefined,
+            });
+
+            emit({
+              type: EVENT_TYPES.BACKLOG_AUTO_PICKED,
+              agentId,
+              ts: Date.now(),
+              data: { taskId: freshTask.id },
+            });
+            await updateAgentEntry(workspaceDir, agentId, {
+              status: "active",
+              currentTaskId: freshTask.id,
+            });
+            log.info("Backlog task picked and agent notified", {
+              agentId,
+              taskId: freshTask.id,
+            });
+            return true;
+          } catch (error) {
+            freshTask.status = "backlog";
+            freshTask.progress.pop();
+            await writeTask(workspaceDir, freshTask);
+
+            log.warn("Failed to notify agent of backlog pickup", {
+              agentId,
+              taskId: freshTask.id,
+              error: String(error),
+            });
+            return false;
+          }
+        } finally {
+          await lock.release();
         }
-      } finally {
-        await lock.release();
       }
-    }
 
-    agentStates.delete(agentId);
-    return false;
-  }
-
-  // Skip tasks with pending_approval status - they need human approval, not continuation
-  if (activeTask.status === "pending_approval") {
-    log.debug("Task is pending approval, skipping continuation", {
-      agentId,
-      taskId: activeTask.id,
-    });
-    return false;
-  }
-
-  const lastActivityMs = new Date(activeTask.lastActivity).getTime();
-  const idleMs = nowMs - lastActivityMs;
-
-  if (idleMs < idleThresholdMs) {
-    log.debug("Task not idle long enough", {
-      agentId,
-      taskId: activeTask.id,
-      idleMs,
-      thresholdMs: idleThresholdMs,
-    });
-    return false;
-  }
-
-  const state = agentStates.get(agentId);
-
-  // Check failure-based backoff first
-  if (state?.backoffUntilMs && nowMs < state.backoffUntilMs) {
-    const remainingMs = state.backoffUntilMs - nowMs;
-    const remainingSec = Math.ceil(remainingMs / 1000);
-    log.debug("Continuation backoff active", {
-      agentId,
-      taskId: activeTask.id,
-      remainingSeconds: remainingSec,
-      reason: state.lastFailureReason,
-      consecutiveFailures: state.consecutiveFailures,
-    });
-    return false;
-  }
-
-  // Check regular cooldown (only for same task, prevents spam on success)
-  if (state) {
-    const sinceLast = nowMs - state.lastContinuationSentMs;
-    if (
-      sinceLast < CONTINUATION_COOLDOWN_MS &&
-      state.lastTaskId === activeTask.id &&
-      !state.backoffUntilMs
-    ) {
-      log.debug("Continuation cooldown active", {
-        agentId,
-        taskId: activeTask.id,
-        sinceLast,
-        cooldown: CONTINUATION_COOLDOWN_MS,
+      agentStates.delete(agentId);
+      await updateAgentEntry(workspaceDir, agentId, {
+        status: "idle",
+        currentTaskId: null,
       });
       return false;
     }
-  }
 
-  const pendingTasks = await findPendingTasks(workspaceDir);
-  const prompt = formatContinuationPrompt(activeTask, pendingTasks.length);
+    // Skip tasks with pending_approval status - they need human approval, not continuation
+    if (activeTask.status === "pending_approval") {
+      log.debug("Task is pending approval, skipping continuation", {
+        agentId,
+        taskId: activeTask.id,
+      });
+      return false;
+    }
 
-  log.info("Sending task continuation prompt", {
-    agentId,
-    taskId: activeTask.id,
-    idleMinutes: Math.round(idleMs / 60000),
-  });
+    const lastActivityMs = new Date(activeTask.lastActivity).getTime();
+    const idleMs = nowMs - lastActivityMs;
 
-  try {
-    const accountId = resolveAgentBoundAccountId(
-      cfg,
-      agentId,
-      cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
-    );
-    await agentCommand({
-      message: prompt,
-      agentId,
-      accountId,
-      deliver: false,
-    });
+    if (idleMs < idleThresholdMs) {
+      log.debug("Task not idle long enough", {
+        agentId,
+        taskId: activeTask.id,
+        idleMs,
+        thresholdMs: idleThresholdMs,
+      });
+      return false;
+    }
 
-    // Success - reset failure state
-    agentStates.set(agentId, {
-      lastContinuationSentMs: nowMs,
-      lastTaskId: activeTask.id,
-      backoffUntilMs: undefined,
-      consecutiveFailures: 0,
-      lastFailureReason: undefined,
-    });
+    const state = agentStates.get(agentId);
 
-    log.info("Task continuation prompt sent", { agentId, taskId: activeTask.id });
-    return true;
-  } catch (error) {
-    // Failure - apply backoff based on failure reason
-    const { reason, suggestedBackoffMs } = parseFailureReason(error);
-    const prevState = agentStates.get(agentId);
-    const consecutiveFailures = (prevState?.consecutiveFailures ?? 0) + 1;
-    const backoffMs = resolveBackoffMs(reason, consecutiveFailures, suggestedBackoffMs);
-    const backoffUntilMs = nowMs + backoffMs;
+    // Check failure-based backoff first
+    if (state?.backoffUntilMs && nowMs < state.backoffUntilMs) {
+      const remainingMs = state.backoffUntilMs - nowMs;
+      const remainingSec = Math.ceil(remainingMs / 1000);
+      log.debug("Continuation backoff active", {
+        agentId,
+        taskId: activeTask.id,
+        remainingSeconds: remainingSec,
+        reason: state.lastFailureReason,
+        consecutiveFailures: state.consecutiveFailures,
+      });
+      return false;
+    }
 
-    agentStates.set(agentId, {
-      lastContinuationSentMs: nowMs,
-      lastTaskId: activeTask.id,
-      backoffUntilMs,
-      consecutiveFailures,
-      lastFailureReason: reason,
-    });
+    // Check regular cooldown (only for same task, prevents spam on success)
+    if (state) {
+      const sinceLast = nowMs - state.lastContinuationSentMs;
+      if (
+        sinceLast < CONTINUATION_COOLDOWN_MS &&
+        state.lastTaskId === activeTask.id &&
+        !state.backoffUntilMs
+      ) {
+        log.debug("Continuation cooldown active", {
+          agentId,
+          taskId: activeTask.id,
+          sinceLast,
+          cooldown: CONTINUATION_COOLDOWN_MS,
+        });
+        return false;
+      }
+    }
 
-    log.warn("Failed to send continuation prompt, applying backoff", {
+    const pendingTasks = await findPendingTasks(workspaceDir);
+    const prompt = formatContinuationPrompt(activeTask, pendingTasks.length);
+
+    log.info("Sending task continuation prompt", {
       agentId,
       taskId: activeTask.id,
-      error: String(error),
-      reason,
-      consecutiveFailures,
-      backoffSeconds: Math.round(backoffMs / 1000),
-      suggestedBackoffMs,
+      idleMinutes: Math.round(idleMs / 60000),
     });
-    return false;
+
+    try {
+      const accountId = resolveAgentBoundAccountId(
+        cfg,
+        agentId,
+        cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+      );
+      await agentCommand({
+        message: prompt,
+        agentId,
+        accountId,
+        deliver: false,
+      });
+
+      // Success - reset failure state
+      agentStates.set(agentId, {
+        lastContinuationSentMs: nowMs,
+        lastTaskId: activeTask.id,
+        backoffUntilMs: undefined,
+        consecutiveFailures: 0,
+        lastFailureReason: undefined,
+      });
+
+      emit({
+        type: EVENT_TYPES.CONTINUATION_SENT,
+        agentId,
+        ts: Date.now(),
+        data: { taskId: activeTask.id },
+      });
+      await updateAgentEntry(workspaceDir, agentId, {
+        status: "active",
+        currentTaskId: activeTask.id,
+      });
+      log.info("Task continuation prompt sent", { agentId, taskId: activeTask.id });
+      return true;
+    } catch (error) {
+      // Failure - apply backoff based on failure reason
+      const { reason, suggestedBackoffMs } = parseFailureReason(error);
+      const prevState = agentStates.get(agentId);
+      const consecutiveFailures = (prevState?.consecutiveFailures ?? 0) + 1;
+      const backoffMs = resolveBackoffMs(reason, consecutiveFailures, suggestedBackoffMs);
+      const backoffUntilMs = nowMs + backoffMs;
+
+      agentStates.set(agentId, {
+        lastContinuationSentMs: nowMs,
+        lastTaskId: activeTask.id,
+        backoffUntilMs,
+        consecutiveFailures,
+        lastFailureReason: reason,
+      });
+
+      emit({
+        type: EVENT_TYPES.CONTINUATION_BACKOFF,
+        agentId,
+        ts: Date.now(),
+        data: { taskId: activeTask.id, reason, consecutiveFailures, backoffMs },
+      });
+      log.warn("Failed to send continuation prompt, applying backoff", {
+        agentId,
+        taskId: activeTask.id,
+        error: String(error),
+        reason,
+        consecutiveFailures,
+        backoffSeconds: Math.round(backoffMs / 1000),
+        suggestedBackoffMs,
+      });
+      return false;
+    }
+  } finally {
+    await continuationLock.release();
   }
 }
 
@@ -668,6 +712,9 @@ async function checkBlockedTasksForResume(
         unblockRequestCount: freshTask.unblockRequestCount,
       });
 
+      // Fix #6: Set cooldown BEFORE sending to prevent duplicate sends during async gap
+      blockedResumeLastSentMs.set(resumeKey, nowMs);
+
       try {
         const accountId = resolveAgentBoundAccountId(
           cfg,
@@ -680,13 +727,15 @@ async function checkBlockedTasksForResume(
           accountId,
           deliver: false,
         });
-        blockedResumeLastSentMs.set(resumeKey, nowMs);
 
         log.info("Blocked task resume reminder sent", {
           agentId,
           taskId: freshTask.id,
         });
       } catch (error) {
+        // Revert cooldown on failure so retry can happen on next cycle
+        blockedResumeLastSentMs.delete(resumeKey);
+
         log.warn("Failed to send blocked task resume reminder", {
           agentId,
           taskId: freshTask.id,
@@ -835,6 +884,16 @@ async function checkBlockedTasksForUnblock(
         freshTask.unblockRequestFailures = 0;
         await writeTask(workspaceDir, freshTask);
 
+        emit({
+          type: EVENT_TYPES.UNBLOCK_REQUESTED,
+          agentId,
+          ts: Date.now(),
+          data: {
+            taskId: freshTask.id,
+            targetAgentId,
+            requestCount: freshTask.unblockRequestCount,
+          },
+        });
         log.info("Unblock request sent", {
           blockedAgentId: agentId,
           targetAgentId,
@@ -923,17 +982,85 @@ async function checkZombieTasksForAbandonment(
             if (!freshTask || freshTask.status !== "in_progress") {
               continue;
             }
-            freshTask.status = "abandoned";
+            // Fix #4: Re-check lastActivity freshness after lock acquisition
+            const freshActivityMs = new Date(freshTask.lastActivity || freshTask.created).getTime();
+            if (!isNaN(freshActivityMs)) {
+              const freshAgeMs = Date.now() - freshActivityMs;
+              if (freshAgeMs <= zombieTaskTtlMs) {
+                log.debug("Task activity updated after lock, no longer zombie", {
+                  agentId,
+                  taskId: task.id,
+                  freshAgeMs,
+                });
+                continue;
+              }
+            }
+            freshTask.status = "interrupted";
+            freshTask.outcome = {
+              kind: "interrupted",
+              reason: `No activity for ${Math.round(ageMs / 3600000)}h (TTL: ${Math.round(zombieTaskTtlMs / 3600000)}h)`,
+            };
             freshTask.progress.push(
-              `Auto-abandoned: no activity for ${Math.round(ageMs / 3600000)}h (TTL: ${Math.round(zombieTaskTtlMs / 3600000)}h)`,
+              `Auto-interrupted: no activity for ${Math.round(ageMs / 3600000)}h (TTL: ${Math.round(zombieTaskTtlMs / 3600000)}h)`,
             );
             freshTask.lastActivity = new Date().toISOString();
             await writeTask(workspaceDir, freshTask);
-            log.info("Zombie task abandoned", {
+            await updateAgentEntry(workspaceDir, agentId, {
+              status: "interrupted",
+              currentTaskId: null,
+              lastFailureReason: "zombie_timeout",
+            });
+            emit({
+              type: EVENT_TYPES.ZOMBIE_ABANDONED,
+              agentId,
+              ts: Date.now(),
+              data: { taskId: task.id, ageHours: Math.round(ageMs / 3600000) },
+            });
+            log.info("Zombie task interrupted", {
               agentId,
               taskId: task.id,
               ageHours: Math.round(ageMs / 3600000),
             });
+            // Notify lead agent about the interrupted task
+            try {
+              const teamState = await readTeamState(workspaceDir);
+              const lead = findLeadAgent(teamState);
+              if (lead && lead.agentId !== agentId) {
+                const leadWorkspaceDir = resolveAgentWorkspaceDir(cfg, lead.agentId);
+                const leadAccountId = resolveAgentBoundAccountId(
+                  cfg,
+                  lead.agentId,
+                  cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+                );
+                await agentCommand({
+                  message: [
+                    `[SYSTEM - ZOMBIE TASK INTERRUPTED]`,
+                    ``,
+                    `Agent "${agentId}" had a task interrupted due to inactivity.`,
+                    `**Task ID:** ${freshTask.id}`,
+                    `**Description:** ${freshTask.description}`,
+                    `**Inactive for:** ${Math.round(ageMs / 3600000)}h`,
+                    ``,
+                    `The task status is now "interrupted" and can be resumed.`,
+                    `Consider reassigning or resuming this task.`,
+                  ].join("\n"),
+                  agentId: lead.agentId,
+                  accountId: leadAccountId,
+                  deliver: false,
+                });
+                log.info("Lead agent notified about interrupted zombie task", {
+                  leadAgentId: lead.agentId,
+                  interruptedAgentId: agentId,
+                  taskId: freshTask.id,
+                });
+              }
+            } catch (notifyError) {
+              log.warn("Failed to notify lead agent about interrupted task", {
+                agentId,
+                taskId: freshTask.id,
+                error: String(notifyError),
+              });
+            }
           } finally {
             await lock.release();
           }
@@ -965,10 +1092,19 @@ async function runContinuationCheck(cfg: OpenClawConfig, idleThresholdMs: number
   for (const agentId of agentIds) {
     try {
       await checkAgentForContinuation(cfg, agentId, idleThresholdMs, nowMs);
+    } catch (error) {
+      // Fix #5: Isolate failures per check type to prevent one agent's error from blocking others
+      log.warn("Error in continuation check", { agentId, error: String(error) });
+    }
+    try {
       await checkBlockedTasksForUnblock(cfg, agentId, nowMs);
+    } catch (error) {
+      log.warn("Error in unblock check", { agentId, error: String(error) });
+    }
+    try {
       await checkBlockedTasksForResume(cfg, agentId, nowMs);
     } catch (error) {
-      log.warn("Error checking agent for continuation", { agentId, error: String(error) });
+      log.warn("Error in resume check", { agentId, error: String(error) });
     }
   }
 }
