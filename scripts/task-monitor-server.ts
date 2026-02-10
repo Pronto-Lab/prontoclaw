@@ -65,7 +65,8 @@ type TaskStatus =
   | "blocked"
   | "backlog"
   | "completed"
-  | "cancelled";
+  | "cancelled"
+  | "abandoned";
 type TaskPriority = "low" | "medium" | "high" | "urgent";
 type EscalationState = "none" | "requesting" | "escalated" | "failed";
 

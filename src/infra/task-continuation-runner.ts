@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { createAgentToAgentPolicy } from "../agents/tools/sessions-helpers.js";
@@ -22,6 +24,7 @@ import { acquireTaskLock } from "./task-lock.js";
 
 const log = createSubsystemLogger("task-continuation");
 
+const DEFAULT_ZOMBIE_TASK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const DEFAULT_IDLE_THRESHOLD_MS = 3 * 60 * 1000;
 const CONTINUATION_COOLDOWN_MS = 5 * 60 * 1000;
@@ -55,6 +58,8 @@ export type TaskContinuationConfig = {
   checkInterval?: string;
   idleThreshold?: string;
   enabled?: boolean;
+  zombieTaskTtl?: string;
+  channel?: string;
 };
 
 export type TaskContinuationRunner = {
@@ -82,6 +87,11 @@ function cleanupStaleAgentStates(): void {
     if (now - state.lastContinuationSentMs > STATE_STALE_MS) {
       agentStates.delete(key);
       log.debug("Cleaned up stale agent state", { agentId: key });
+    }
+  }
+  for (const [key, lastSentMs] of blockedResumeLastSentMs) {
+    if (now - lastSentMs > STATE_STALE_MS) {
+      blockedResumeLastSentMs.delete(key);
     }
   }
 }
@@ -173,6 +183,8 @@ function resolveTaskContinuationConfig(cfg: OpenClawConfig): {
   enabled: boolean;
   checkIntervalMs: number;
   idleThresholdMs: number;
+  zombieTaskTtlMs: number;
+  channel: string;
 } {
   const tcConfig = cfg.agents?.defaults?.taskContinuation;
   const enabled = tcConfig?.enabled ?? true;
@@ -195,7 +207,17 @@ function resolveTaskContinuationConfig(cfg: OpenClawConfig): {
     }
   }
 
-  return { enabled, checkIntervalMs, idleThresholdMs };
+  let zombieTaskTtlMs = DEFAULT_ZOMBIE_TASK_TTL_MS;
+  if (tcConfig?.zombieTaskTtl) {
+    try {
+      zombieTaskTtlMs = parseDurationMs(tcConfig.zombieTaskTtl, { defaultUnit: "h" });
+    } catch {
+      zombieTaskTtlMs = DEFAULT_ZOMBIE_TASK_TTL_MS;
+    }
+  }
+
+  const channel = tcConfig?.channel ?? "discord";
+  return { enabled, checkIntervalMs, idleThresholdMs, zombieTaskTtlMs, channel };
 }
 
 function formatUnblockRequestPrompt(blockedAgentId: string, task: TaskFile): string {
@@ -221,13 +243,21 @@ function formatUnblockRequestPrompt(blockedAgentId: string, task: TaskFile): str
   lines.push(``);
   lines.push(`Please help unblock this task by taking the necessary action.`);
   lines.push(``);
-  lines.push(`**IMPORTANT:** After completing the required action, you MUST notify agent "${blockedAgentId}" so they can resume their blocked task.`);
-  lines.push(`Use sessions_send(target="agent:${blockedAgentId}:main", message="[UNBLOCK RESOLVED] I have completed the required action for task ${task.id}. You can now call task_resume(task_id=\"${task.id}\") to continue your work.") to notify them.`);
+  lines.push(
+    `**IMPORTANT:** After completing the required action, you MUST notify agent "${blockedAgentId}" so they can resume their blocked task.`,
+  );
+  lines.push(
+    `Use sessions_send(target="agent:${blockedAgentId}:main", message="[UNBLOCK RESOLVED] I have completed the required action for task ${task.id}. You can now call task_resume(task_id="${task.id}") to continue your work.") to notify them.`,
+  );
 
   return lines.join("\n");
 }
 
-function formatUnblockEscalationPrompt(blockedAgentId: string, task: TaskFile, targetAgentId: string): string {
+function formatUnblockEscalationPrompt(
+  blockedAgentId: string,
+  task: TaskFile,
+  targetAgentId: string,
+): string {
   const lines = [
     `[ESCALATION - UNBLOCK REQUEST (Final Attempt)]`,
     ``,
@@ -243,8 +273,12 @@ function formatUnblockEscalationPrompt(blockedAgentId: string, task: TaskFile, t
   }
 
   lines.push(``);
-  lines.push(`${targetAgentId}에게: 위 조치를 완료한 후 반드시 agent "${blockedAgentId}"에게 알려주세요.`);
-  lines.push(`Use sessions_send(target="agent:${blockedAgentId}:main", message="[UNBLOCK RESOLVED] Task ${task.id} resolved. Call task_resume(task_id=\"${task.id}\") to continue.") to notify them.`);
+  lines.push(
+    `${targetAgentId}에게: 위 조치를 완료한 후 반드시 agent "${blockedAgentId}"에게 알려주세요.`,
+  );
+  lines.push(
+    `Use sessions_send(target="agent:${blockedAgentId}:main", message="[UNBLOCK RESOLVED] Task ${task.id} resolved. Call task_resume(task_id="${task.id}") to continue.") to notify them.`,
+  );
 
   return lines.join("\n");
 }
@@ -377,7 +411,11 @@ async function checkAgentForContinuation(
         const prompt = formatBacklogPickupPrompt(freshTask);
 
         try {
-          const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
+          const accountId = resolveAgentBoundAccountId(
+            cfg,
+            agentId,
+            cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+          );
           await agentCommand({
             config: cfg,
             message: prompt,
@@ -418,6 +456,15 @@ async function checkAgentForContinuation(
     }
 
     agentStates.delete(agentId);
+    return false;
+  }
+
+  // Skip tasks with pending_approval status - they need human approval, not continuation
+  if (activeTask.status === "pending_approval") {
+    log.debug("Task is pending approval, skipping continuation", {
+      agentId,
+      taskId: activeTask.id,
+    });
     return false;
   }
 
@@ -478,7 +525,11 @@ async function checkAgentForContinuation(
   });
 
   try {
-    const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
+    const accountId = resolveAgentBoundAccountId(
+      cfg,
+      agentId,
+      cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+    );
     await agentCommand({
       config: cfg,
       message: prompt,
@@ -547,14 +598,24 @@ function formatBlockedResumeReminderPrompt(task: TaskFile): string {
   }
 
   lines.push(``);
-  lines.push(`An unblock request was already sent to the agents listed above. The blocking condition may have been resolved.`);
+  lines.push(
+    `An unblock request was already sent to the agents listed above. The blocking condition may have been resolved.`,
+  );
   lines.push(``);
   lines.push(`**YOU MUST DO THE FOLLOWING:**`);
-  lines.push(`1. Check if the blocking condition has been resolved (review recent messages, check if required work was completed).`);
-  lines.push(`2. If the blocker IS resolved → Call task_resume(task_id="${task.id}") IMMEDIATELY to continue working.`);
-  lines.push(`3. If the blocker is NOT resolved → Do nothing. The system will check again in 3 minutes.`);
+  lines.push(
+    `1. Check if the blocking condition has been resolved (review recent messages, check if required work was completed).`,
+  );
+  lines.push(
+    `2. If the blocker IS resolved → Call task_resume(task_id="${task.id}") IMMEDIATELY to continue working.`,
+  );
+  lines.push(
+    `3. If the blocker is NOT resolved → Do nothing. The system will check again in 3 minutes.`,
+  );
   lines.push(``);
-  lines.push(`**Do NOT wait passively.** Actively verify the blocker status and resume if possible.`);
+  lines.push(
+    `**Do NOT wait passively.** Actively verify the blocker status and resume if possible.`,
+  );
 
   return lines.join("\n");
 }
@@ -612,7 +673,11 @@ async function checkBlockedTasksForResume(
       });
 
       try {
-        const accountId = resolveAgentBoundAccountId(cfg, agentId, "discord");
+        const accountId = resolveAgentBoundAccountId(
+          cfg,
+          agentId,
+          cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+        );
         await agentCommand({
           config: cfg,
           message: prompt,
@@ -745,12 +810,16 @@ async function checkBlockedTasksForUnblock(
       });
 
       try {
-        const isLastAttempt = (requestCount + 1) >= MAX_UNBLOCK_REQUESTS;
+        const isLastAttempt = requestCount + 1 >= MAX_UNBLOCK_REQUESTS;
         const escalationPrompt = isLastAttempt
           ? formatUnblockEscalationPrompt(agentId, freshTask, targetAgentId)
           : prompt;
 
-        const accountId = resolveAgentBoundAccountId(cfg, targetAgentId, "discord");
+        const accountId = resolveAgentBoundAccountId(
+          cfg,
+          targetAgentId,
+          cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+        );
         await agentCommand({
           config: cfg,
           message: escalationPrompt,
@@ -814,7 +883,79 @@ async function checkBlockedTasksForUnblock(
   }
 }
 
+async function checkZombieTasksForAbandonment(
+  cfg: OpenClawConfig,
+  zombieTaskTtlMs: number,
+): Promise<void> {
+  const nowMs = Date.now();
+  const agentList = cfg.agents?.list ?? [];
+  const defaultAgentId = resolveDefaultAgentId(cfg);
+  const agentIds = new Set<string>();
+  agentIds.add(normalizeAgentId(defaultAgentId));
+  for (const entry of agentList) {
+    if (entry?.id) {
+      agentIds.add(normalizeAgentId(entry.id));
+    }
+  }
+  for (const agentId of agentIds) {
+    try {
+      const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+      const tasksDir = path.join(workspaceDir, "tasks");
+      let files: string[];
+      try {
+        files = await fs.readdir(tasksDir);
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.startsWith("task_") || !file.endsWith(".md")) {
+          continue;
+        }
+        const taskId = file.replace(".md", "");
+        const task = await readTask(workspaceDir, taskId);
+        if (!task || task.status !== "in_progress") {
+          continue;
+        }
+        const lastActivityMs = new Date(task.lastActivity || task.created).getTime();
+        if (isNaN(lastActivityMs)) {
+          continue;
+        }
+        const ageMs = nowMs - lastActivityMs;
+        if (ageMs > zombieTaskTtlMs) {
+          const lock = await acquireTaskLock(workspaceDir, task.id);
+          if (!lock) {
+            continue;
+          }
+          try {
+            const freshTask = await readTask(workspaceDir, task.id);
+            if (!freshTask || freshTask.status !== "in_progress") {
+              continue;
+            }
+            freshTask.status = "abandoned";
+            freshTask.progress.push(
+              `Auto-abandoned: no activity for ${Math.round(ageMs / 3600000)}h (TTL: ${Math.round(zombieTaskTtlMs / 3600000)}h)`,
+            );
+            freshTask.lastActivity = new Date().toISOString();
+            await writeTask(workspaceDir, freshTask);
+            log.info("Zombie task abandoned", {
+              agentId,
+              taskId: task.id,
+              ageHours: Math.round(ageMs / 3600000),
+            });
+          } finally {
+            await lock.release();
+          }
+        }
+      }
+    } catch (error) {
+      log.warn("Error checking zombie tasks", { agentId, error: String(error) });
+    }
+  }
+}
 async function runContinuationCheck(cfg: OpenClawConfig, idleThresholdMs: number): Promise<void> {
+  const { zombieTaskTtlMs } = resolveTaskContinuationConfig(cfg);
+  await checkZombieTasksForAbandonment(cfg, zombieTaskTtlMs);
+
   const nowMs = Date.now();
   const agentList = cfg.agents?.list ?? [];
   const defaultAgentId = resolveDefaultAgentId(cfg);
@@ -847,7 +988,9 @@ export function startTaskContinuationRunner(opts: { cfg: OpenClawConfig }): Task
   let stopped = false;
 
   const scheduleNext = () => {
-    if (stopped) return;
+    if (stopped) {
+      return;
+    }
 
     const { enabled, checkIntervalMs, idleThresholdMs } = resolveTaskContinuationConfig(currentCfg);
 
@@ -857,7 +1000,9 @@ export function startTaskContinuationRunner(opts: { cfg: OpenClawConfig }): Task
     }
 
     timer = setTimeout(async () => {
-      if (stopped) return;
+      if (stopped) {
+        return;
+      }
 
       try {
         await runContinuationCheck(currentCfg, idleThresholdMs);

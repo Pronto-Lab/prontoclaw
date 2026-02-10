@@ -202,6 +202,8 @@ export type AgentDefaultsConfig = {
     enabled?: boolean;
     checkInterval?: string;
     idleThreshold?: string;
+    zombieTaskTtl?: string;
+    channel?: string;
   };
   maxConcurrent?: number;
   /** Sub-agent defaults (spawned via sessions_spawn). */

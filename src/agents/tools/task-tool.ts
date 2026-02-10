@@ -1,4 +1,5 @@
 import { Type } from "@sinclair/typebox";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -26,7 +27,8 @@ export type TaskStatus =
   | "blocked"
   | "backlog"
   | "completed"
-  | "cancelled";
+  | "cancelled"
+  | "abandoned";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export type EscalationState = "none" | "requesting" | "escalated" | "failed";
 export type EstimatedEffort = "small" | "medium" | "large";
@@ -119,7 +121,27 @@ const TaskPickBacklogSchema = Type.Object({
 });
 
 function generateTaskId(): string {
-  return `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  return `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+const VALID_STATUSES = new Set<string>([
+  "in_progress",
+  "completed",
+  "pending",
+  "pending_approval",
+  "blocked",
+  "backlog",
+  "cancelled",
+  "abandoned",
+]);
+const VALID_PRIORITIES = new Set<string>(["low", "medium", "high", "urgent"]);
+
+function isValidTaskStatus(s: string): s is TaskStatus {
+  return VALID_STATUSES.has(s);
+}
+
+function isValidTaskPriority(p: string): p is TaskPriority {
+  return VALID_PRIORITIES.has(p);
 }
 
 function formatTaskFileMd(task: TaskFile): string {
@@ -246,11 +268,17 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     if (currentSection === "metadata") {
       const statusMatch = trimmed.match(/^-?\s*\*\*Status:\*\*\s*(.+)$/);
       if (statusMatch) {
-        status = statusMatch[1] as TaskStatus;
+        const rawStatus = statusMatch[1];
+        if (isValidTaskStatus(rawStatus)) {
+          status = rawStatus;
+        }
       }
       const priorityMatch = trimmed.match(/^-?\s*\*\*Priority:\*\*\s*(.+)$/);
       if (priorityMatch) {
-        priority = priorityMatch[1] as TaskPriority;
+        const rawPriority = priorityMatch[1];
+        if (isValidTaskPriority(rawPriority)) {
+          priority = rawPriority;
+        }
       }
       const createdMatch = trimmed.match(/^-?\s*\*\*Created:\*\*\s*(.+)$/);
       if (createdMatch) {
@@ -341,8 +369,14 @@ async function getTasksDir(workspaceDir: string): Promise<string> {
 }
 
 export async function readTask(workspaceDir: string, taskId: string): Promise<TaskFile | null> {
+  if (!taskId || /[/\\]/.test(taskId)) {
+    return null;
+  }
   const tasksDir = await getTasksDir(workspaceDir);
   const filePath = path.join(tasksDir, `${taskId}.md`);
+  if (!filePath.startsWith(tasksDir)) {
+    return null;
+  }
   try {
     const content = await fs.readFile(filePath, "utf-8");
     return parseTaskFileMd(content, `${taskId}.md`);
@@ -370,8 +404,14 @@ export async function writeTask(workspaceDir: string, task: TaskFile): Promise<v
 }
 
 async function deleteTask(workspaceDir: string, taskId: string): Promise<void> {
+  if (!taskId || /[/\\]/.test(taskId)) {
+    return;
+  }
   const tasksDir = await getTasksDir(workspaceDir);
   const filePath = path.join(tasksDir, `${taskId}.md`);
+  if (!filePath.startsWith(tasksDir)) {
+    return;
+  }
   try {
     await fs.unlink(filePath);
   } catch {
@@ -519,6 +559,35 @@ async function appendToHistory(workspaceDir: string, entry: string): Promise<str
   const filename = getMonthlyHistoryFilename();
   const filePath = path.join(historyDir, filename);
 
+  const historyLock = await acquireTaskLock(workspaceDir, `history_${filename}`);
+  if (!historyLock) {
+    // Retry once after a short delay
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const retryLock = await acquireTaskLock(workspaceDir, `history_${filename}`);
+    if (!retryLock) {
+      // Fall through without lock - append is best-effort
+      await fs.appendFile(filePath, entry, "utf-8");
+      return `${TASK_HISTORY_DIR}/${filename}`;
+    }
+    try {
+      return await appendToHistoryLocked(filePath, filename, entry);
+    } finally {
+      retryLock.release();
+    }
+  }
+
+  try {
+    return await appendToHistoryLocked(filePath, filename, entry);
+  } finally {
+    historyLock.release();
+  }
+}
+
+async function appendToHistoryLocked(
+  filePath: string,
+  filename: string,
+  entry: string,
+): Promise<string> {
   let needsHeader = false;
   try {
     await fs.access(filePath);
@@ -758,19 +827,39 @@ export function createTaskUpdateTool(options: {
         }
       }
 
-      const now = new Date().toISOString();
-      task.lastActivity = now;
-      task.progress.push(progress);
+      const lock = await acquireTaskLock(workspaceDir, task.id);
+      if (!lock) {
+        return jsonResult({
+          success: false,
+          error: `Task ${task.id} is locked by another operation`,
+        });
+      }
 
-      await writeTask(workspaceDir, task);
-      await updateCurrentTaskPointer(workspaceDir, task.id);
+      try {
+        const freshTask = await readTask(workspaceDir, task.id);
+        if (!freshTask) {
+          return jsonResult({
+            success: false,
+            error: `Task ${task.id} was deleted during lock acquisition`,
+          });
+        }
 
-      return jsonResult({
-        success: true,
-        taskId: task.id,
-        updated: now,
-        progressCount: task.progress.length,
-      });
+        const now = new Date().toISOString();
+        freshTask.lastActivity = now;
+        freshTask.progress.push(progress);
+
+        await writeTask(workspaceDir, freshTask);
+        await updateCurrentTaskPointer(workspaceDir, freshTask.id);
+
+        return jsonResult({
+          success: true,
+          taskId: freshTask.id,
+          updated: now,
+          progressCount: freshTask.progress.length,
+        });
+      } finally {
+        await lock.release();
+      }
     },
   };
 }
@@ -832,9 +921,11 @@ export function createTaskCompleteTool(options: {
         task.progress.push("Task completed");
         task.status = "completed";
 
+        const historyEntry = formatTaskHistoryEntry(task, summary);
+
+        // Write task state first (ensures "completed" persists even if history append fails)
         await writeTask(workspaceDir, task);
 
-        const historyEntry = formatTaskHistoryEntry(task, summary);
         const archivedTo = await appendToHistory(workspaceDir, historyEntry);
 
         await deleteTask(workspaceDir, task.id);

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const LOCK_TIMEOUT_MS = 30_000; // 30 seconds max lock hold time
-const LOCK_STALE_MS = 60_000;   // Consider lock stale after 60 seconds
+const LOCK_STALE_MS = 60_000; // Consider lock stale after 60 seconds
 
 /**
  * Check if a process is still alive by sending signal 0.
@@ -29,14 +29,18 @@ export async function acquireTaskLock(
   taskId: string,
 ): Promise<TaskLock | null> {
   const lockPath = path.join(workspaceDir, "tasks", `${taskId}.lock`);
-  
+
   try {
     // Check for stale lock
     try {
       const content = await fs.readFile(lockPath, "utf-8");
-      const lockData = JSON.parse(content) as { pid: number; timestamp: string };
+      const lockData = JSON.parse(content) as {
+        pid: number;
+        timestamp: string;
+        startTime?: number;
+      };
       const ageMs = Date.now() - new Date(lockData.timestamp).getTime();
-      
+
       // Lock is stale if too old OR owner process is dead
       if (ageMs > LOCK_STALE_MS || !isProcessAlive(lockData.pid)) {
         await fs.unlink(lockPath).catch(() => {});
@@ -44,16 +48,23 @@ export async function acquireTaskLock(
         // Lock is valid and owner is alive
         return null;
       }
-    } catch {
+    } catch (readErr) {
       // Lock file doesn't exist or is invalid, proceed with acquisition
+      // If file exists but is malformed, clean it up before re-acquiring
+      if ((readErr as NodeJS.ErrnoException).code !== "ENOENT") {
+        await fs.unlink(lockPath).catch(() => {});
+      }
     }
 
     // Try to create lock file with exclusive flag
     const handle = await fs.open(lockPath, "wx");
-    await handle.write(JSON.stringify({ 
-      pid: process.pid, 
-      timestamp: new Date().toISOString() 
-    }));
+    await handle.write(
+      JSON.stringify({
+        pid: process.pid,
+        timestamp: new Date().toISOString(),
+        startTime: process.uptime(),
+      }),
+    );
     await handle.close();
 
     return {

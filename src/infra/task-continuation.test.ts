@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("node:fs/promises", () => ({
   default: {
     readFile: vi.fn(),
+    readdir: vi.fn(),
     writeFile: vi.fn().mockResolvedValue(undefined),
     mkdir: vi.fn().mockResolvedValue(undefined),
   },
@@ -37,73 +38,87 @@ import fs from "node:fs/promises";
 import { listAgentIds } from "../agents/agent-scope.js";
 import { agentCommand } from "../commands/agent.js";
 
+function makeTaskMd(opts: {
+  id: string;
+  status: string;
+  description: string;
+  context?: string;
+  progress?: string[];
+}): string {
+  const lines = [
+    `# Task: ${opts.id}`,
+    "",
+    "## Metadata",
+    `- **Status:** ${opts.status}`,
+    `- **Priority:** high`,
+    `- **Description:** ${opts.description}`,
+    `- **Created:** 2026-02-05T10:00:00Z`,
+    `- **Last Activity:** 2026-02-05T10:00:00Z`,
+  ];
+  if (opts.context) {
+    lines.push(`- **Context:** ${opts.context}`);
+  }
+  lines.push("", "## Progress");
+  for (const p of opts.progress ?? ["Task started"]) {
+    lines.push(`- ${p}`);
+  }
+  return lines.join("\n");
+}
+
 describe("task-continuation", () => {
-  describe("parseCurrentTaskMd", () => {
-    it("returns null when no Current section exists", async () => {
+  describe("loadPendingTasks - scans tasks/*.md files", () => {
+    it("returns empty when tasks dir has no task files", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
-      vi.mocked(fs.readFile).mockResolvedValue("# Other Content\n\nNo current section here.");
+      vi.mocked(fs.readdir).mockResolvedValue([] as any);
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
 
       const tasks = await loadPendingTasks({} as never);
-
       expect(tasks).toHaveLength(0);
     });
 
-    it("returns null when section contains Korean empty marker", async () => {
+    it("returns empty when tasks dir does not exist", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
-      const content = `# Current Task
-
-## Current
-
-*(진행 중인 작업 없음)*
-
----`;
-      vi.mocked(fs.readFile).mockResolvedValue(content);
+      vi.mocked(fs.readdir).mockRejectedValue(new Error("ENOENT"));
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
 
       const tasks = await loadPendingTasks({} as never);
-
       expect(tasks).toHaveLength(0);
     });
 
-    it("returns null when section contains English empty marker", async () => {
+    it("skips non-task files and completed tasks", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
-      const content = `# Current Task
-
-## Current
-
-*(No task in progress)*
-
----`;
-      vi.mocked(fs.readFile).mockResolvedValue(content);
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc.md", "README.md", "task_def.md"] as any);
+      vi.mocked(fs.readFile)
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_abc", status: "completed", description: "Done task" }),
+        )
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_def", status: "in_progress", description: "Active task" }),
+        );
 
       const tasks = await loadPendingTasks({} as never);
-
-      expect(tasks).toHaveLength(0);
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].task).toBe("Active task");
     });
 
-    it("parses content with all fields", async () => {
+    it("finds in_progress tasks with all fields", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
-      const content = `# Current Task
-
-## Current
-
-**Task:** Implement feature X
-**Thread ID:** 12345
-**Context:** User requested new button
-**Next:** Add CSS styling
-**Progress:**
-- [x] Create component
-- [ ] Add tests
-
----`;
-      vi.mocked(fs.readFile).mockResolvedValue(content);
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc.md"] as any);
+      vi.mocked(fs.readFile).mockResolvedValueOnce(
+        makeTaskMd({
+          id: "task_abc",
+          status: "in_progress",
+          description: "Implement feature X",
+          context: "User requested new button",
+          progress: ["Create component", "Add tests"],
+        }),
+      );
 
       const tasks = await loadPendingTasks({} as never);
 
@@ -111,54 +126,41 @@ describe("task-continuation", () => {
       expect(tasks[0]).toMatchObject({
         agentId: "main",
         task: "Implement feature X",
-        threadId: "12345",
         context: "User requested new button",
-        next: "Add CSS styling",
       });
       expect(tasks[0].progress).toContain("Create component");
       expect(tasks[0].progress).toContain("Add tests");
     });
 
-    it("parses content with minimal fields", async () => {
+    it("finds blocked tasks too", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
-      const content = `# Current Task
-
-## Current
-
-**Task:** Simple task
-
----`;
-      vi.mocked(fs.readFile).mockResolvedValue(content);
       vi.mocked(listAgentIds).mockReturnValue(["eden"]);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_blocked1.md"] as any);
+      vi.mocked(fs.readFile).mockResolvedValueOnce(
+        makeTaskMd({ id: "task_blocked1", status: "blocked", description: "Blocked task" }),
+      );
 
       const tasks = await loadPendingTasks({} as never);
-
       expect(tasks).toHaveLength(1);
       expect(tasks[0].agentId).toBe("eden");
-      expect(tasks[0].task).toBe("Simple task");
-    });
-  });
-
-  describe("loadPendingTasks", () => {
-    it("returns empty array when no agents have tasks", async () => {
-      const { loadPendingTasks } = await import("./task-continuation.js");
-
-      vi.mocked(fs.readFile).mockRejectedValue(new Error("ENOENT"));
-      vi.mocked(listAgentIds).mockReturnValue(["main", "eden"]);
-
-      const tasks = await loadPendingTasks({} as never);
-
-      expect(tasks).toHaveLength(0);
+      expect(tasks[0].task).toBe("Blocked task");
     });
 
     it("returns tasks for multiple agents", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
       vi.mocked(listAgentIds).mockReturnValue(["main", "eden"]);
+      vi.mocked(fs.readdir)
+        .mockResolvedValueOnce(["task_1.md"] as any)
+        .mockResolvedValueOnce(["task_2.md"] as any);
       vi.mocked(fs.readFile)
-        .mockResolvedValueOnce(`## Current\n\n**Task:** Main task`)
-        .mockResolvedValueOnce(`## Current\n\n**Task:** Eden task`);
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_1", status: "in_progress", description: "Main task" }),
+        )
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_2", status: "in_progress", description: "Eden task" }),
+        );
 
       const tasks = await loadPendingTasks({} as never);
 
@@ -166,14 +168,21 @@ describe("task-continuation", () => {
       expect(tasks.map((t) => t.agentId)).toEqual(["main", "eden"]);
     });
 
-    it("skips agents with missing task files", async () => {
+    it("skips agents with missing tasks dir", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
       vi.mocked(listAgentIds).mockReturnValue(["main", "eden", "seum"]);
-      vi.mocked(fs.readFile)
-        .mockResolvedValueOnce(`## Current\n\n**Task:** Main task`)
+      vi.mocked(fs.readdir)
+        .mockResolvedValueOnce(["task_1.md"] as any)
         .mockRejectedValueOnce(new Error("ENOENT"))
-        .mockResolvedValueOnce(`## Current\n\n**Task:** Seum task`);
+        .mockResolvedValueOnce(["task_3.md"] as any);
+      vi.mocked(fs.readFile)
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_1", status: "in_progress", description: "Main task" }),
+        )
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_3", status: "in_progress", description: "Seum task" }),
+        );
 
       const tasks = await loadPendingTasks({} as never);
 
@@ -186,7 +195,10 @@ describe("task-continuation", () => {
     it("calls agentCommand for each pending task", async () => {
       vi.mocked(fs.readFile)
         .mockResolvedValueOnce('{"version":1,"lastResumeAt":0}')
-        .mockResolvedValueOnce(`## Current\n\n**Task:** Test task`);
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_resume1", status: "in_progress", description: "Test task" }),
+        );
+      vi.mocked(fs.readdir).mockResolvedValue(["task_resume1.md"] as any);
 
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
 
@@ -205,7 +217,10 @@ describe("task-continuation", () => {
     it("returns correct counts on failure", async () => {
       vi.mocked(fs.readFile)
         .mockResolvedValueOnce('{"version":1,"lastResumeAt":0}')
-        .mockResolvedValueOnce(`## Current\n\n**Task:** Test task`);
+        .mockResolvedValueOnce(
+          makeTaskMd({ id: "task_fail1", status: "in_progress", description: "Test task" }),
+        );
+      vi.mocked(fs.readdir).mockResolvedValue(["task_fail1.md"] as any);
 
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
       vi.mocked(agentCommand).mockRejectedValueOnce(new Error("Failed"));

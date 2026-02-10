@@ -106,14 +106,53 @@ export async function loadPendingTasks(cfg: ReturnType<typeof loadConfig>): Prom
   for (const agentId of agentIds) {
     try {
       const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const taskFilePath = path.join(workspaceDir, CURRENT_TASK_FILENAME);
+      const tasksDir = path.join(workspaceDir, "tasks");
 
-      const content = await fs.readFile(taskFilePath, "utf-8");
-      const parsed = parseCurrentTaskMd(content);
+      let files: string[] = [];
+      try {
+        files = await fs.readdir(tasksDir);
+      } catch {
+        continue;
+      }
 
-      if (parsed) {
-        parsed.agentId = agentId;
-        tasks.push(parsed);
+      for (const file of files) {
+        if (!file.endsWith(".md") || !file.startsWith("task_")) {
+          continue;
+        }
+        try {
+          const content = await fs.readFile(path.join(tasksDir, file), "utf-8");
+          const statusMatch = content.match(/\*\*Status:\*\*\s*(\S+)/);
+          const status = statusMatch?.[1];
+          if (status !== "in_progress" && status !== "blocked") {
+            continue;
+          }
+
+          const descMatch = content.match(/\*\*Description:\*\*\s*(.+)/);
+          const description = descMatch?.[1]?.trim() ?? file.replace(".md", "");
+
+          const progressItems: string[] = [];
+          const progressSection = content.match(/## Progress\n([\s\S]*?)(?=\n## |$)/);
+          if (progressSection) {
+            for (const line of progressSection[1].split("\n")) {
+              const item = line.match(/^\s*-\s+(.+)/);
+              if (item) {
+                progressItems.push(item[1].trim());
+              }
+            }
+          }
+
+          const contextMatch = content.match(/\*\*Context:\*\*\s*(.+)/);
+
+          tasks.push({
+            agentId,
+            task: description,
+            context: contextMatch?.[1]?.trim() ?? "",
+            next: "",
+            progress: progressItems,
+          });
+        } catch {
+          continue;
+        }
       }
     } catch {
       continue;
@@ -174,7 +213,11 @@ export async function resumePendingTasks(params: {
     try {
       const message = formatResumeMessage(task);
       const sessionKey = buildAgentMainSessionKey({ agentId: task.agentId });
-      const accountId = resolveAgentBoundAccountId(params.cfg, task.agentId, "discord");
+      const accountId = resolveAgentBoundAccountId(
+        params.cfg,
+        task.agentId,
+        params.cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+      );
 
       await agentCommand(
         {

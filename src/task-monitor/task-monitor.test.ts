@@ -67,6 +67,41 @@ Minimal task
       expect(result!.source).toBeUndefined();
       expect(result!.progress).toEqual([]);
     });
+
+    it("parses abandoned task status correctly", () => {
+      const content = `# Task: task_abandoned1
+
+## Metadata
+- **Status:** abandoned
+- **Priority:** medium
+- **Created:** 2026-02-03T10:00:00Z
+
+## Description
+A zombie task that was auto-abandoned
+
+## Progress
+- Started working
+- Auto-abandoned: no activity for 24h (TTL: 24h)
+
+## Last Activity
+2026-02-05T10:00:00Z
+
+---
+*Managed by task tools*`;
+
+      const result = parseTaskFileMd(content, "task_abandoned1.md");
+
+      expect(result).not.toBeNull();
+      expect(result!.id).toBe("task_abandoned1");
+      expect(result!.status).toBe("abandoned");
+      expect(result!.priority).toBe("medium");
+      expect(result!.description).toBe("A zombie task that was auto-abandoned");
+      expect(result!.progress).toEqual([
+        "Started working",
+        "Auto-abandoned: no activity for 24h (TTL: 24h)",
+      ]);
+      expect(result!.lastActivity).toBe("2026-02-05T10:00:00Z");
+    });
   });
 
   describe("priority sorting", () => {
@@ -127,7 +162,8 @@ type TaskStatus =
   | "in_progress"
   | "blocked"
   | "completed"
-  | "cancelled";
+  | "cancelled"
+  | "abandoned";
 type TaskPriority = "low" | "medium" | "high" | "urgent";
 
 interface TaskFile {

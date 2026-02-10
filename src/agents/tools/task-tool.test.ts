@@ -8,6 +8,15 @@ vi.mock("node:fs/promises", () => ({
     readFile: vi.fn(),
     readdir: vi.fn().mockResolvedValue([]),
     unlink: vi.fn().mockResolvedValue(undefined),
+    rename: vi.fn().mockResolvedValue(undefined),
+    open: vi
+      .fn()
+      .mockResolvedValue({
+        write: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      }),
+    appendFile: vi.fn().mockResolvedValue(undefined),
+    access: vi.fn().mockRejectedValue(new Error("ENOENT")),
   },
 }));
 
@@ -15,6 +24,10 @@ vi.mock("../agent-scope.js", () => ({
   resolveAgentWorkspaceDir: vi.fn((_cfg, _agentId) => "/workspace/main"),
   resolveSessionAgentId: vi.fn(() => "main"),
   listAgentIds: vi.fn(() => ["main", "agent1", "agent2"]),
+}));
+
+vi.mock("../../infra/task-lock.js", () => ({
+  acquireTaskLock: vi.fn(async () => ({ release: vi.fn() })),
 }));
 
 vi.mock("../../infra/task-tracker.js", () => ({
@@ -232,12 +245,12 @@ Test task
       const tool = createTaskCompleteTool({ config: mockConfig });
       await tool!.execute("call-1", { summary: "Successfully implemented feature" });
 
-      const historyWrite = vi
-        .mocked(fs.writeFile)
-        .mock.calls.find((call) => (call[0] as string).includes("task-history/"));
-      expect(historyWrite).toBeDefined();
-      const content = historyWrite![1] as string;
-      expect(content).toContain("Successfully implemented feature");
+      const historyWrites = vi
+        .mocked(fs.appendFile)
+        .mock.calls.filter((call) => (call[0] as string).includes("task-history/"));
+      expect(historyWrites.length).toBeGreaterThan(0);
+      const allContent = historyWrites.map((call) => call[1] as string).join("");
+      expect(allContent).toContain("Successfully implemented feature");
     });
   });
 
@@ -1270,6 +1283,26 @@ Dependent task
         if ((filePath as string).includes("task_dependent")) {
           return dependentTask;
         }
+        if ((filePath as string).includes("task_prereq")) {
+          return `# Task: task_prereq
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** high
+- **Created:** 2026-02-04T10:00:00.000Z
+
+## Description
+Prerequisite task
+
+## Progress
+- Working on it
+
+## Last Activity
+2026-02-04T10:00:00.000Z
+
+---
+*Managed by task tools*`;
+        }
         throw new Error("Not found");
       });
 
@@ -1362,9 +1395,15 @@ Medium no due date
         "task_medium_due.md",
       ] as never);
       vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
-        if ((filePath as string).includes("task_urgent")) return urgentTask;
-        if ((filePath as string).includes("task_medium_due")) return mediumWithDueDate;
-        if ((filePath as string).includes("task_medium_nodue")) return mediumNoDueDate;
+        if ((filePath as string).includes("task_urgent")) {
+          return urgentTask;
+        }
+        if ((filePath as string).includes("task_medium_due")) {
+          return mediumWithDueDate;
+        }
+        if ((filePath as string).includes("task_medium_nodue")) {
+          return mediumNoDueDate;
+        }
         throw new Error("Not found");
       });
 
@@ -1420,8 +1459,12 @@ Active task
 
       vi.mocked(fs.readdir).mockResolvedValue(["task_backlog.md", "task_active.md"] as never);
       vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
-        if ((filePath as string).includes("task_backlog")) return backlogTask;
-        if ((filePath as string).includes("task_active")) return inProgressTask;
+        if ((filePath as string).includes("task_backlog")) {
+          return backlogTask;
+        }
+        if ((filePath as string).includes("task_active")) {
+          return inProgressTask;
+        }
         throw new Error("Not found");
       });
 

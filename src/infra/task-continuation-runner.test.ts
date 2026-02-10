@@ -2,20 +2,50 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { startTaskContinuationRunner, __resetAgentStates } from "./task-continuation-runner.js";
 
+vi.mock("../agents/agent-scope.js", () => ({
+  resolveAgentWorkspaceDir: vi.fn(() => "/tmp/test-workspace"),
+  resolveDefaultAgentId: vi.fn(() => "main"),
+}));
+
 vi.mock("../agents/tools/task-tool.js", () => ({
   findActiveTask: vi.fn(),
   findPendingTasks: vi.fn(),
+  findPickableBacklogTask: vi.fn(),
+  findBlockedTasks: vi.fn(),
+  findPendingApprovalTasks: vi.fn(),
+  findAllBacklogTasks: vi.fn(),
+  writeTask: vi.fn(),
+  readTask: vi.fn(),
 }));
 
 vi.mock("../commands/agent.js", () => ({
   agentCommand: vi.fn(),
 }));
 
+vi.mock("./task-lock.js", () => ({
+  acquireTaskLock: vi.fn(async () => ({ release: vi.fn() })),
+}));
+
+vi.mock("../routing/bindings.js", () => ({
+  resolveAgentBoundAccountId: vi.fn(() => "test-account"),
+}));
+
+vi.mock("../agents/tools/sessions-helpers.js", () => ({
+  createAgentToAgentPolicy: vi.fn(() => ({ isAllowed: () => true })),
+}));
+
 vi.mock("../process/command-queue.js", () => ({
   getQueueSize: vi.fn(() => 0),
 }));
 
-import { findActiveTask, findPendingTasks } from "../agents/tools/task-tool.js";
+import {
+  findActiveTask,
+  findPendingTasks,
+  findPickableBacklogTask,
+  findBlockedTasks,
+  findPendingApprovalTasks,
+  readTask,
+} from "../agents/tools/task-tool.js";
 import { agentCommand } from "../commands/agent.js";
 import { getQueueSize } from "../process/command-queue.js";
 
@@ -27,6 +57,10 @@ describe("startTaskContinuationRunner", () => {
     __resetAgentStates();
     vi.mocked(findActiveTask).mockResolvedValue(null);
     vi.mocked(findPendingTasks).mockResolvedValue([]);
+    vi.mocked(findPendingApprovalTasks).mockResolvedValue([]);
+    vi.mocked(findPickableBacklogTask).mockResolvedValue(null);
+    vi.mocked(findBlockedTasks).mockResolvedValue([]);
+    vi.mocked(readTask).mockResolvedValue(null);
     vi.mocked(agentCommand).mockResolvedValue({
       text: "ok",
       sessionId: "test",
@@ -224,7 +258,7 @@ describe("startTaskContinuationRunner", () => {
       progress: ["Started"],
     };
 
-    it("applies 20 minute backoff for rate_limit errors", async () => {
+    it("applies 1 minute backoff for rate_limit errors", async () => {
       vi.mocked(findActiveTask).mockResolvedValue(idleTask);
       vi.mocked(agentCommand).mockRejectedValue(new Error("All models failed: rate_limit"));
 
@@ -232,19 +266,17 @@ describe("startTaskContinuationRunner", () => {
         cfg: { agents: { defaults: {} } } as OpenClawConfig,
       });
 
-      // First attempt - fails with rate_limit
+      // First attempt at T+2min (check interval) - task is idle (>3min since lastActivity at T-10min)
+      // Fails with rate_limit -> 1 minute backoff
       await vi.advanceTimersByTimeAsync(3 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(1);
 
       // Reset mock to track new calls
       vi.mocked(agentCommand).mockClear();
 
-      // After 10 minutes - still in backoff (20min required)
-      await vi.advanceTimersByTimeAsync(10 * 60_000);
-      expect(agentCommand).not.toHaveBeenCalled();
-
-      // After 20 minutes total - backoff expired, should retry
-      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      // Next check at T+4min - backoff expired (1min backoff from T+2 = T+3), retry
+      // Fails again -> 2 minute backoff (exponential: 1min * 2^1)
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(1);
 
       runner.stop();
@@ -335,16 +367,16 @@ describe("startTaskContinuationRunner", () => {
       vi.mocked(agentCommand).mockClear();
 
       // Wait 20 min, second failure - 40 min backoff (20 * 2)
-      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      await vi.advanceTimersByTimeAsync(1 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(1);
       vi.mocked(agentCommand).mockClear();
 
       // After 20 min - still in backoff (40 min required)
-      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      await vi.advanceTimersByTimeAsync(1 * 60_000);
       expect(agentCommand).not.toHaveBeenCalled();
 
       // After 40 min total - backoff expired
-      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      await vi.advanceTimersByTimeAsync(1 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(1);
 
       runner.stop();
@@ -352,7 +384,7 @@ describe("startTaskContinuationRunner", () => {
 
     it("resets failure state on successful continuation", async () => {
       vi.mocked(findActiveTask).mockResolvedValue(idleTask);
-      
+
       // First call fails
       vi.mocked(agentCommand).mockRejectedValueOnce(new Error("rate_limit"));
 
@@ -372,11 +404,12 @@ describe("startTaskContinuationRunner", () => {
       });
 
       // Wait for backoff to expire (20 min)
-      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      await vi.advanceTimersByTimeAsync(1 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(2);
 
       // Third attempt after normal cooldown (5 min) - should work (not 40 min exponential)
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      // Check interval is 2 min, so next check after cooldown expires is at +6 min
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(3);
 
       runner.stop();
@@ -413,14 +446,14 @@ describe("startTaskContinuationRunner", () => {
         cfg: { agents: { defaults: {} } } as OpenClawConfig,
       });
 
+      // First attempt fails with 429 -> detected as rate_limit -> 1 min backoff
       await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
       vi.mocked(agentCommand).mockClear();
 
-      // Should apply 20 min backoff (rate_limit detection)
-      await vi.advanceTimersByTimeAsync(10 * 60_000);
-      expect(agentCommand).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      // Next check at T+4 - backoff expired, retry (fails again -> 2 min backoff)
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(1);
 
       runner.stop();
@@ -428,20 +461,26 @@ describe("startTaskContinuationRunner", () => {
 
     it("detects context_overflow from error message", async () => {
       vi.mocked(findActiveTask).mockResolvedValue(idleTask);
-      vi.mocked(agentCommand).mockRejectedValue(new Error("context overflow: token limit exceeded"));
+      vi.mocked(agentCommand).mockRejectedValue(
+        new Error("context overflow: token limit exceeded"),
+      );
 
       const runner = startTaskContinuationRunner({
         cfg: { agents: { defaults: {} } } as OpenClawConfig,
       });
 
+      // First attempt fails with context_overflow -> 30 min backoff
       await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(agentCommand).toHaveBeenCalledTimes(1);
+
       vi.mocked(agentCommand).mockClear();
 
-      // Should apply 30 min backoff (context_overflow)
-      await vi.advanceTimersByTimeAsync(20 * 60_000);
+      // After 15 minutes - still in backoff (30 min required)
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
       expect(agentCommand).not.toHaveBeenCalled();
 
-      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      // After 30 minutes total from fail - backoff expired, should retry
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
       expect(agentCommand).toHaveBeenCalledTimes(1);
 
       runner.stop();
@@ -461,7 +500,7 @@ describe("startTaskContinuationRunner", () => {
 
     it("checks agent-specific lane, not global main queue", async () => {
       vi.mocked(findActiveTask).mockResolvedValue(idleTask);
-      
+
       // Mock getQueueSize to return different values based on lane
       vi.mocked(getQueueSize).mockImplementation((lane: string) => {
         if (lane === "main") {
@@ -487,7 +526,7 @@ describe("startTaskContinuationRunner", () => {
 
     it("skips when agent-specific queue has items", async () => {
       vi.mocked(findActiveTask).mockResolvedValue(idleTask);
-      
+
       // Mock getQueueSize: agent-specific queue has items
       vi.mocked(getQueueSize).mockImplementation((lane: string) => {
         if (lane === "session:agent:main:main") {
@@ -509,7 +548,7 @@ describe("startTaskContinuationRunner", () => {
 
     it("uses correct lane format for each agent", async () => {
       vi.mocked(findActiveTask).mockResolvedValue(idleTask);
-      
+
       const checkedLanes: string[] = [];
       vi.mocked(getQueueSize).mockImplementation((lane: string) => {
         checkedLanes.push(lane);
@@ -531,7 +570,7 @@ describe("startTaskContinuationRunner", () => {
       // When agents.list is provided, first agent becomes default (not "main")
       expect(checkedLanes).toContain("session:agent:dajim:main");
       expect(checkedLanes).toContain("session:agent:eden:main");
-      
+
       // Should NOT check global main queue
       expect(checkedLanes).not.toContain("main");
 

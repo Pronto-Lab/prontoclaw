@@ -16,17 +16,56 @@ import type {
   PluginHookBeforeToolCallResult,
   PluginHookToolContext,
 } from "../types.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { loadConfig } from "../../config/config.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { loadConfig } from "../../config/config.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 
 const log = createSubsystemLogger("task-enforcer");
 
-const taskStartedSessions = new Map<string, boolean>();
+const taskStartedSessions = new Map<string, number>();
+
+const SESSION_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const SESSION_CLEANUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+let enforcerCleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+const activeTaskCache = new Map<string, { result: boolean; cachedAt: number }>();
+const CACHE_TTL_MS = 30_000; // 30 seconds
+
+function cleanupStaleSessions(): void {
+  const now = Date.now();
+  for (const [key, timestamp] of taskStartedSessions) {
+    if (now - timestamp > SESSION_STALE_MS) {
+      taskStartedSessions.delete(key);
+      log.debug(`Cleaned up stale session: ${key}`);
+    }
+  }
+}
+
+function getCachedActiveTaskResult(agentId: string): boolean | null {
+  const entry = activeTaskCache.get(agentId);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
+    activeTaskCache.delete(agentId);
+    return null;
+  }
+  return entry.result;
+}
+
+function setCachedActiveTaskResult(agentId: string, result: boolean): void {
+  activeTaskCache.set(agentId, { result, cachedAt: Date.now() });
+}
+
+export function invalidateActiveTaskCache(agentId?: string): void {
+  if (agentId) {
+    activeTaskCache.delete(agentId);
+  } else {
+    activeTaskCache.clear();
+  }
+}
 
 const EXEMPT_TOOLS = new Set([
-  "task_start",
-  "task_complete",
   "task_update",
   "task_list",
   "task_status",
@@ -54,12 +93,7 @@ const EXEMPT_TOOLS = new Set([
   "web_fetch",
 ]);
 
-const ENFORCED_TOOLS = new Set([
-  "write",
-  "edit",
-  "bash",
-  "exec",
-]);
+const ENFORCED_TOOLS = new Set(["write", "edit", "bash", "exec"]);
 
 function getSessionKey(ctx: PluginHookToolContext): string | null {
   if (!ctx.agentId) {
@@ -72,28 +106,47 @@ function getSessionKey(ctx: PluginHookToolContext): string | null {
  * Check if there are active task files in the workspace's tasks/ directory.
  * This recovers state after gateway restart.
  */
-async function hasActiveTaskFiles(workspaceDir: string): Promise<boolean> {
+async function hasActiveTaskFiles(workspaceDir: string, agentId?: string): Promise<boolean> {
+  if (agentId) {
+    const cached = getCachedActiveTaskResult(agentId);
+    if (cached !== null) {
+      return cached;
+    }
+  }
   const tasksDir = path.join(workspaceDir, "tasks");
   try {
     const files = await fs.readdir(tasksDir);
     // Check if any task_*.md files exist
     const hasTaskFiles = files.some((f) => f.startsWith("task_") && f.endsWith(".md"));
     if (!hasTaskFiles) {
+      if (agentId) {
+        setCachedActiveTaskResult(agentId, false);
+      }
       return false;
     }
     // Read each task file to check if any are in_progress or pending
     for (const file of files) {
-      if (!file.startsWith("task_") || !file.endsWith(".md")) continue;
+      if (!file.startsWith("task_") || !file.endsWith(".md")) {
+        continue;
+      }
       try {
         const content = await fs.readFile(path.join(tasksDir, file), "utf-8");
-        if (content.includes("**Status:** in_progress") || 
-            content.includes("**Status:** pending") ||
-            content.includes("**Status:** pending_approval")) {
+        if (
+          content.includes("**Status:** in_progress") ||
+          content.includes("**Status:** pending") ||
+          content.includes("**Status:** pending_approval")
+        ) {
+          if (agentId) {
+            setCachedActiveTaskResult(agentId, true);
+          }
           return true;
         }
       } catch {
         continue;
       }
+    }
+    if (agentId) {
+      setCachedActiveTaskResult(agentId, false);
     }
     return false;
   } catch {
@@ -114,7 +167,10 @@ export async function taskEnforcerHandler(
   if (toolName === "task_start") {
     const sessionKey = getSessionKey(ctx);
     if (sessionKey) {
-      taskStartedSessions.set(sessionKey, true);
+      taskStartedSessions.set(sessionKey, Date.now());
+      if (ctx.agentId) {
+        invalidateActiveTaskCache(ctx.agentId);
+      }
       log.debug(`task_start called for session: ${sessionKey}`);
     }
     return;
@@ -124,6 +180,9 @@ export async function taskEnforcerHandler(
     const sessionKey = getSessionKey(ctx);
     if (sessionKey) {
       taskStartedSessions.delete(sessionKey);
+      if (ctx.agentId) {
+        invalidateActiveTaskCache(ctx.agentId);
+      }
       log.debug(`task_complete called for session: ${sessionKey}`);
     }
     return;
@@ -141,7 +200,7 @@ export async function taskEnforcerHandler(
   }
 
   // First check in-memory cache
-  let hasStartedTask = taskStartedSessions.get(sessionKey) === true;
+  let hasStartedTask = taskStartedSessions.has(sessionKey);
 
   // If not in cache, check actual task files on disk (recovery after restart)
   if (!hasStartedTask && ctx.agentId) {
@@ -149,10 +208,10 @@ export async function taskEnforcerHandler(
       const cfg = loadConfig();
       const workspaceDir = resolveAgentWorkspaceDir(cfg, ctx.agentId);
       if (workspaceDir) {
-        const hasTasksOnDisk = await hasActiveTaskFiles(workspaceDir);
+        const hasTasksOnDisk = await hasActiveTaskFiles(workspaceDir, ctx.agentId);
         if (hasTasksOnDisk) {
           // Recover state: mark session as having an active task
-          taskStartedSessions.set(sessionKey, true);
+          taskStartedSessions.set(sessionKey, Date.now());
           hasStartedTask = true;
           log.info(`Recovered task state from disk for session ${sessionKey}`);
         }
@@ -184,16 +243,27 @@ export function registerTaskEnforcerHook(registry: PluginRegistry): void {
     priority: 1000,
     source: "core",
   });
+  if (!enforcerCleanupTimer) {
+    enforcerCleanupTimer = setInterval(cleanupStaleSessions, SESSION_CLEANUP_INTERVAL_MS);
+    if (enforcerCleanupTimer.unref) {
+      enforcerCleanupTimer.unref();
+    }
+  }
   log.info("Task enforcer hook registered");
 }
 
 export function clearTaskEnforcerState(): void {
   taskStartedSessions.clear();
+  activeTaskCache.clear();
+  if (enforcerCleanupTimer) {
+    clearInterval(enforcerCleanupTimer);
+    enforcerCleanupTimer = null;
+  }
   log.debug("Task enforcer state cleared");
 }
 export function hasActiveTask(agentId: string, sessionKey?: string): boolean {
   const key = `${agentId}:${sessionKey ?? "main"}`;
-  return taskStartedSessions.get(key) === true;
+  return taskStartedSessions.has(key);
 }
 
 /**
@@ -202,5 +272,5 @@ export function hasActiveTask(agentId: string, sessionKey?: string): boolean {
  */
 export function markTaskStarted(agentId: string, sessionKey?: string): void {
   const key = `${agentId}:${sessionKey ?? "main"}`;
-  taskStartedSessions.set(key, true);
+  taskStartedSessions.set(key, Date.now());
 }

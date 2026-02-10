@@ -3,10 +3,18 @@ import type { TaskFile } from "../agents/tools/task-tool.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { startTaskContinuationRunner, __resetAgentStates } from "./task-continuation-runner.js";
 
+vi.mock("../agents/agent-scope.js", () => ({
+  resolveAgentWorkspaceDir: vi.fn(() => "/tmp/test-workspace"),
+  resolveDefaultAgentId: vi.fn(() => "main"),
+}));
+
 vi.mock("../agents/tools/task-tool.js", () => ({
   findActiveTask: vi.fn(),
   findPendingTasks: vi.fn(),
+  findPickableBacklogTask: vi.fn(),
   findBlockedTasks: vi.fn(),
+  findPendingApprovalTasks: vi.fn(),
+  findAllBacklogTasks: vi.fn(),
   writeTask: vi.fn(),
   readTask: vi.fn(),
 }));
@@ -23,7 +31,6 @@ vi.mock("../routing/bindings.js", () => ({
   resolveAgentBoundAccountId: vi.fn(() => "test-account"),
 }));
 
-
 vi.mock("./task-lock.js", () => ({
   acquireTaskLock: vi.fn(async () => ({
     release: vi.fn(async () => {}),
@@ -34,15 +41,27 @@ vi.mock("../agents/tools/sessions-helpers.js", () => ({
     const policy = cfg.agents?.defaults?.agentToAgent?.policy ?? "allow-all";
     return {
       isAllowed: (from: string, to: string) => {
-        if (policy === "deny-all") return false;
-        if (policy === "allow-all") return true;
+        if (policy === "deny-all") {
+          return false;
+        }
+        if (policy === "allow-all") {
+          return true;
+        }
         return true;
       },
     };
   }),
 }));
 
-import { findBlockedTasks, writeTask, readTask } from "../agents/tools/task-tool.js";
+import {
+  findActiveTask,
+  findPendingTasks,
+  findPickableBacklogTask,
+  findBlockedTasks,
+  findPendingApprovalTasks,
+  writeTask,
+  readTask,
+} from "../agents/tools/task-tool.js";
 import { agentCommand } from "../commands/agent.js";
 import { getQueueSize } from "../process/command-queue.js";
 
@@ -53,6 +72,10 @@ describe("Task Unblock with escalationState", () => {
     vi.clearAllMocks();
     __resetAgentStates();
     vi.mocked(findBlockedTasks).mockResolvedValue([]);
+    vi.mocked(findActiveTask).mockResolvedValue(null);
+    vi.mocked(findPendingTasks).mockResolvedValue([]);
+    vi.mocked(findPendingApprovalTasks).mockResolvedValue([]);
+    vi.mocked(findPickableBacklogTask).mockResolvedValue(null);
     vi.mocked(agentCommand).mockResolvedValue({
       text: "ok",
       sessionId: "test",
@@ -100,6 +123,9 @@ describe("Task Unblock with escalationState", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -142,6 +168,9 @@ describe("Task Unblock with escalationState", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -184,6 +213,9 @@ describe("Task Unblock with escalationState", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -225,6 +257,9 @@ describe("Task Unblock with escalationState", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -287,6 +322,9 @@ describe("Task Unblock Rotation", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -381,6 +419,9 @@ describe("Task Unblock Rotation", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -423,6 +464,9 @@ describe("Task Unblock Rotation", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -472,6 +516,9 @@ describe("Task Unblock Rotation", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -518,6 +565,9 @@ describe("Task Unblock Rotation", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -590,6 +640,9 @@ describe("Task Unblock A2A Policy", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -631,6 +684,9 @@ describe("Task Unblock A2A Policy", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -677,6 +733,9 @@ describe("Task Unblock A2A Policy", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -728,6 +787,9 @@ describe("Task Unblock A2A Policy", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -777,6 +839,9 @@ describe("Task Unblock A2A Policy", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
+    vi.mocked(readTask).mockImplementation(async (_dir, id) =>
+      id === blockedTask.id ? blockedTask : null,
+    );
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -950,7 +1015,7 @@ describe("Task Unblock Failure Tracking", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
-    vi.mocked(readTask).mockResolvedValue(blockedTask);
+    vi.mocked(readTask).mockImplementation(async () => JSON.parse(JSON.stringify(blockedTask)));
     vi.mocked(agentCommand).mockRejectedValue(new Error("Network error"));
 
     const runner = startTaskContinuationRunner({
@@ -994,7 +1059,7 @@ describe("Task Unblock Failure Tracking", () => {
     };
 
     vi.mocked(findBlockedTasks).mockResolvedValue([blockedTask]);
-    vi.mocked(readTask).mockResolvedValue(blockedTask);
+    vi.mocked(readTask).mockImplementation(async () => JSON.parse(JSON.stringify(blockedTask)));
     vi.mocked(agentCommand).mockRejectedValue(new Error("Network error"));
 
     const runner = startTaskContinuationRunner({
