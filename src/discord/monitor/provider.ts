@@ -45,6 +45,7 @@ import {
   createDiscordCommandArgFallbackButton,
   createDiscordNativeCommand,
 } from "./native-command.js";
+import { registerSiblingBot, unregisterSiblingBot } from "./sibling-bots.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
@@ -658,6 +659,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     }
   }
 
+  if (botUserId) {
+    registerSiblingBot(botUserId);
+  }
   runtime.log?.(`logged in to discord${botUserId ? ` as ${botUserId}` : ""}`);
 
   // Start exec approvals handler after client is ready

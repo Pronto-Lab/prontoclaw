@@ -49,6 +49,7 @@ import {
 } from "./format.js";
 import { resolveDiscordChannelInfo, resolveDiscordMessageText } from "./message-utils.js";
 import { resolveDiscordSenderIdentity, resolveDiscordWebhookId } from "./sender-identity.js";
+import { isSiblingBot } from "./sibling-bots.js";
 import { resolveDiscordSystemEvent } from "./system-events.js";
 import { resolveDiscordThreadChannel, resolveDiscordThreadParentInfo } from "./threading.js";
 
@@ -93,14 +94,35 @@ export async function preflightDiscordMessage(
     pluralkitInfo,
   });
 
+  const isGuildMessage = Boolean(params.data.guild_id);
+
   if (author.bot) {
-    if (!allowBots && !sender.isPluralKit) {
+    // Sibling bots (other agents in the same deployment) always bypass the bot filter
+    const siblingBypass = isSiblingBot(author.id);
+    if (!allowBots && !sender.isPluralKit && !siblingBypass) {
+      // When historyIncludeBots is enabled, record bot messages to guild history
+      // before dropping them — gives multi-agent setups visibility into sibling output.
+      const historyIncludeBots = params.discordConfig?.historyIncludeBots ?? false;
+      if (historyIncludeBots && isGuildMessage && params.historyLimit > 0) {
+        const botText = resolveDiscordMessageText(message, { includeForwarded: true });
+        if (botText) {
+          recordPendingHistoryEntryIfEnabled({
+            historyMap: params.guildHistories,
+            historyKey: message.channelId,
+            limit: params.historyLimit,
+            entry: {
+              sender: sender.label,
+              body: botText,
+              timestamp: resolveTimestampMs(message.timestamp),
+              messageId: message.id,
+            },
+          });
+        }
+      }
       logVerbose("discord: drop bot message (allowBots=false)");
       return null;
     }
   }
-
-  const isGuildMessage = Boolean(params.data.guild_id);
   const channelInfo = await resolveDiscordChannelInfo(params.client, message.channelId);
   const isDirectMessage = channelInfo?.type === ChannelType.DM;
   const isGroupDm = channelInfo?.type === ChannelType.GroupDM;

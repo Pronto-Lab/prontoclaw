@@ -79,6 +79,7 @@ export type ChannelOutboundContext = {
   replyToId?: string | null;
   threadId?: string | number | null;
   accountId?: string | null;
+  agentId?: string | null;
   deps?: OutboundSendDeps;
 };
 
