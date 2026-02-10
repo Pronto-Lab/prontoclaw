@@ -89,10 +89,26 @@ const contextStates = new WeakMap<BrowserContext, ContextState>();
 const observedContexts = new WeakSet<BrowserContext>();
 const observedPages = new WeakSet<Page>();
 
-// Best-effort cache to make role refs stable even if Playwright returns a different Page object
-// for the same CDP target across requests.
-const roleRefsByTarget = new Map<string, RoleRefsCacheEntry>();
+// Session-scoped role ref caches to prevent cross-agent ref leaking in multi-agent setups.
+// Each session key gets its own Map so one agent's snapshot refs never collide with another's.
+const sessionRoleRefCaches = new Map<string, Map<string, RoleRefsCacheEntry>>();
 const MAX_ROLE_REFS_CACHE = 50;
+const DEFAULT_SESSION_KEY = "__global__";
+
+function getSessionRoleRefCache(sessionKey?: string): Map<string, RoleRefsCacheEntry> {
+  const key = sessionKey || DEFAULT_SESSION_KEY;
+  let cache = sessionRoleRefCaches.get(key);
+  if (!cache) {
+    cache = new Map<string, RoleRefsCacheEntry>();
+    sessionRoleRefCaches.set(key, cache);
+  }
+  return cache;
+}
+
+/** Clear role ref cache for a specific session. Call on session end to free memory. */
+export function clearSessionRoleRefs(sessionKey: string): void {
+  sessionRoleRefCaches.delete(sessionKey);
+}
 
 const MAX_CONSOLE_MESSAGES = 500;
 const MAX_PAGE_ERRORS = 200;
@@ -115,22 +131,24 @@ export function rememberRoleRefsForTarget(opts: {
   refs: RoleRefs;
   frameSelector?: string;
   mode?: NonNullable<PageState["roleRefsMode"]>;
+  sessionKey?: string;
 }): void {
   const targetId = opts.targetId.trim();
   if (!targetId) {
     return;
   }
-  roleRefsByTarget.set(roleRefsKey(opts.cdpUrl, targetId), {
+  const cache = getSessionRoleRefCache(opts.sessionKey);
+  cache.set(roleRefsKey(opts.cdpUrl, targetId), {
     refs: opts.refs,
     ...(opts.frameSelector ? { frameSelector: opts.frameSelector } : {}),
     ...(opts.mode ? { mode: opts.mode } : {}),
   });
-  while (roleRefsByTarget.size > MAX_ROLE_REFS_CACHE) {
-    const first = roleRefsByTarget.keys().next();
+  while (cache.size > MAX_ROLE_REFS_CACHE) {
+    const first = cache.keys().next();
     if (first.done) {
       break;
     }
-    roleRefsByTarget.delete(first.value);
+    cache.delete(first.value);
   }
 }
 
@@ -141,6 +159,7 @@ export function storeRoleRefsForTarget(opts: {
   refs: RoleRefs;
   frameSelector?: string;
   mode: NonNullable<PageState["roleRefsMode"]>;
+  sessionKey?: string;
 }): void {
   const state = ensurePageState(opts.page);
   state.roleRefs = opts.refs;
@@ -155,6 +174,7 @@ export function storeRoleRefsForTarget(opts: {
     refs: opts.refs,
     frameSelector: opts.frameSelector,
     mode: opts.mode,
+    sessionKey: opts.sessionKey,
   });
 }
 
@@ -162,12 +182,14 @@ export function restoreRoleRefsForTarget(opts: {
   cdpUrl: string;
   targetId?: string;
   page: Page;
+  sessionKey?: string;
 }): void {
   const targetId = opts.targetId?.trim() || "";
   if (!targetId) {
     return;
   }
-  const cached = roleRefsByTarget.get(roleRefsKey(opts.cdpUrl, targetId));
+  const cache = getSessionRoleRefCache(opts.sessionKey);
+  const cached = cache.get(roleRefsKey(opts.cdpUrl, targetId));
   if (!cached) {
     return;
   }
