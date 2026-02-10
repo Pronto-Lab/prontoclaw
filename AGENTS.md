@@ -47,6 +47,145 @@
   `pkill -9 -f openclaw-gateway || true; nohup openclaw gateway run --bind loopback --port 18789 --force > /tmp/openclaw-gateway.log 2>&1 &`
 - Verify: `openclaw channels status --probe`, `ss -ltnp | rg 18789`, `tail -n 120 /tmp/openclaw-gateway.log`.
 
+## Multi-Agent Coordination
+
+This workspace includes multi-agent coordination features. Here is what you need to know as an agent.
+
+### Task Lifecycle
+
+Use task tools to track work across sessions. Tasks are stored as markdown files in your workspace (`tasks/task_*.md`) and archived to `TASK_HISTORY.md` on completion.
+
+| Tool                | Purpose                                        |
+| ------------------- | ---------------------------------------------- |
+| `task_start`        | Begin a new task (creates tracking file)       |
+| `task_update`       | Add progress entry to current task             |
+| `task_complete`     | Finish task, archive to TASK_HISTORY.md        |
+| `task_status`       | Check current task state (or all active tasks) |
+| `task_list`         | List all active tasks                          |
+| `task_cancel`       | Abandon a task without completing              |
+| `task_approve`      | Approve a task in `pending_approval` status    |
+| `task_block`        | Block a task (waiting for another agent)       |
+| `task_resume`       | Resume a blocked task                          |
+| `task_backlog_add`  | Add a task to the backlog for later            |
+| `task_pick_backlog` | Pick and start a task from the backlog         |
+
+**Task states:** `pending_approval` → `in_progress` → `completed` / `cancelled` / `blocked`
+
+If `requires_approval` is set on `task_start`, the task starts as `pending_approval` and needs `task_approve` before work begins.
+
+**Task outcomes:** When a task reaches a terminal state (`task_complete`, `task_cancel`, or zombie interruption), a structured outcome is recorded. This includes the outcome type and a summary.
+
+### Task Continuation (Auto-Resume)
+
+The gateway automatically monitors active tasks and sends continuation prompts when an agent goes idle. Configuration lives in `openclaw.json`:
+
+```json5
+{
+  agents: {
+    defaults: {
+      taskContinuation: {
+        enabled: true,
+        idleMs: 30000, // idle threshold before prompting
+        intervalMs: 15000, // check interval
+        maxRetries: 5, // max prompts per task
+        cooldownMs: 60000, // cooldown after max retries
+        zombieMs: 600000, // threshold to mark task as zombie
+      },
+    },
+  },
+}
+```
+
+**Zombie detection:** Tasks idle beyond `zombieMs` are transitioned to `interrupted` status. The lead agent is notified.
+
+**Race condition safety:** Continuation uses per-agent locking and freshness checks to prevent duplicate prompts and race conditions.
+
+### Inter-Agent Communication
+
+Use `sessions_send` to message other agents directly:
+
+```
+sessions_send { "target": "agent:work:main", "message": "Status update: deployment complete" }
+```
+
+For broadcast to all agents, the system supports broadcast routing via configured broadcast groups.
+
+**Loop prevention:** Agent-to-agent messages are protected by:
+
+- Self-message filtering (messages from your own application ID are dropped)
+- Rate limiting per agent pair (sliding window)
+- Hop depth cap (prevents infinite A2A relay chains)
+
+### Agent-to-Agent Configuration
+
+Enable A2A messaging in `openclaw.json`:
+
+```json5
+{
+  tools: {
+    agentToAgent: {
+      enabled: true,
+      allow: ["agent-a", "agent-b"], // allowlist of agent IDs
+    },
+  },
+}
+```
+
+### Sibling Bot Recognition
+
+In Discord guild channels, messages from other agents in the same gateway are recognized as sibling bots. Their messages bypass the bot filter, so you can see and respond to other agents' messages in shared guild channels.
+
+### Team Coordination
+
+Agents track each other's status (active task, last activity, online/offline). A lead agent receives notifications when:
+
+- A worker's task transitions to `interrupted` (zombie detection)
+- Team state changes occur
+
+A periodic team dashboard embed is posted to the configured Discord monitoring webhook, showing each agent's status, current task, and last activity.
+
+### Plan Approval Flow
+
+For structured workflows, worker agents can submit plans for lead approval:
+
+1. Worker submits a plan (stored as a pending plan file)
+2. Lead reviews and approves or rejects
+3. Worker checks plan status before proceeding
+
+Plans are managed through the plan approval system and events are emitted for monitoring.
+
+### Event Monitoring
+
+Task and coordination events are automatically emitted and forwarded to a Discord webhook as color-coded embeds. Events include:
+
+- Task lifecycle: started, updated, completed, cancelled, blocked, resumed
+- Continuation: prompts sent, unblock requests, zombie detection
+- Plans: submitted, approved, rejected
+
+Events are batched (default 5 seconds) before sending to avoid rate limits.
+
+### Session Tool Gating
+
+A lead agent can restrict which tools are available to worker agents on a per-session basis. Tools can be gated (blocked until approved), approved, or revoked at runtime. This enables least-privilege workflows where workers only get the tools they need.
+
+### Browser Isolation
+
+Browser snapshot references are scoped per session. One agent's browser state does not leak into another agent's session, even when running in the same gateway.
+
+### Discord-Specific Configuration
+
+**History include bots:** Set `channels.discord.historyIncludeBots: true` in `openclaw.json` to make bot messages visible in guild history (normally bot messages are dropped before reaching the agent). Useful when agents need to see each other's Discord messages in context.
+
+**Per-agent webhooks:** Each agent can have its own Discord webhook for monitoring output, configured via the agent's delivery settings.
+
+### Cross-Agent Memory
+
+Memory search results can include entries from other agents when the cross-agent memory allowlist is configured. This enables shared knowledge without shared workspaces.
+
+### Agent Identity Headers
+
+Messages between agents include identity headers (`From:` / `To:`) so each agent knows who sent the message and who it was intended for.
+
 ## Build, Test, and Development Commands
 
 - Runtime baseline: Node **22+** (keep Node + Bun paths working).

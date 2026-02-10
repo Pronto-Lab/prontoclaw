@@ -522,19 +522,19 @@ _Last updated: 2026-02-04_
 
 **Tools:**
 
-| Tool          | Description                                              |
-| ------------- | -------------------------------------------------------- |
-| `task_block`  | Block current task, specify who can unblock and why      |
-| `task_resume` | Resume a blocked task (used by unblocking agent)         |
+| Tool          | Description                                         |
+| ------------- | --------------------------------------------------- |
+| `task_block`  | Block current task, specify who can unblock and why |
+| `task_resume` | Resume a blocked task (used by unblocking agent)    |
 
 **Files:**
 
-| File                                         | Purpose                                |
-| -------------------------------------------- | -------------------------------------- |
-| `src/agents/tools/task-tool.ts`              | task_block/task_resume implementations |
-| `src/infra/task-continuation-runner.ts`      | Automatic unblock request scheduler    |
-| `src/infra/task-lock.ts`                     | File-based locking for task operations |
-| `src/agents/tool-policy.ts`                  | group:task includes block/resume tools |
+| File                                    | Purpose                                |
+| --------------------------------------- | -------------------------------------- |
+| `src/agents/tools/task-tool.ts`         | task_block/task_resume implementations |
+| `src/infra/task-continuation-runner.ts` | Automatic unblock request scheduler    |
+| `src/infra/task-lock.ts`                | File-based locking for task operations |
+| `src/agents/tool-policy.ts`             | group:task includes block/resume tools |
 
 **How it works:**
 
@@ -551,42 +551,48 @@ _Last updated: 2026-02-04_
 # Task: task_m1abc_xyz1
 
 ## Metadata
+
 - **Status:** blocked
 - **Priority:** high
 - **Created:** 2026-02-06T10:00:00.000Z
 
 ## Description
+
 Implement new feature X
 
 ## Progress
+
 - Task started
 - [BLOCKED] Need code review from eden
 - [UNBLOCK REQUEST 1/3] Sent to eden
 
 ## Last Activity
+
 2026-02-06T10:30:00.000Z
 
 ## Blocking
+
 \`\`\`json
 {"blockedReason":"Need code review from eden","unblockedBy":["eden"],"unblockedAction":"Review PR #123","unblockRequestCount":1,"lastUnblockerIndex":0,"escalationState":"requesting"}
 \`\`\`
 
 ---
-*Managed by task tools*
+
+_Managed by task tools_
 ```
 
 **Blocking Fields:**
 
-| Field                   | Type     | Description                                          |
-| ----------------------- | -------- | ---------------------------------------------------- |
-| `blockedReason`         | string   | Why the task is blocked                              |
-| `unblockedBy`           | string[] | Agent IDs who can help unblock                       |
-| `unblockedAction`       | string?  | What the unblocking agent should do                  |
-| `unblockRequestCount`   | number   | How many unblock requests have been sent             |
-| `lastUnblockerIndex`    | number   | Index in unblockedBy for round-robin                 |
-| `lastUnblockRequestAt`  | string   | ISO timestamp of last request                        |
-| `escalationState`       | string   | "none" | "requesting" | "escalated" | "failed"      |
-| `unblockRequestFailures`| number   | Count of consecutive agent command failures          |
+| Field                    | Type     | Description                                 |
+| ------------------------ | -------- | ------------------------------------------- | ------------ | ----------- | -------- |
+| `blockedReason`          | string   | Why the task is blocked                     |
+| `unblockedBy`            | string[] | Agent IDs who can help unblock              |
+| `unblockedAction`        | string?  | What the unblocking agent should do         |
+| `unblockRequestCount`    | number   | How many unblock requests have been sent    |
+| `lastUnblockerIndex`     | number   | Index in unblockedBy for round-robin        |
+| `lastUnblockRequestAt`   | string   | ISO timestamp of last request               |
+| `escalationState`        | string   | "none"                                      | "requesting" | "escalated" | "failed" |
+| `unblockRequestFailures` | number   | Count of consecutive agent command failures |
 
 **Automatic Unblock Requests:**
 
@@ -598,9 +604,9 @@ Implement new feature X
 
 **API Endpoints for Blocked Tasks:**
 
-| Endpoint                       | Description                           |
-| ------------------------------ | ------------------------------------- |
-| `GET /api/agents/:id/blocked`  | Get blocked tasks with full metadata  |
+| Endpoint                      | Description                          |
+| ----------------------------- | ------------------------------------ |
+| `GET /api/agents/:id/blocked` | Get blocked tasks with full metadata |
 
 **Example Response:**
 
@@ -635,3 +641,187 @@ Implement new feature X
 
 ---
 
+---
+
+### 10. EventBus → Discord Monitoring Pipe ✅
+
+**Purpose:** Forward task coordination events to a Discord webhook for real-time operational monitoring.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/infra/events/discord-sink.ts` | Batched event → Discord embed forwarder |
+| `src/infra/events/discord-sink.test.ts` | 4 tests |
+
+**Features:**
+
+- Batched delivery (configurable window, default 5s)
+- Color-coded embeds per event type (green=started, blue=completed, red=blocked, etc.)
+- Event type filter (forward only selected events)
+- Max batch size with force-flush
+- Rate limit handling with retry-after
+- Graceful stop with final flush
+
+---
+
+### 11. Sibling Bot Bypass ✅
+
+**Purpose:** In multi-agent deployments, agents should not be filtered by the standard bot-drop rule. Sibling bots are auto-registered and bypass the filter.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/discord/monitor/sibling-bots.ts` | Bot ID registry |
+| `src/discord/monitor/sibling-bots.test.ts` | 5 tests |
+| `src/discord/monitor/message-handler.preflight.ts` | Bypass integration |
+| `src/discord/monitor/provider.ts` | Auto-register on login |
+
+---
+
+### 12. Session-Aware Browser Isolation ✅
+
+**Purpose:** Prevent browser role-ref cache collisions between agents sharing the same browser.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/browser/pw-session.ts` | Session-scoped `roleRefsByTarget` caches |
+
+**Changes:**
+
+- Global `roleRefsByTarget` Map → per-session Map registry
+- `getSessionRoleRefCache(sessionKey)` helper
+- `clearSessionRoleRefs(sessionKey)` cleanup function
+- All role ref functions accept optional `sessionKey` parameter
+
+---
+
+### 13. TaskOutcome Type ✅
+
+**Purpose:** Structured terminal state recording for tasks (completed, cancelled, error, interrupted).
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/agents/tools/task-tool.ts` | `TaskOutcome` union type + serialization |
+| `src/infra/task-continuation-runner.ts` | Outcome set on zombie→interrupted |
+
+**Type:**
+
+```typescript
+type TaskOutcome =
+  | { kind: "completed"; summary?: string }
+  | { kind: "cancelled"; reason?: string; by?: string }
+  | { kind: "error"; error: string; retriable?: boolean }
+  | { kind: "interrupted"; by?: string; reason?: string };
+```
+
+---
+
+### 14. Plan Approval Flow ✅
+
+**Purpose:** Worker agents submit execution plans for lead agent approval before proceeding.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/infra/plan-approval.ts` | Plan CRUD + file persistence |
+| `src/infra/plan-approval.test.ts` | 7 tests |
+| `src/infra/events/schemas.ts` | `PLAN_SUBMITTED`, `PLAN_APPROVED`, `PLAN_REJECTED` events |
+
+**Flow:**
+
+1. Worker: `submitPlan()` → status "pending"
+2. Lead: `approvePlan()` → status "approved" (or `rejectPlan()` → "rejected")
+3. Worker: checks `getPlan().status` before proceeding
+
+---
+
+### 15. Session Tool Gate ✅
+
+**Purpose:** Per-session runtime tool permission gating for least-privilege execution.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/agents/session-tool-gate.ts` | Gate/approve/revoke/query primitives |
+| `src/agents/session-tool-gate.test.ts` | 8 tests |
+
+**API:**
+
+- `gateSessionTools(sessionKey, ["exec", "write"])` — block tools
+- `approveSessionTools(sessionKey, ["exec"])` — unblock specific tools
+- `isToolGated(sessionKey, "exec")` — check if blocked
+
+---
+
+### 16. Agent-to-Agent Loop Prevention ✅
+
+**Purpose:** Detect and prevent infinite message loops between agents.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/discord/loop-guard.ts` | Self-message filter + rate guard + depth cap |
+| `src/discord/loop-guard.test.ts` | 12 tests |
+
+**Guards:**
+
+1. **Self-message filter**: Blocks messages where author's applicationId matches our own
+2. **Rate guard**: Sliding-window rate limiter per A2A channel pair (default: 10 msgs/60s)
+3. **Depth cap**: Maximum A2A relay depth (default: 5)
+
+---
+
+### 17. Team State → Discord Dashboard ✅
+
+**Purpose:** Periodic live dashboard embed showing all agent statuses.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/infra/team-dashboard.ts` | Periodic embed poster/editor |
+| `src/infra/team-dashboard.test.ts` | 4 tests |
+
+**Features:**
+
+- Posts initial embed, then edits same message on subsequent ticks
+- Status emoji per agent (🟢 active, 🟡 idle, 🔴 blocked/interrupted)
+- Shows current task, last activity time, failure reasons
+- Configurable refresh interval (default: 30s)
+
+---
+
+### 18. History Include Bots ✅
+
+**Purpose:** Record bot (sibling agent) messages to guild history for multi-agent context visibility.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/config/types.discord.ts` | `historyIncludeBots?: boolean` field |
+| `src/config/zod-schema.providers-core.ts` | Schema validation |
+| `src/discord/monitor/message-handler.preflight.ts` | History recording before bot drop |
+
+**Configuration:**
+
+```json5
+{
+  channels: {
+    discord: {
+      historyIncludeBots: true, // Record sibling bot messages to history
+    },
+  },
+}
+```
+
+---
+
+### 19. Preserve AccountId in A2A Messaging ✅
+
+**Purpose:** Maintain correct accountId fallback chain when relaying messages between agents.
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/infra/outbound/agent-delivery.ts` | Added `baseDelivery.lastAccountId` fallback |
