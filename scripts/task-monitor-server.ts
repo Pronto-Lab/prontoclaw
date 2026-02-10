@@ -22,6 +22,7 @@
  */
 
 import chokidar from "chokidar";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -96,6 +97,8 @@ interface TaskFile {
   estimatedEffort?: string;
   startDate?: string;
   dueDate?: string;
+  // Outcome (terminal state)
+  outcome?: { kind: string; summary?: string; reason?: string };
 }
 
 interface AgentInfo {
@@ -113,7 +116,13 @@ interface CurrentTaskInfo {
 }
 
 interface WsMessage {
-  type: "agent_update" | "task_update" | "connected";
+  type:
+    | "agent_update"
+    | "task_update"
+    | "connected"
+    | "team_state_update"
+    | "event_log"
+    | "plan_update";
   agentId?: string;
   taskId?: string;
   timestamp: string;
@@ -167,6 +176,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let estimatedEffort: string | undefined;
   let startDate: string | undefined;
   let dueDate: string | undefined;
+  let outcome: { kind: string; summary?: string; reason?: string } | undefined;
 
   let currentSection = "";
 
@@ -315,6 +325,17 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
           // Invalid JSON, skip
         }
       }
+    } else if (currentSection === "outcome") {
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const outcomeData = JSON.parse(trimmed);
+          if (outcomeData.kind) {
+            outcome = outcomeData;
+          }
+        } catch {
+          // Invalid JSON, skip
+        }
+      }
     }
   }
 
@@ -342,6 +363,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     estimatedEffort,
     startDate,
     dueDate,
+    outcome,
   };
 }
 
@@ -640,6 +662,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const agentId = agentMatch[1];
     const action = agentMatch[2];
 
+    const workspaceDir = path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}${agentId}`);
     const agentInfo = await getAgentInfo(agentId);
     if (!agentInfo) {
       errorResponse(res, `Agent not found: ${agentId}`, 404);
@@ -710,7 +733,110 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
+    if (action === "plans") {
+      // Look in both workspace-level and global plans directories
+      const workspacePlansDir = path.join(workspaceDir, ".openclaw", "plans");
+      const globalPlansDir = path.join(OPENCLAW_DIR, "plans");
+      const plans: unknown[] = [];
+
+      // Read from workspace plans
+      try {
+        const files = await fs.readdir(workspacePlansDir);
+        for (const file of files) {
+          if (!file.endsWith(".json")) {
+            continue;
+          }
+          try {
+            const raw = await fs.readFile(path.join(workspacePlansDir, file), "utf-8");
+            plans.push(JSON.parse(raw));
+          } catch {
+            /* skip invalid */
+          }
+        }
+      } catch {
+        /* no workspace plans dir */
+      }
+
+      // Read from global plans (filter by agentId)
+      try {
+        const files = await fs.readdir(globalPlansDir);
+        for (const file of files) {
+          if (!file.endsWith(".json")) {
+            continue;
+          }
+          try {
+            const raw = await fs.readFile(path.join(globalPlansDir, file), "utf-8");
+            const plan = JSON.parse(raw);
+            if (plan.agentId === agentId || file.startsWith(agentId + "_")) {
+              plans.push(plan);
+            }
+          } catch {
+            /* skip invalid */
+          }
+        }
+      } catch {
+        /* no global plans dir */
+      }
+
+      // Sort by updatedAt/createdAt descending
+      plans.sort((a: any, b: any) => {
+        const ta = new Date(a.updatedAt || a.createdAt || a.submittedAt || 0).getTime();
+        const tb = new Date(b.updatedAt || b.createdAt || b.submittedAt || 0).getTime();
+        return tb - ta;
+      });
+      jsonResponse(res, { agentId, plans, count: plans.length });
+      return;
+    }
+
     errorResponse(res, `Unknown action: ${action}`, 404);
+    return;
+  }
+
+  // Team State endpoint
+  if (pathname === "/api/team-state") {
+    const teamStatePath = path.join(OPENCLAW_DIR, "team-state.json");
+    try {
+      const raw = await fs.readFile(teamStatePath, "utf-8");
+      const state = JSON.parse(raw);
+      jsonResponse(res, state);
+    } catch {
+      jsonResponse(res, { version: 1, agents: {}, lastUpdatedMs: 0 });
+    }
+    return;
+  }
+
+  // Plans endpoint moved into agent action handler above
+
+  // Events endpoint: /api/events?limit=100&since=<ISO>
+  if (pathname === "/api/events") {
+    const limit = Number(url.searchParams.get("limit")) || 100;
+    const since = url.searchParams.get("since");
+    const eventLogPath = path.join(OPENCLAW_DIR, "coordination-events.ndjson");
+    try {
+      const raw = await fs.readFile(eventLogPath, "utf-8");
+      const lines = raw.trim().split("\n").filter(Boolean);
+      let events = lines
+        .map((line: string) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      if (since) {
+        const sinceMs = new Date(since).getTime();
+        events = events.filter((e: any) => {
+          const ts = e.timestampMs || new Date(e.timestamp || 0).getTime();
+          return ts >= sinceMs;
+        });
+      }
+      // Return last N events
+      events = events.slice(-limit);
+      jsonResponse(res, { events, count: events.length, total: lines.length });
+    } catch {
+      jsonResponse(res, { events: [], count: 0, total: 0 });
+    }
     return;
   }
 
@@ -730,6 +856,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents/:agentId/blocked",
         "GET /api/agents/:agentId/history",
         "GET /api/agents/:agentId/history?month=2026-02",
+        "GET /api/agents/:agentId/plans",
+        "GET /api/team-state",
+        "GET /api/events?limit=100&since=<ISO>",
         "WS /ws",
       ],
       docs: "https://github.com/pronto-lab/prontolab-openclaw/blob/main/PRONTOLAB.md",
@@ -785,11 +914,27 @@ function setupWebSocket(server: http.Server): WebSocketServer {
     }
   }
 
-  // Setup file watcher - watch workspace-* directories
-  const watchPaths = [
-    path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}*`, CURRENT_TASK_FILENAME),
-    path.join(OPENCLAW_DIR, `${WORKSPACE_PREFIX}*`, TASKS_DIR, "*.md"),
+  // Setup file watcher
+  // NOTE: chokidar glob patterns (workspace-*/tasks/*.md) don't expand correctly
+  // in Bun. Use explicit directory paths instead.
+  const entriesSync = fsSync.readdirSync(OPENCLAW_DIR, { withFileTypes: true });
+  const workspaceDirs = entriesSync
+    .filter((e) => e.isDirectory() && e.name.startsWith(WORKSPACE_PREFIX))
+    .map((e) => e.name);
+
+  const watchPaths: string[] = [
+    // Global files
+    path.join(OPENCLAW_DIR, "team-state.json"),
+    path.join(OPENCLAW_DIR, "coordination-events.ndjson"),
+    path.join(OPENCLAW_DIR, "plans"),
   ];
+
+  // Add per-workspace task directories and CURRENT_TASK files
+  for (const dir of workspaceDirs) {
+    watchPaths.push(path.join(OPENCLAW_DIR, dir, TASKS_DIR));
+    watchPaths.push(path.join(OPENCLAW_DIR, dir, CURRENT_TASK_FILENAME));
+    watchPaths.push(path.join(OPENCLAW_DIR, dir, ".openclaw", "plans"));
+  }
 
   const watcher = chokidar.watch(watchPaths, {
     ignoreInitial: true,
@@ -798,8 +943,35 @@ function setupWebSocket(server: http.Server): WebSocketServer {
   });
 
   watcher.on("all", (event, filePath) => {
-    // Extract agent ID from path (format: ~/.openclaw/workspace-{agentId}/...)
     const relativePath = path.relative(OPENCLAW_DIR, filePath);
+    const basename = path.basename(filePath);
+
+    // Handle global (non-workspace) files first
+    const isTeamState = basename === "team-state.json";
+    const isEventLog = basename === "coordination-events.ndjson";
+    const isGlobalPlan = relativePath.startsWith("plans/") && basename.endsWith(".json");
+
+    if (isTeamState || isEventLog || isGlobalPlan) {
+      let msgType: WsMessage["type"] = "team_state_update";
+      if (isEventLog) {
+        msgType = "event_log";
+      } else if (isGlobalPlan) {
+        msgType = "plan_update";
+      }
+
+      const message: WsMessage = {
+        type: msgType,
+        agentId: isGlobalPlan ? basename.split("_")[0] : undefined,
+        timestamp: new Date().toISOString(),
+        data: { event, file: basename },
+      };
+
+      console.log(`[watch] ${event}: (global)/${basename}`);
+      broadcast(message);
+      return;
+    }
+
+    // Extract agent ID from workspace path (format: workspace-{agentId}/...)
     const parts = relativePath.split(path.sep);
     const workspaceDir = parts[0];
 
@@ -809,19 +981,27 @@ function setupWebSocket(server: http.Server): WebSocketServer {
 
     const agentId = workspaceDir.slice(WORKSPACE_PREFIX.length);
 
-    // Determine update type
+    // Determine update type for workspace files
     const isCurrentTask = filePath.includes(CURRENT_TASK_FILENAME);
+    const isPlan = filePath.includes("/plans/") && filePath.endsWith(".json");
     const taskMatch = filePath.match(/task_([a-z0-9_]+)\.md$/);
 
+    let msgType: WsMessage["type"] = "task_update";
+    if (isCurrentTask) {
+      msgType = "agent_update";
+    } else if (isPlan) {
+      msgType = "plan_update";
+    }
+
     const message: WsMessage = {
-      type: isCurrentTask ? "agent_update" : "task_update",
+      type: msgType,
       agentId,
       taskId: taskMatch ? `task_${taskMatch[1]}` : undefined,
       timestamp: new Date().toISOString(),
-      data: { event, file: path.basename(filePath) },
+      data: { event, file: basename },
     };
 
-    console.log(`[watch] ${event}: ${agentId}/${path.basename(filePath)}`);
+    console.log(`[watch] ${event}: ${agentId}/${basename}`);
     broadcast(message);
   });
 
