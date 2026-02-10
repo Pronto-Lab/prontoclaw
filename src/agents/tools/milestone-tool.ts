@@ -18,19 +18,15 @@ async function hubFetch(path: string, options?: RequestInit) {
 export function createMilestoneTools(): AnyAgentTool[] {
   const milestoneList: AnyAgentTool = {
     name: "milestone_list",
+    label: "List Milestones",
     description:
       "List all milestones with progress. Use to get an overview of project milestones, their status, progress, and team assignments.",
-    schema: Type.Object({
+    parameters: Type.Object({
       status: Type.Optional(
-        Type.Union([
-          Type.Literal("active"),
-          Type.Literal("planning"),
-          Type.Literal("completed"),
-          Type.Literal("all"),
-        ]),
+        Type.Unsafe<string>({ type: "string", enum: ["active", "planning", "completed", "all"] }),
       ),
     }),
-    handler: async (args) => {
+    execute: async (_toolCallId, args) => {
       const data = await hubFetch("/api/milestones");
       const status = readStringParam(args, "status") || "all";
       let milestones = data.milestones || [];
@@ -43,9 +39,10 @@ export function createMilestoneTools(): AnyAgentTool[] {
 
   const milestoneCreate: AnyAgentTool = {
     name: "milestone_create",
+    label: "Create Milestone",
     description:
       "Create a new milestone. Requires title and targetDate. Optionally set description, dependsOn (array of milestone IDs), and teamAssignments.",
-    schema: Type.Object({
+    parameters: Type.Object({
       title: Type.String(),
       description: Type.Optional(Type.String()),
       targetDate: Type.String(),
@@ -60,7 +57,7 @@ export function createMilestoneTools(): AnyAgentTool[] {
         ),
       ),
     }),
-    handler: async (args) => {
+    execute: async (_toolCallId, args) => {
       const data = await hubFetch("/api/milestones", {
         method: "POST",
         body: JSON.stringify(args),
@@ -71,20 +68,21 @@ export function createMilestoneTools(): AnyAgentTool[] {
 
   const milestoneAddItem: AnyAgentTool = {
     name: "milestone_add_item",
+    label: "Add Milestone Item",
     description:
       "Add an item to a milestone. Specify milestoneId, title, and optionally priority, assigneeTeam, assigneeAgent, dueDate.",
-    schema: Type.Object({
+    parameters: Type.Object({
       milestoneId: Type.String(),
       title: Type.String(),
       description: Type.Optional(Type.String()),
       priority: Type.Optional(
-        Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")]),
+        Type.Unsafe<string>({ type: "string", enum: ["high", "medium", "low"] }),
       ),
       assigneeTeam: Type.Optional(Type.String()),
       assigneeAgent: Type.Optional(Type.String()),
       dueDate: Type.Optional(Type.String()),
     }),
-    handler: async (args) => {
+    execute: async (_toolCallId, args) => {
       const milestoneId = readStringParam(args, "milestoneId");
       const body = { ...args };
       delete (body as Record<string, unknown>).milestoneId;
@@ -98,16 +96,17 @@ export function createMilestoneTools(): AnyAgentTool[] {
 
   const milestoneAssignItem: AnyAgentTool = {
     name: "milestone_assign_item",
+    label: "Assign Milestone Item",
     description:
       "Assign a milestone item to an agent. Creates a backlog task or todo and links it to the item. Use createAs='backlog' for agent tasks, createAs='todo' for user-facing todos.",
-    schema: Type.Object({
+    parameters: Type.Object({
       milestoneId: Type.String(),
       itemId: Type.String(),
       agentId: Type.String(),
-      createAs: Type.Union([Type.Literal("backlog"), Type.Literal("todo")]),
+      createAs: Type.Unsafe<string>({ type: "string", enum: ["backlog", "todo"] }),
       context: Type.Optional(Type.String()),
     }),
-    handler: async (args) => {
+    execute: async (_toolCallId, args) => {
       const milestoneId = readStringParam(args, "milestoneId");
       const itemId = readStringParam(args, "itemId");
       const agentId = readStringParam(args, "agentId");
@@ -148,9 +147,10 @@ export function createMilestoneTools(): AnyAgentTool[] {
 
   const milestoneUpdateItem: AnyAgentTool = {
     name: "milestone_update_item",
+    label: "Update Milestone Item",
     description:
       "Update a milestone item's status, title, assignee, or priority. Use to mark items done, change assignments, etc.",
-    schema: Type.Object({
+    parameters: Type.Object({
       milestoneId: Type.String(),
       itemId: Type.String(),
       status: Type.Optional(Type.String()),
@@ -159,7 +159,7 @@ export function createMilestoneTools(): AnyAgentTool[] {
       assigneeTeam: Type.Optional(Type.String()),
       priority: Type.Optional(Type.String()),
     }),
-    handler: async (args) => {
+    execute: async (_toolCallId, args) => {
       const milestoneId = readStringParam(args, "milestoneId");
       const itemId = readStringParam(args, "itemId");
       const body = { ...args };
