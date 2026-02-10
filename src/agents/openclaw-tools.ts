@@ -10,6 +10,7 @@ import { createCronTool } from "./tools/cron-tool.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 import { createImageTool } from "./tools/image-tool.js";
 import { createMessageTool } from "./tools/message-tool.js";
+import { createMilestoneTools } from "./tools/milestone-tool.js";
 import { createNodesTool } from "./tools/nodes-tool.js";
 import { createSessionStatusTool } from "./tools/session-status-tool.js";
 import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
@@ -239,6 +240,9 @@ export function createOpenClawTools(options?: {
     tools.push(taskPickBacklog);
   }
 
+  // Milestone management tools
+  const milestoneTools = createMilestoneTools();
+  tools.push(...milestoneTools);
   const pluginTools = resolvePluginTools({
     context: {
       config: options?.config,

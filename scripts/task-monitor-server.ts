@@ -632,14 +632,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   // CORS preflight
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     res.statusCode = 204;
     res.end();
     return;
   }
 
-  if (req.method !== "GET") {
+  if (req.method !== "GET" && req.method !== "POST") {
     errorResponse(res, "Method not allowed", 405);
     return;
   }
@@ -859,10 +859,47 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents/:agentId/plans",
         "GET /api/team-state",
         "GET /api/events?limit=100&since=<ISO>",
+        "POST /api/workspace-file",
         "WS /ws",
       ],
       docs: "https://github.com/pronto-lab/prontolab-openclaw/blob/main/PRONTOLAB.md",
     });
+    return;
+  }
+
+  // POST /api/workspace-file — Write a file to a workspace directory
+  if (pathname === "/api/workspace-file" && req.method === "POST") {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const bodyStr = Buffer.concat(chunks).toString("utf-8");
+    let body: { path?: string; content?: string };
+    try {
+      body = JSON.parse(bodyStr);
+    } catch {
+      errorResponse(res, "Invalid JSON body", 400);
+      return;
+    }
+    if (!body.path || typeof body.content !== "string") {
+      errorResponse(res, "path and content are required", 400);
+      return;
+    }
+    const safePath = body.path.replace(/\.\./g, "");
+    const targetPath = path.join(OPENCLAW_DIR, safePath);
+    if (!targetPath.startsWith(OPENCLAW_DIR)) {
+      errorResponse(res, "Path traversal not allowed", 403);
+      return;
+    }
+    try {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.writeFile(targetPath, body.content, "utf-8");
+      console.log(`[workspace-file] Wrote ${safePath} (${body.content.length} bytes)`);
+      jsonResponse(res, { ok: true, path: safePath, bytes: body.content.length });
+    } catch (err) {
+      console.error(`[workspace-file] Write failed:`, err);
+      errorResponse(res, "Failed to write file", 500);
+    }
     return;
   }
 
@@ -933,6 +970,7 @@ function setupWebSocket(server: http.Server): WebSocketServer {
   for (const dir of workspaceDirs) {
     watchPaths.push(path.join(OPENCLAW_DIR, dir, TASKS_DIR));
     watchPaths.push(path.join(OPENCLAW_DIR, dir, CURRENT_TASK_FILENAME));
+    watchPaths.push(path.join(OPENCLAW_DIR, dir, "MILESTONES.md"));
     watchPaths.push(path.join(OPENCLAW_DIR, dir, ".openclaw", "plans"));
   }
 

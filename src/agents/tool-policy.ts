@@ -42,6 +42,14 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "task_backlog_add",
     "task_pick_backlog",
   ],
+  // Milestone management tools
+  "group:milestone": [
+    "milestone_list",
+    "milestone_create",
+    "milestone_add_item",
+    "milestone_assign_item",
+    "milestone_update_item",
+  ],
   // UI helpers
   "group:ui": ["browser", "canvas"],
   // Automation + infra
@@ -74,6 +82,11 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "task_complete",
     "task_approve",
     "task_status",
+    "milestone_list",
+    "milestone_create",
+    "milestone_add_item",
+    "milestone_assign_item",
+    "milestone_update_item",
   ],
 };
 
