@@ -46,7 +46,7 @@ import {
   createDiscordCommandArgFallbackButton,
   createDiscordNativeCommand,
 } from "./native-command.js";
-import { registerSiblingBot, unregisterSiblingBot } from "./sibling-bots.js";
+import { registerSiblingBot } from "./sibling-bots.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
