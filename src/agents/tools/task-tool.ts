@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { AnyAgentTool } from "./common.js";
+import { emit } from "../../infra/events/bus.js";
+import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { acquireTaskLock } from "../../infra/task-lock.js";
 import { disableAgentManagedMode, enableAgentManagedMode } from "../../infra/task-tracker.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId, listAgentIds } from "../agent-scope.js";
@@ -28,10 +30,18 @@ export type TaskStatus =
   | "backlog"
   | "completed"
   | "cancelled"
-  | "abandoned";
+  | "abandoned"
+  | "interrupted";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export type EscalationState = "none" | "requesting" | "escalated" | "failed";
 export type EstimatedEffort = "small" | "medium" | "large";
+
+/** Discriminated union describing how a task ended. */
+export type TaskOutcome =
+  | { kind: "completed"; summary?: string }
+  | { kind: "cancelled"; reason?: string; by?: string }
+  | { kind: "error"; error: string; retriable?: boolean }
+  | { kind: "interrupted"; by?: string; reason?: string };
 export interface TaskFile {
   id: string;
   status: TaskStatus;
@@ -58,6 +68,8 @@ export interface TaskFile {
   estimatedEffort?: EstimatedEffort;
   startDate?: string; // ISO date - don't start before this date
   dueDate?: string; // ISO date - deadline
+  /** Terminal outcome when task reaches completed/cancelled/interrupted. */
+  outcome?: TaskOutcome;
 }
 
 const TaskStartSchema = Type.Object({
@@ -121,7 +133,7 @@ const TaskPickBacklogSchema = Type.Object({
 });
 
 function generateTaskId(): string {
-  return `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+  return `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
 }
 
 const VALID_STATUSES = new Set<string>([
@@ -133,6 +145,7 @@ const VALID_STATUSES = new Set<string>([
   "backlog",
   "cancelled",
   "abandoned",
+  "interrupted",
 ]);
 const VALID_PRIORITIES = new Set<string>(["low", "medium", "high", "urgent"]);
 
@@ -206,6 +219,11 @@ function formatTaskFileMd(task: TaskFile): string {
     lines.push("## Backlog", "```json", JSON.stringify(backlogData), "```", "");
   }
 
+  // Serialize outcome if present
+  if (task.outcome) {
+    lines.push("## Outcome", "```json", JSON.stringify(task.outcome), "```", "");
+  }
+
   lines.push("---", "*Managed by task tools*");
 
   return lines.join("\n");
@@ -242,6 +260,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let estimatedEffort: EstimatedEffort | undefined;
   let startDate: string | undefined;
   let dueDate: string | undefined;
+  let outcome: TaskOutcome | undefined;
 
   let currentSection = "";
 
@@ -271,6 +290,8 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
         const rawStatus = statusMatch[1];
         if (isValidTaskStatus(rawStatus)) {
           status = rawStatus;
+        } else {
+          return null;
         }
       }
       const priorityMatch = trimmed.match(/^-?\s*\*\*Priority:\*\*\s*(.+)$/);
@@ -328,6 +349,17 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
           // Ignore malformed JSON
         }
       }
+    } else if (currentSection === "outcome") {
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const outcomeData = JSON.parse(trimmed);
+          if (outcomeData.kind) {
+            outcome = outcomeData as TaskOutcome;
+          }
+        } catch {
+          // Ignore malformed JSON
+        }
+      }
     }
   }
 
@@ -359,6 +391,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     estimatedEffort,
     startDate,
     dueDate,
+    outcome,
   };
 }
 
@@ -373,8 +406,8 @@ export async function readTask(workspaceDir: string, taskId: string): Promise<Ta
     return null;
   }
   const tasksDir = await getTasksDir(workspaceDir);
-  const filePath = path.join(tasksDir, `${taskId}.md`);
-  if (!filePath.startsWith(tasksDir)) {
+  const filePath = path.resolve(tasksDir, `${taskId}.md`);
+  if (!filePath.startsWith(path.resolve(tasksDir) + path.sep)) {
     return null;
   }
   try {
@@ -408,8 +441,8 @@ async function deleteTask(workspaceDir: string, taskId: string): Promise<void> {
     return;
   }
   const tasksDir = await getTasksDir(workspaceDir);
-  const filePath = path.join(tasksDir, `${taskId}.md`);
-  if (!filePath.startsWith(tasksDir)) {
+  const filePath = path.resolve(tasksDir, `${taskId}.md`);
+  if (!filePath.startsWith(path.resolve(tasksDir) + path.sep)) {
     return;
   }
   try {
@@ -559,27 +592,23 @@ async function appendToHistory(workspaceDir: string, entry: string): Promise<str
   const filename = getMonthlyHistoryFilename();
   const filePath = path.join(historyDir, filename);
 
-  const historyLock = await acquireTaskLock(workspaceDir, `history_${filename}`);
-  if (!historyLock) {
-    // Retry once after a short delay
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const retryLock = await acquireTaskLock(workspaceDir, `history_${filename}`);
-    if (!retryLock) {
-      // Fall through without lock - append is best-effort
-      await fs.appendFile(filePath, entry, "utf-8");
-      return `${TASK_HISTORY_DIR}/${filename}`;
+  let lock: Awaited<ReturnType<typeof acquireTaskLock>> = null;
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    lock = await acquireTaskLock(workspaceDir, `history_${filename}`);
+    if (lock) {
+      break;
     }
-    try {
-      return await appendToHistoryLocked(filePath, filename, entry);
-    } finally {
-      retryLock.release();
-    }
+    await new Promise((resolve) => setTimeout(resolve, 50 * Math.pow(2, attempt)));
+  }
+  if (!lock) {
+    throw new Error(`Failed to acquire history lock after ${maxRetries} retries`);
   }
 
   try {
     return await appendToHistoryLocked(filePath, filename, entry);
   } finally {
-    historyLock.release();
+    await lock.release();
   }
 }
 
@@ -760,6 +789,12 @@ export function createTaskStartTool(options: {
       };
 
       await writeTask(workspaceDir, newTask);
+      emit({
+        type: EVENT_TYPES.TASK_STARTED,
+        agentId,
+        ts: Date.now(),
+        data: { taskId, priority, requiresApproval },
+      });
       await updateCurrentTaskPointer(workspaceDir, taskId);
 
       if (!requiresApproval) {
@@ -849,6 +884,12 @@ export function createTaskUpdateTool(options: {
         freshTask.progress.push(progress);
 
         await writeTask(workspaceDir, freshTask);
+        emit({
+          type: EVENT_TYPES.TASK_UPDATED,
+          agentId,
+          ts: Date.now(),
+          data: { taskId: freshTask.id, progressCount: freshTask.progress.length },
+        });
         await updateCurrentTaskPointer(workspaceDir, freshTask.id);
 
         return jsonResult({
@@ -920,11 +961,18 @@ export function createTaskCompleteTool(options: {
       try {
         task.progress.push("Task completed");
         task.status = "completed";
+        task.outcome = { kind: "completed", summary };
 
         const historyEntry = formatTaskHistoryEntry(task, summary);
 
         // Write task state first (ensures "completed" persists even if history append fails)
         await writeTask(workspaceDir, task);
+        emit({
+          type: EVENT_TYPES.TASK_COMPLETED,
+          agentId,
+          ts: Date.now(),
+          data: { taskId: task.id },
+        });
 
         const archivedTo = await appendToHistory(workspaceDir, historyEntry);
 
@@ -1128,9 +1176,16 @@ export function createTaskCancelTool(options: {
 
       try {
         task.status = "cancelled";
+        task.outcome = { kind: "cancelled", reason };
         task.progress.push(`Task cancelled${reason ? `: ${reason}` : ""}`);
 
         await writeTask(workspaceDir, task);
+        emit({
+          type: EVENT_TYPES.TASK_CANCELLED,
+          agentId,
+          ts: Date.now(),
+          data: { taskId: task.id, reason },
+        });
 
         const historyEntry = formatTaskHistoryEntry(
           task,
@@ -1208,6 +1263,7 @@ export function createTaskApproveTool(options: {
       task.progress.push("Task approved and started");
 
       await writeTask(workspaceDir, task);
+      emit({ type: EVENT_TYPES.TASK_APPROVED, agentId, ts: Date.now(), data: { taskId: task.id } });
       await updateCurrentTaskPointer(workspaceDir, task.id);
 
       enableAgentManagedMode(agentId);
@@ -1334,6 +1390,12 @@ export function createTaskBlockTool(options: {
         task.progress.push(`[BLOCKED] ${reason}`);
 
         await writeTask(workspaceDir, task);
+        emit({
+          type: EVENT_TYPES.TASK_BLOCKED,
+          agentId,
+          ts: Date.now(),
+          data: { taskId: task.id, reason, unblockedBy: uniqueUnblockedBy },
+        });
         await updateCurrentTaskPointer(workspaceDir, task.id);
 
         disableAgentManagedMode(agentId);
@@ -1428,6 +1490,12 @@ export function createTaskResumeTool(options: {
         task.escalationState = undefined;
 
         await writeTask(workspaceDir, task);
+        emit({
+          type: EVENT_TYPES.TASK_RESUMED,
+          agentId,
+          ts: Date.now(),
+          data: { taskId: task.id },
+        });
         await updateCurrentTaskPointer(workspaceDir, task.id);
 
         enableAgentManagedMode(agentId);
@@ -1526,6 +1594,12 @@ export function createTaskBacklogAddTool(options: {
       };
 
       await writeTask(workspaceDir, newTask);
+      emit({
+        type: EVENT_TYPES.TASK_BACKLOG_ADDED,
+        agentId: currentAgentId,
+        ts: Date.now(),
+        data: { taskId, assignee: targetAgentId, isCrossAgent },
+      });
 
       const allBacklog = await findAllBacklogTasks(workspaceDir);
 
@@ -1646,6 +1720,12 @@ export function createTaskPickBacklogTool(options: {
         freshTask.progress.push("Picked from backlog and started");
 
         await writeTask(workspaceDir, freshTask);
+        emit({
+          type: EVENT_TYPES.TASK_BACKLOG_PICKED,
+          agentId,
+          ts: Date.now(),
+          data: { taskId: freshTask.id },
+        });
         await updateCurrentTaskPointer(workspaceDir, freshTask.id);
 
         enableAgentManagedMode(agentId);
