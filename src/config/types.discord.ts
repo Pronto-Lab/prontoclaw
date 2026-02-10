@@ -155,6 +155,9 @@ export type DiscordAccountConfig = {
   maxLinesPerMessage?: number;
   mediaMaxMb?: number;
   historyLimit?: number;
+  /** If true, record bot messages to guild history context (for multi-agent visibility). Default: false. */
+  /** If true, record bot messages to guild history context (for multi-agent visibility). Default: false. */
+  historyIncludeBots?: boolean;
   /** Max DM turns to keep as history context. */
   dmHistoryLimit?: number;
   /** Per-DM config overrides keyed by user ID. */
