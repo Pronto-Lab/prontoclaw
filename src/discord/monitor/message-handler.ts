@@ -92,6 +92,7 @@ export function createDiscordMessageHandler(params: {
           processMessage: processDiscordMessage,
         });
         if (!wasBroadcast) {
+          await processDiscordMessage(ctx);
         }
         return;
       }
