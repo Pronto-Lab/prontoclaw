@@ -9,6 +9,7 @@ async function hubFetch(path: string, options?: RequestInit) {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      Cookie: "task-hub-session=authenticated",
       ...options?.headers,
     },
   });
