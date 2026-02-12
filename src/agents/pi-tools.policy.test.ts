@@ -80,7 +80,7 @@ describe("resolveSubagentToolPolicy – task/milestone deny", () => {
 
     const policy = resolveSubagentToolPolicy({
       tools: { subagents: { tools: { deny: ["custom_tool"] } } },
-    } as any);
+    } as unknown);
     const deny = policy.deny ?? [];
 
     // Should have both default task tools AND custom deny
