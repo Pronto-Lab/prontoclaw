@@ -65,6 +65,7 @@ const MOONSHOT_DEFAULT_COST = {
 
 const QWEN_PORTAL_BASE_URL = "https://portal.qwen.ai/v1";
 const QWEN_PORTAL_OAUTH_PLACEHOLDER = "qwen-oauth";
+const GOOGLE_ANTIGRAVITY_OAUTH_PLACEHOLDER = "google-antigravity-oauth";
 const QWEN_PORTAL_DEFAULT_CONTEXT_WINDOW = 128000;
 const QWEN_PORTAL_DEFAULT_MAX_TOKENS = 8192;
 const QWEN_PORTAL_DEFAULT_COST = {
@@ -503,6 +504,15 @@ export async function resolveImplicitProviders(params: {
     providers["qwen-portal"] = {
       ...buildQwenPortalProvider(),
       apiKey: QWEN_PORTAL_OAUTH_PLACEHOLDER,
+    };
+  }
+
+  const antigravityProfiles = listProfilesForProvider(authStore, "google-antigravity");
+  if (antigravityProfiles.length > 0) {
+    providers["google-antigravity"] = {
+      baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+      apiKey: GOOGLE_ANTIGRAVITY_OAUTH_PLACEHOLDER,
+      models: [],
     };
   }
 

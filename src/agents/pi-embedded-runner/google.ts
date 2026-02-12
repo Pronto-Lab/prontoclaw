@@ -8,6 +8,7 @@ import {
   downgradeOpenAIReasoningBlocks,
   isCompactionFailureError,
   isGoogleModelApi,
+  sanitizeToolUseInput,
   sanitizeGoogleTurnOrdering,
   sanitizeSessionMessagesImages,
 } from "../pi-embedded-helpers.js";
@@ -96,11 +97,13 @@ function sanitizeAntigravityThinkingBlocks(messages: AgentMessage[]): AgentMessa
         contentChanged = true;
         continue;
       }
-      if (rec.thinkingSignature !== candidate) {
+      if (rec.thinkingSignature !== candidate || rec.signature !== candidate) {
+        const rawBlock = block as unknown as Record<string, unknown>;
         const nextBlock = {
-          ...(block as unknown as Record<string, unknown>),
+          ...rawBlock,
           thinkingSignature: candidate,
-        } as AssistantContentBlock;
+          signature: candidate,
+        } as unknown as AssistantContentBlock;
         nextContent.push(nextBlock);
         contentChanged = true;
       } else {
@@ -350,9 +353,10 @@ export async function sanitizeSessionHistory(params: {
     ? sanitizeAntigravityThinkingBlocks(sanitizedImages)
     : sanitizedImages;
   const sanitizedToolCalls = sanitizeToolCallInputs(sanitizedThinking);
+  const sanitizedInputs = sanitizeToolUseInput(sanitizedToolCalls);
   const repairedTools = policy.repairToolUseResultPairing
-    ? sanitizeToolUseResultPairing(sanitizedToolCalls)
-    : sanitizedToolCalls;
+    ? sanitizeToolUseResultPairing(sanitizedInputs)
+    : sanitizedInputs;
 
   const isOpenAIResponsesApi =
     params.modelApi === "openai-responses" || params.modelApi === "openai-codex-responses";

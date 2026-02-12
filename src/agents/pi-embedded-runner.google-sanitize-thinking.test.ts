@@ -224,12 +224,14 @@ describe("sanitizeSessionHistory (google thinking)", () => {
       {
         type: "toolCall",
         id: "call_1",
+        input: {},
         name: "read",
         arguments: { path: "/tmp/foo" },
       },
       {
         type: "toolCall",
         id: "call_2",
+        input: {},
         name: "read",
         arguments: { path: "/tmp/bar" },
         thoughtSignature: "c2ln",

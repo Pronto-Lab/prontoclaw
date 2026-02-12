@@ -239,4 +239,82 @@ describe("resolveModel", () => {
     expect(result.model?.id).toBe("gpt-5.3-codex");
     expect(result.model?.provider).toBe("openai-codex");
   });
+
+  it("builds a google-antigravity forward-compat fallback for claude-opus-4-6-thinking", () => {
+    const templateModel = {
+      id: "claude-opus-4-5-thinking",
+      name: "Claude Opus 4.5 Thinking (Antigravity)",
+      provider: "google-antigravity",
+      api: "google-gemini-cli",
+      baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+      reasoning: true,
+      input: ["text", "image"] as const,
+      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 200000,
+      maxTokens: 64000,
+    };
+
+    vi.mocked(discoverModels).mockReturnValue({
+      find: vi.fn((provider: string, modelId: string) => {
+        if (provider === "google-antigravity" && modelId === "claude-opus-4-5-thinking") {
+          return templateModel;
+        }
+        return null;
+      }),
+    } as unknown as ReturnType<typeof discoverModels>);
+
+    const result = resolveModel("google-antigravity", "claude-opus-4-6-thinking", "/tmp/agent");
+
+    expect(result.error).toBeUndefined();
+    expect(result.model).toMatchObject({
+      provider: "google-antigravity",
+      id: "claude-opus-4-6-thinking",
+      api: "google-gemini-cli",
+      baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+      reasoning: true,
+    });
+  });
+
+  it("skips antigravity forward-compat for non-google-antigravity providers", () => {
+    const result = resolveModel("anthropic", "claude-opus-4-6-thinking", "/tmp/agent");
+
+    // Should not resolve via antigravity — anthropic resolver handles anthropic provider.
+    // Without a matching anthropic template for -thinking suffix, it falls through.
+    expect(result.model).toBeUndefined();
+    expect(result.error).toBe("Unknown model: anthropic/claude-opus-4-6-thinking");
+  });
+
+  it("handles bare claude-opus-4-6 for google-antigravity provider", () => {
+    const templateModel = {
+      id: "claude-opus-4-5",
+      name: "Claude Opus 4.5 (Antigravity)",
+      provider: "google-antigravity",
+      api: "google-gemini-cli",
+      baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+      reasoning: false,
+      input: ["text", "image"] as const,
+      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 200000,
+      maxTokens: 64000,
+    };
+
+    vi.mocked(discoverModels).mockReturnValue({
+      find: vi.fn((provider: string, modelId: string) => {
+        if (provider === "google-antigravity" && modelId === "claude-opus-4-5") {
+          return templateModel;
+        }
+        return null;
+      }),
+    } as unknown as ReturnType<typeof discoverModels>);
+
+    const result = resolveModel("google-antigravity", "claude-opus-4-6", "/tmp/agent");
+
+    expect(result.error).toBeUndefined();
+    expect(result.model).toMatchObject({
+      provider: "google-antigravity",
+      id: "claude-opus-4-6",
+      api: "google-gemini-cli",
+    });
+  });
+
 });

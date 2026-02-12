@@ -20,3 +20,24 @@ export function isAntigravityClaude(params: {
 }
 
 export { sanitizeGoogleTurnOrdering };
+
+export function sanitizeToolUseInput(messages: any[]): any[] {
+  return messages.map((msg) => {
+    if (!msg || typeof msg !== "object") return msg;
+    if (msg.role !== "assistant" && msg.role !== "toolUse") return msg;
+    if (!Array.isArray(msg.content)) return msg;
+
+    return {
+      ...msg,
+      content: msg.content.map((block: any) => {
+        if (!block || typeof block !== "object") return block;
+        if (block.type === "toolUse" || block.type === "toolCall") {
+          if (!("input" in block) || block.input === undefined) {
+            return { ...block, input: {} };
+          }
+        }
+        return block;
+      }),
+    };
+  });
+}
