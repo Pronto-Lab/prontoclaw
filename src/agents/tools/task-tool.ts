@@ -68,6 +68,9 @@ export interface TaskFile {
   estimatedEffort?: EstimatedEffort;
   startDate?: string; // ISO date - don't start before this date
   dueDate?: string; // ISO date - deadline
+  // Milestone integration fields
+  milestoneId?: string; // Linked milestone ID in Task Hub
+  milestoneItemId?: string; // Linked milestone item ID in Task Hub
   /** Terminal outcome when task reaches completed/cancelled/interrupted. */
   outcome?: TaskOutcome;
 }
@@ -126,6 +129,8 @@ const TaskBacklogAddSchema = Type.Object({
   due_date: Type.Optional(Type.String()),
   depends_on: Type.Optional(Type.Array(Type.String())),
   assignee: Type.Optional(Type.String()),
+  milestone_id: Type.Optional(Type.String()),
+  milestone_item_id: Type.Optional(Type.String()),
 });
 
 const TaskPickBacklogSchema = Type.Object({
@@ -215,6 +220,8 @@ function formatTaskFileMd(task: TaskFile): string {
       estimatedEffort: task.estimatedEffort,
       startDate: task.startDate,
       dueDate: task.dueDate,
+      milestoneId: task.milestoneId,
+      milestoneItemId: task.milestoneItemId,
     };
     lines.push("## Backlog", "```json", JSON.stringify(backlogData), "```", "");
   }
@@ -260,6 +267,8 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let estimatedEffort: EstimatedEffort | undefined;
   let startDate: string | undefined;
   let dueDate: string | undefined;
+  let milestoneId: string | undefined;
+  let milestoneItemId: string | undefined;
   let outcome: TaskOutcome | undefined;
 
   let currentSection = "";
@@ -345,6 +354,8 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
           estimatedEffort = backlogData.estimatedEffort;
           startDate = backlogData.startDate;
           dueDate = backlogData.dueDate;
+          milestoneId = backlogData.milestoneId;
+          milestoneItemId = backlogData.milestoneItemId;
         } catch {
           // Ignore malformed JSON
         }
@@ -391,6 +402,8 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     estimatedEffort,
     startDate,
     dueDate,
+    milestoneId,
+    milestoneItemId,
     outcome,
   };
 }
@@ -987,6 +1000,26 @@ export function createTaskCompleteTool(options: {
           disableAgentManagedMode(agentId);
         }
 
+        // Reverse-sync: update milestone item to "done" if linked
+        if (task.milestoneId && task.milestoneItemId) {
+          const hubUrl = process.env.TASK_HUB_URL || "http://localhost:3102";
+          try {
+            await fetch(
+              `${hubUrl}/api/milestones/${task.milestoneId}/items/${task.milestoneItemId}`,
+              {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  Cookie: "task-hub-session=authenticated",
+                },
+                body: JSON.stringify({ status: "done" }),
+              },
+            );
+          } catch {
+            // Milestone sync failure should not block task completion
+          }
+        }
+
         return jsonResult({
           success: true,
           taskId: task.id,
@@ -1202,6 +1235,26 @@ export function createTaskCancelTool(options: {
 
         if (!(await hasActiveTasks(workspaceDir))) {
           disableAgentManagedMode(agentId);
+        }
+
+        // Reverse-sync: update milestone item to "done" if linked
+        if (task.milestoneId && task.milestoneItemId) {
+          const hubUrl = process.env.TASK_HUB_URL || "http://localhost:3102";
+          try {
+            await fetch(
+              `${hubUrl}/api/milestones/${task.milestoneId}/items/${task.milestoneItemId}`,
+              {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  Cookie: "task-hub-session=authenticated",
+                },
+                body: JSON.stringify({ status: "done" }),
+              },
+            );
+          } catch {
+            // Milestone sync failure should not block task completion
+          }
         }
 
         return jsonResult({
@@ -1591,6 +1644,8 @@ export function createTaskBacklogAddTool(options: {
         estimatedEffort,
         startDate: startDateRaw,
         dueDate: dueDateRaw,
+        milestoneId: readStringParam(params, "milestone_id"),
+        milestoneItemId: readStringParam(params, "milestone_item_id"),
       };
 
       await writeTask(workspaceDir, newTask);
