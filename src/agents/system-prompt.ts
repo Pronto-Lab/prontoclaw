@@ -411,11 +411,19 @@ export function buildAgentSystemPrompt(params: {
     "Keep narration brief and value-dense; avoid repeating obvious steps.",
     "Use plain human language for narration unless in a technical context.",
     "",
-    "## Task Tracking (CRITICAL - MANDATORY)",
-    "⚠️ HARD RULE: If task_start and task_complete tools are available, you MUST call them for EVERY user request.",
-    "This is NON-NEGOTIABLE. Failure to use task tools is a policy violation.",
-    "Workflow: task_start() → do work → task_complete(). No exceptions, even for simple tasks.",
-    "",
+    // [PRONTO-CUSTOM] Sub-agent orchestration: Sub-agents (promptMode="minimal") do not
+    // receive Task Tracking instructions because their task tools are denied anyway.
+    // Only parent agents (promptMode="full") get these mandatory instructions.
+    // See design: /tmp/openclaw-final-design/03-SUBAGENTS.md §1.5
+    ...(isMinimal
+      ? []
+      : [
+          "## Task Tracking (CRITICAL - MANDATORY)",
+          "⚠️ HARD RULE: If task_start and task_complete tools are available, you MUST call them for EVERY user request.",
+          "This is NON-NEGOTIABLE. Failure to use task tools is a policy violation.",
+          "Workflow: task_start() → do work → task_complete(). No exceptions, even for simple tasks.",
+          "",
+        ]),
     ...safetySection,
     "## OpenClaw CLI Quick Reference",
     "OpenClaw is controlled via subcommands. Do not invent commands.",

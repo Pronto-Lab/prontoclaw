@@ -93,6 +93,26 @@ const DEFAULT_SUBAGENT_TOOL_DENY = [
   // Memory - pass relevant info in spawn prompt instead
   "memory_search",
   "memory_get",
+
+  // [PRONTO-CUSTOM] Sub-agent orchestration: Block task/milestone tools for sub-agents.
+  // Sub-agents must NOT manage tasks — only parent agents track task lifecycle.
+  // See design: /tmp/openclaw-final-design/03-SUBAGENTS.md §1.5
+  "task_start",
+  "task_update",
+  "task_complete",
+  "task_status",
+  "task_list",
+  "task_cancel",
+  "task_block",
+  "task_approve",
+  "task_resume",
+  "task_backlog_add",
+  "task_pick_backlog",
+  "milestone_list",
+  "milestone_create",
+  "milestone_add_item",
+  "milestone_assign_item",
+  "milestone_update_item",
 ];
 
 export function resolveSubagentToolPolicy(cfg?: OpenClawConfig): SandboxToolPolicy {

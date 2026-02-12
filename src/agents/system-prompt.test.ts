@@ -426,3 +426,38 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Reactions are enabled for Telegram in MINIMAL mode.");
   });
 });
+
+// [PRONTO-CUSTOM] Sub-agent orchestration: Verify Task Tracking is conditional on promptMode
+// See design: /tmp/openclaw-final-design/03-SUBAGENTS.md §1.5
+describe("buildAgentSystemPrompt – Task Tracking conditional", () => {
+  it("excludes Task Tracking section in minimal prompt mode", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "minimal",
+    });
+
+    expect(prompt).not.toContain("## Task Tracking (CRITICAL - MANDATORY)");
+    expect(prompt).not.toContain("task_start");
+    expect(prompt).not.toContain("NON-NEGOTIABLE");
+  });
+
+  it("includes Task Tracking section in full prompt mode", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "full",
+    });
+
+    expect(prompt).toContain("## Task Tracking (CRITICAL - MANDATORY)");
+    expect(prompt).toContain("task_start");
+    expect(prompt).toContain("NON-NEGOTIABLE");
+  });
+
+  it("includes Task Tracking section when promptMode is not specified (default)", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain("## Task Tracking (CRITICAL - MANDATORY)");
+    expect(prompt).toContain("task_start");
+  });
+});
