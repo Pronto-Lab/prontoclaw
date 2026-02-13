@@ -160,6 +160,13 @@ export async function taskEnforcerHandler(
 ): Promise<PluginHookBeforeToolCallResult | void> {
   const toolName = event.toolName;
 
+  // Exempt sub-agent sessions from task enforcement.
+  // Sub-agents (spawned via sessions_spawn) have task tools denied,
+  // so they cannot call task_start. Skip enforcement entirely for them.
+  if (ctx.sessionKey && ctx.sessionKey.includes("subagent:")) {
+    return;
+  }
+
   if (EXEMPT_TOOLS.has(toolName)) {
     return;
   }
