@@ -28,7 +28,7 @@ const STATUS_EMOJI: Record<string, string> = {
 
 function formatAgentField(agentId: string, entry: AgentTeamEntry) {
   const emoji = STATUS_EMOJI[entry.status] ?? "⚪";
-  const lastMs = entry.lastActivityMs ?? 0;
+  const lastMs = entry.lastHeartbeatMs ?? 0;
   const ago = lastMs > 0 ? `${Math.round((Date.now() - lastMs) / 60_000)}m ago` : "unknown";
   const task = entry.currentTaskId ? `\`${entry.currentTaskId}\`` : "—";
   const failure = entry.lastFailureReason ? ` ⚠ ${entry.lastFailureReason}` : "";

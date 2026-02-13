@@ -55,6 +55,8 @@ export type DiscordGuildChannelConfig = {
   enabled?: boolean;
   /** Optional allowlist for channel senders (ids or names). */
   users?: Array<string | number>;
+  /** Optional allowlist for channel senders by role ID. */
+  roles?: Array<string | number>;
   /** Optional system prompt snippet for this channel. */
   systemPrompt?: string;
   /** If false, omit thread starter context for this channel (default: true). */
@@ -71,7 +73,10 @@ export type DiscordGuildEntry = {
   toolsBySender?: GroupToolPolicyBySenderConfig;
   /** Reaction notification mode (off|own|all|allowlist). Default: own. */
   reactionNotifications?: DiscordReactionNotificationMode;
+  /** Optional allowlist for guild senders (ids or names). */
   users?: Array<string | number>;
+  /** Optional allowlist for guild senders by role ID. */
+  roles?: Array<string | number>;
   channels?: Record<string, DiscordGuildChannelConfig>;
 };
 
