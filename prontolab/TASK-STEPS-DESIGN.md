@@ -1127,6 +1127,648 @@ Layer 4 — Polling Continuation (기존 runner)  [~5분]
 
 ---
 
+## 15. Task Monitoring Server 반영
+
+### 15.1 시스템 개요
+
+Task Monitoring Server는 **bun 기반 HTTP/WebSocket 서버** (port 3847). 에이전트 workspace의 task 마크다운 파일을 직접 파일시스템에서 읽어 REST API + WebSocket으로 노출한다.
+
+```
+에이전트 workspace (파일시스템)
+  ~/.openclaw/workspace-eden/tasks/task_xxx.md
+                ↓ (fs.readFile + parseTaskFileMd)
+Task Monitoring Server (port 3847)
+  GET /api/agents/:agentId/tasks
+  GET /api/agents/:agentId/tasks/:taskId
+  GET /api/agents/:agentId/current
+  GET /api/agents/:agentId/blocked
+  GET /api/agents/:agentId/history
+  GET /api/agents/:agentId/plans
+  GET /api/team-state
+  GET /api/events
+  WS  /ws (실시간 파일 변경 감지)
+```
+
+### 15.2 현재 API 응답 (task 객체)
+
+```typescript
+// GET /api/agents/:agentId/tasks 현재 반환 형태
+interface MonitorTask {
+  id: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  description: string;
+  context?: string;
+  source?: string;
+  created: string;
+  lastActivity: string;
+  progress: string[];            // 자유 텍스트 배열
+  blockedReason?: string;
+  unblockedBy?: string[];
+  unblockedAction?: string;
+  unblockRequestCount?: number;
+  escalationState?: string;
+  createdBy?: string;
+  assignee?: string;
+  estimatedEffort?: string;
+  startDate?: string;
+  dueDate?: string;
+  // ❌ steps 필드 없음
+}
+```
+
+### 15.3 변경: `parseTaskFileMd()` 확장
+
+테스트 파일 `src/task-monitor/task-monitor.test.ts`에 정의된 `parseTaskFileMd()`가 task 마크다운을 파싱한다. `## Steps` 섹션 파싱을 추가:
+
+```typescript
+// parseTaskFileMd 확장 — ## Steps 섹션 파싱
+// 기존 섹션 핸들링에 추가:
+
+interface MonitorTaskStep {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "done" | "skipped";
+  order: number;
+}
+
+// currentSection === "steps" 처리:
+if (currentSection === "steps") {
+  // Steps 마커 파싱: [x]=done, [>]=in_progress, [ ]=pending, [-]=skipped
+  // 예: - [x] (s1) 기존 auth 구조 파악
+  //     - [>] (s2) Google OAuth strategy 추가
+  const stepMatch = trimmed.match(/^- \[([x>\ \-])\] \((\w+)\) (.+)$/);
+  if (stepMatch) {
+    const statusMap: Record<string, MonitorTaskStep["status"]> = {
+      'x': 'done',
+      '>': 'in_progress',
+      ' ': 'pending',
+      '-': 'skipped',
+    };
+    steps.push({
+      id: stepMatch[2],
+      content: stepMatch[3],
+      status: statusMap[stepMatch[1]] || 'pending',
+      order: steps.length + 1,
+    });
+  }
+}
+```
+
+### 15.4 변경: API 응답 확장
+
+```typescript
+// 기존 반환 객체에 steps 관련 필드 추가
+return {
+  ...existingFields,
+  // Steps 배열 (없으면 undefined)
+  steps: steps.length > 0 ? steps : undefined,
+  // Steps 진행 요약 (대시보드 프로그레스 바에 사용)
+  stepsProgress: steps.length > 0 ? {
+    total: steps.length,
+    done: steps.filter(s => s.status === 'done').length,
+    inProgress: steps.filter(s => s.status === 'in_progress').length,
+    pending: steps.filter(s => s.status === 'pending').length,
+    skipped: steps.filter(s => s.status === 'skipped').length,
+  } : undefined,
+};
+```
+
+### 15.5 변경: WebSocket 이벤트 확장
+
+기존 WebSocket은 파일 변경 감지 시 `task_update` 이벤트를 전송한다. Steps 변경 시 더 상세한 이벤트 전달:
+
+```typescript
+// WS 이벤트 확장
+interface WsTaskStepEvent {
+  type: "task_step_update";
+  agentId: string;
+  taskId: string;
+  timestamp: string;
+  data: {
+    event: "step_completed" | "step_started" | "step_skipped" | "steps_set" | "steps_reordered";
+    stepId?: string;
+    stepsProgress: {
+      total: number;
+      done: number;
+      inProgress: number;
+      pending: number;
+      skipped: number;
+    };
+  };
+}
+
+// Self-Driving / Stop Guard 이벤트 (선택적)
+interface WsContinuationEvent {
+  type: "continuation_event";
+  agentId: string;
+  taskId: string;
+  timestamp: string;
+  data: {
+    event: "self_driving_triggered" | "stop_guard_blocked";
+    consecutiveCount?: number;   // self-driving 루프 횟수
+    remainingSteps?: number;     // 미완료 step 수
+  };
+}
+```
+
+### 15.6 변경: 테스트 확장
+
+```typescript
+// task-monitor.test.ts에 Steps 파싱 테스트 추가
+
+it("parses Steps section from task file", () => {
+  const content = `# Task: task_steps_test
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** high
+- **Created:** 2026-02-13T12:00:00.000Z
+
+## Description
+OAuth 로그인 구현
+
+## Steps
+- [x] (s1) 기존 auth 구조 파악
+- [>] (s2) Google OAuth strategy 추가
+- [ ] (s3) GitHub OAuth callback 구현
+- [-] (s4) 건너뛴 단계
+
+## Progress
+- Task started
+- [s1] 기존 auth 구조 분석 완료
+
+## Last Activity
+2026-02-13T12:30:00.000Z`;
+
+  const result = parseTaskFileMd(content, "task_steps_test.md");
+
+  expect(result!.steps).toHaveLength(4);
+  expect(result!.steps![0]).toEqual({ id: "s1", content: "기존 auth 구조 파악", status: "done", order: 1 });
+  expect(result!.steps![1]).toEqual({ id: "s2", content: "Google OAuth strategy 추가", status: "in_progress", order: 2 });
+  expect(result!.steps![2]).toEqual({ id: "s3", content: "GitHub OAuth callback 구현", status: "pending", order: 3 });
+  expect(result!.steps![3]).toEqual({ id: "s4", content: "건너뛴 단계", status: "skipped", order: 4 });
+  expect(result!.stepsProgress).toEqual({ total: 4, done: 1, inProgress: 1, pending: 1, skipped: 1 });
+});
+
+it("returns undefined steps for task without Steps section", () => {
+  const content = `# Task: task_no_steps
+...기존 형식...`;
+
+  const result = parseTaskFileMd(content, "task_no_steps.md");
+  expect(result!.steps).toBeUndefined();
+  expect(result!.stepsProgress).toBeUndefined();
+});
+```
+
+---
+
+## 16. Task Hub 반영
+
+### 16.1 시스템 개요
+
+Task Hub는 **Next.js 풀스택 앱** (port 3102, MongoDB). 프로젝트 관리 대시보드로 Milestone, Todo, Task 대시보드를 제공한다.
+
+```
+Task Hub (Next.js, port 3102)
+  │
+  ├─ /api/proxy/[...path] ──▶ Task Monitoring Server (3847)
+  │     패스스루 프록시 — 에이전트 task 데이터 조회
+  │
+  ├─ /api/tasks/update ──▶ Gateway (18789) /tools/invoke
+  │     task_update 호출 (progress 추가)
+  │
+  ├─ /api/tasks/detail ──▶ Gateway /tools/invoke
+  │     task_status 호출 (상세 조회)
+  │
+  ├─ /api/milestones/* ──▶ MongoDB
+  │     Milestone CRUD (hubFetch로 에이전트도 접근)
+  │
+  └─ UI Pages
+       /tasks       — 칸반 대시보드 (6컬럼)
+       /milestones  — 마일스톤 관리
+       /todos       — 할일 관리
+       /workspace   — 워크스페이스 파일 뷰어
+       /events      — 이벤트 로그
+```
+
+### 16.2 현재 Task 타입 (대시보드)
+
+```typescript
+// src/app/tasks/page.tsx 현재 타입
+type Task = {
+  id: string;
+  status: string;
+  priority: string;
+  description: string;
+  created: string;
+  lastActivity: string;
+  progress: string[];            // ← 자유 텍스트만
+  outcome?: { kind: string; summary?: string; reason?: string };
+  createdBy?: string;
+  assignee?: string;
+  dependsOn?: string[];
+  estimatedEffort?: 'small' | 'medium' | 'large';
+  startDate?: string;
+  dueDate?: string;
+  // ❌ steps 없음
+};
+```
+
+### 16.3 변경: Task 타입 확장
+
+```typescript
+// src/app/tasks/page.tsx 또는 src/types/task.ts (신규)
+
+type TaskStep = {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'done' | 'skipped';
+  order: number;
+};
+
+type StepsProgress = {
+  total: number;
+  done: number;
+  inProgress: number;
+  pending: number;
+  skipped: number;
+};
+
+type Task = {
+  // ... 기존 필드 전부 유지 ...
+  steps?: TaskStep[];              // NEW
+  stepsProgress?: StepsProgress;   // NEW
+};
+```
+
+### 16.4 변경: ActiveTaskCard — Steps 프로그레스 바
+
+현재 ActiveTaskCard는 progress 마지막 항목만 표시. Steps가 있으면 **시각적 프로그레스 바 + 현재 step**을 표시:
+
+```tsx
+const ActiveTaskCard = ({ task }: { task: TaskWithAgent }) => {
+  const team = TEAMS[task.agentInfo.team];
+  const steps = task.steps;
+  const currentStep = steps?.find(s => s.status === 'in_progress');
+  const sp = task.stepsProgress;
+
+  return (
+    <div className="p-3 rounded-xl bg-white border ..." style={{ ... }}>
+      {/* ... 기존 헤더 (에이전트 이모지, 이름, "진행중" 배지) ... */}
+
+      <p className="text-sm text-slate-700 mb-2 line-clamp-2">{task.description}</p>
+
+      {/* ─── NEW: Steps 프로그레스 ─── */}
+      {sp && sp.total > 0 && (
+        <div className="mb-2">
+          {/* 프로그레스 바 */}
+          <div className="flex items-center gap-2 mb-1">
+            <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-500 rounded-full transition-all duration-500"
+                style={{ width: `${((sp.done + sp.skipped) / sp.total) * 100}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+              {sp.done}/{sp.total}
+            </span>
+          </div>
+          {/* 현재 진행 중인 step */}
+          {currentStep && (
+            <p className="text-xs text-blue-600 truncate flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+              ({currentStep.id}) {currentStep.content}
+            </p>
+          )}
+        </div>
+      )}
+      {/* ─── END NEW ─── */}
+
+      {/* ... 기존 priority 배지, 시간 표시, progress 마지막 항목 ... */}
+    </div>
+  );
+};
+```
+
+### 16.5 변경: TaskDetailModal — Steps 체크리스트
+
+TaskDetailModal의 스크롤 가능 본문에 Steps 섹션 추가. Progress 타임라인 위에 배치:
+
+```tsx
+{/* TaskDetailModal 본문 — Steps 체크리스트 */}
+{taskData?.steps && taskData.steps.length > 0 && (
+  <div>
+    <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+      Steps
+      <span className="text-slate-300 normal-case ml-1">
+        ({taskData.steps.filter(s => s.status === 'done').length}/{taskData.steps.length})
+      </span>
+    </div>
+
+    {/* 프로그레스 바 (큰 버전) */}
+    <div className="flex items-center gap-3 mb-3">
+      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+          style={{
+            width: `${((taskData.stepsProgress?.done ?? 0 + (taskData.stepsProgress?.skipped ?? 0)) /
+              (taskData.stepsProgress?.total ?? 1)) * 100}%`,
+          }}
+        />
+      </div>
+      <span className="text-xs text-slate-500 font-mono">
+        {taskData.stepsProgress?.done ?? 0}/{taskData.stepsProgress?.total ?? 0}
+      </span>
+    </div>
+
+    {/* 체크리스트 */}
+    <div className="space-y-1">
+      {taskData.steps.map(step => {
+        const config = {
+          done:        { bg: 'bg-emerald-50', text: 'text-emerald-700', icon: '✅', extra: '' },
+          in_progress: { bg: 'bg-blue-50',    text: 'text-blue-700 font-medium', icon: '▶️', extra: 'ring-1 ring-blue-200' },
+          pending:     { bg: 'bg-slate-50',    text: 'text-slate-600', icon: '⬜', extra: '' },
+          skipped:     { bg: 'bg-slate-50',    text: 'text-slate-400 line-through', icon: '⏭️', extra: '' },
+        }[step.status];
+
+        return (
+          <div
+            key={step.id}
+            className={`flex items-center gap-2.5 text-sm px-3 py-2 rounded-lg ${config.bg} ${config.extra}`}
+          >
+            <span className="text-base leading-none">{config.icon}</span>
+            <span className={`flex-1 ${config.text}`}>
+              <span className="text-[10px] font-mono text-slate-400 mr-1.5">({step.id})</span>
+              {step.content}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+)}
+```
+
+### 16.6 변경: /api/tasks/update — Step Action 지원
+
+현재 `/api/tasks/update`는 `progress` 텍스트만 전달. Step action도 전달하도록 확장:
+
+```typescript
+// src/app/api/tasks/update/route.ts 확장
+
+export async function POST(request: NextRequest) {
+  const body = await request.json();
+  const { taskId, agentId, progress, action, stepId, stepContent, steps } = body;
+
+  if (!taskId || !agentId) {
+    return NextResponse.json({ error: 'taskId and agentId required' }, { status: 400 });
+  }
+
+  // 기존: progress 텍스트 전달
+  // 신규: step action 전달
+  const toolArgs: Record<string, unknown> = { task_id: taskId };
+
+  if (action) {
+    // Step action: add_step, complete_step, start_step, skip_step, set_steps, reorder_steps
+    toolArgs.action = action;
+    if (stepId) toolArgs.step_id = stepId;
+    if (stepContent) toolArgs.step_content = stepContent;
+    if (steps) toolArgs.steps = steps;
+  } else if (progress) {
+    toolArgs.progress = progress;
+  } else {
+    return NextResponse.json({ error: 'progress or action required' }, { status: 400 });
+  }
+
+  const res = await fetch(`${GATEWAY_URL}/tools/invoke`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+    },
+    body: JSON.stringify({
+      tool: 'task_update',
+      args: toolArgs,
+      sessionKey: `agent:${agentId}`,
+    }),
+  });
+
+  // ... 기존 응답 처리 ...
+}
+```
+
+### 16.7 변경: 대시보드 Team Status 요약
+
+`TeamStatus` 컴포넌트에 steps 기반 진행률 표시. 기존에는 "진행 중 N개" 만 표시했지만, steps가 있는 task는 실제 진행률을 보여줌:
+
+```tsx
+// TeamStatus 컴포넌트 확장
+// 에이전트별 steps 진행률 요약
+const agentStepsTotal = activeTasks
+  .filter(t => t.agentId === agent.id && t.stepsProgress)
+  .reduce((acc, t) => ({
+    done: acc.done + (t.stepsProgress?.done ?? 0),
+    total: acc.total + (t.stepsProgress?.total ?? 0),
+  }), { done: 0, total: 0 });
+
+{agentStepsTotal.total > 0 && (
+  <span className="text-[10px] text-slate-400 ml-1">
+    ({agentStepsTotal.done}/{agentStepsTotal.total} steps)
+  </span>
+)}
+```
+
+### 16.8 변경: Events 페이지 — Self-Driving / Stop Guard 표시 (선택)
+
+`/events` 페이지에 continuation 관련 이벤트 표시. Task Monitoring Server의 `/api/events`가 이미 이벤트 스트림을 제공하므로, 새 이벤트 타입만 추가:
+
+```tsx
+// Self-Driving 이벤트 카드
+const ContinuationEventCard = ({ event }) => (
+  <div className="flex items-center gap-3 px-4 py-2 bg-indigo-50 rounded-lg border border-indigo-100">
+    <span className="text-lg">
+      {event.data.event === 'self_driving_triggered' ? '🔄' : '🛑'}
+    </span>
+    <div className="flex-1">
+      <span className="text-sm font-medium text-indigo-700">
+        {event.data.event === 'self_driving_triggered'
+          ? `Self-Driving #${event.data.consecutiveCount}`
+          : 'Stop Guard 차단'}
+      </span>
+      <span className="text-xs text-indigo-500 ml-2">
+        {event.agentId} — {event.data.remainingSteps} steps 남음
+      </span>
+    </div>
+    <span className="text-[10px] text-slate-400">{formatTime(event.timestamp)}</span>
+  </div>
+);
+```
+
+---
+
+## 17. 전체 시스템 통합 아키텍처
+
+### 17.1 데이터 흐름 (Steps 포함)
+
+```
+에이전트 실행
+  │
+  ├─ task_update(action: "set_steps", steps: [...])
+  │    → task-tool.ts: TaskFile.steps 저장
+  │    → task 마크다운 파일에 ## Steps 섹션 기록
+  │    → emit EVENT_TYPES.TASK_UPDATED
+  │
+  ├─ task_update(action: "complete_step", step_id: "s1")
+  │    → task-tool.ts: step.status = "done", 다음 step 자동 시작
+  │    → 파일 업데이트
+  │
+  ├─ task_complete()
+  │    → Stop Guard 체크: 미완료 steps → ❌ 차단 반환
+  │    → 또는: 모든 steps done → 정상 complete
+  │    → reverse-sync: hubFetch(milestone item → "done")
+  │
+  ▼
+파일시스템 변경 감지
+  │
+  ├─ Task Monitoring Server (3847)
+  │    → parseTaskFileMd()로 ## Steps 파싱
+  │    → REST: /api/agents/:id/tasks → steps + stepsProgress 포함
+  │    → WS: task_step_update 이벤트 push
+  │
+  └─ Task Hub (3102)
+       → /api/proxy → Monitoring Server → steps 데이터 수신
+       → 대시보드: ActiveTaskCard에 프로그레스 바
+       → 대시보드: TaskDetailModal에 체크리스트
+       → /api/tasks/update → Gateway → task_update (step action)
+
+에이전트 실행 종료 (lifecycle:end)
+  │
+  ├─ [0.5초] Self-Driving Loop → 재시작 prompt → 에이전트 Turn N+1
+  │    → WS: continuation_event (self_driving_triggered)
+  │    → Task Hub /events: 🔄 Self-Driving #N 표시
+  │
+  ├─ [2초] Event-Based Continuation (fallback)
+  │
+  └─ [5분] Polling Continuation (최후 안전망)
+```
+
+### 17.2 실시간 업데이트 흐름
+
+```
+에이전트가 step 완료
+  → task 파일 변경
+  → Task Monitoring Server: fs.watch 감지
+  → WebSocket: { type: "task_step_update", stepId: "s2", stepsProgress: { done: 2, total: 5, ... } }
+  → Task Hub: 대시보드 자동 갱신 (5초 폴링 또는 WS 직접 연결)
+  → UI: 프로그레스 바 애니메이션 (2/5 → 3/5)
+  → UI: 현재 step 텍스트 업데이트 ("▶ (s3) GitHub OAuth callback 구현")
+```
+
+---
+
+## 13. 수정 대상 파일 (최종)
+
+| 파일 | 변경 내용 | 규모 | 서비스 |
+|------|----------|------|--------|
+| `src/agents/tools/task-tool.ts` | TaskStep 타입, steps 필드, step actions, Stop Guard, force_complete | 중 | Gateway |
+| `src/infra/task-self-driving.ts` | **신규** — Self-Driving Loop | 소 | Gateway |
+| `src/infra/task-step-continuation.ts` | **신규** — Event-Based Continuation | 소 | Gateway |
+| `src/infra/task-continuation-runner.ts` | formatContinuationPrompt에 steps 체크리스트 추가 | 소 | Gateway |
+| `src/gateway/server.impl.ts` | start 호출 추가 (self-driving + step-continuation) | 소 | Gateway |
+| `src/gateway/server-close.ts` | stop 호출 추가 | 소 | Gateway |
+| 각 에이전트 AGENTS.md (11개) | steps 사용 + "멈추지 마" 규칙 | 소 | Gateway |
+| Task Monitoring Server `parseTaskFileMd` | Steps 섹션 파싱 + API 응답 확장 | 소 | Monitoring |
+| Task Monitoring Server WebSocket | task_step_update, continuation_event 이벤트 추가 | 소 | Monitoring |
+| `src/task-monitor/task-monitor.test.ts` | Steps 파싱 테스트 추가 | 소 | Monitoring |
+| Task Hub `src/app/tasks/page.tsx` | Task 타입 확장, ActiveTaskCard 프로그레스 바, TaskDetailModal 체크리스트 | 중 | Hub |
+| Task Hub `src/app/api/tasks/update/route.ts` | Step action 지원 | 소 | Hub |
+| Task Hub `src/components/TeamStatus.tsx` | Steps 진행률 요약 | 소 | Hub |
+| Task Hub `src/app/events/page.tsx` | Self-Driving/Stop Guard 이벤트 카드 (선택) | 소 | Hub |
+
+### 코드 변경 예상 규모 (최종)
+
+| 서비스 | 항목 | 줄 수 |
+|--------|------|-------|
+| **Gateway** | task-tool.ts (steps + stop guard) | ~200줄 |
+| **Gateway** | task-self-driving.ts (신규) | ~150줄 |
+| **Gateway** | task-step-continuation.ts (신규) | ~120줄 |
+| **Gateway** | task-continuation-runner.ts (prompt) | ~30줄 |
+| **Gateway** | server.impl.ts + server-close.ts | ~15줄 |
+| **Gateway** | AGENTS.md × 11 | ~220줄 |
+| **Monitoring** | parseTaskFileMd + API 응답 확장 | ~50줄 |
+| **Monitoring** | WebSocket 이벤트 추가 | ~40줄 |
+| **Monitoring** | 테스트 추가 | ~50줄 |
+| **Hub** | Task 타입 확장 | ~15줄 |
+| **Hub** | ActiveTaskCard + TaskDetailModal | ~150줄 |
+| **Hub** | /api/tasks/update 확장 | ~30줄 |
+| **Hub** | TeamStatus + Events 페이지 | ~60줄 |
+| **총** | | **~1,130줄** |
+
+---
+
+## 14. 실행 순서 (최종)
+
+```
+[Phase 1 — Gateway: TaskStep 기반 코드 변경]
+  1. TaskStep 타입 + TaskFile.steps 필드 추가
+  2. task_update에 step action 처리 로직 추가
+  3. Task 파일 직렬화/역직렬화에 Steps 섹션 추가
+  4. task_status/task_list에 steps 표시 추가
+
+[Phase 2 — Gateway: Stop Guard]
+  5. task_complete에 Stop Guard 로직 추가
+  6. force_complete 파라미터 추가
+  7. Stop Guard 차단 시 에러 포맷 구현
+
+[Phase 3 — Gateway: Self-Driving Loop]
+  8. task-self-driving.ts 신규 파일 생성
+  9. server.impl.ts에서 startTaskSelfDriving() 호출
+  10. server-close.ts에서 stop 호출
+
+[Phase 4 — Gateway: Event-Based Continuation (Fallback)]
+  11. task-step-continuation.ts 신규 파일 생성
+  12. server.impl.ts/server-close.ts에 start/stop 추가
+  13. task-continuation-runner.ts의 prompt에 steps 체크리스트 추가
+
+[Phase 5 — Gateway: AGENTS.md 업데이트]
+  14. 부모 에이전트 AGENTS.md에 steps 사용 가이드 추가
+  15. "멈추지 마" + Definition of Done 규칙 추가
+
+[Phase 6 — Gateway: 테스트 + 빌드]
+  16. Unit tests: steps CRUD, Stop Guard, Self-Driving, Event-Based
+  17. 빌드 확인 (tsc --noEmit)
+
+[Phase 7 — Task Monitoring Server]
+  18. parseTaskFileMd에 Steps 섹션 파싱 추가
+  19. API 응답에 steps + stepsProgress 필드 추가
+  20. WebSocket에 task_step_update, continuation_event 이벤트 추가
+  21. 테스트 추가 + 빌드 확인
+
+[Phase 8 — Task Hub]
+  22. Task 타입에 steps, stepsProgress 추가
+  23. ActiveTaskCard에 프로그레스 바 + 현재 step 표시
+  24. TaskDetailModal에 Steps 체크리스트 추가
+  25. /api/tasks/update에 step action 지원 추가
+  26. TeamStatus에 steps 진행률 표시
+  27. Events 페이지에 continuation 이벤트 카드 추가 (선택)
+  28. 빌드 확인
+
+[Phase 9 — 통합 테스트]
+  29. Gateway ↔ Monitoring Server: steps 파싱 E2E
+  30. Hub ↔ Gateway: step action 전달 E2E
+  31. Discord 통합 테스트 (에이전트 steps 사용 확인)
+
+[Phase 10 — 배포]
+  32. Gateway: pnpm build && npm link → restart
+  33. Monitoring Server: 재빌드 → restart
+  34. Task Hub: next build → restart
+  35. 모니터링
+```
+
+---
+
 _원본 분석: Sisyphus todo-continuation-enforcer.ts + OpenClaw task-continuation-runner.ts + agent-events.ts + plugin hooks 비교 분석_
 _작성일: 2026-02-13_
 _갱신: 2026-02-13 — §10 Self-Driving Loop, §11 Stop Guard, §12 5-Layer Safety Net 추가_
+_갱신: 2026-02-13 — §15 Task Monitoring Server, §16 Task Hub, §17 통합 아키텍처 추가_

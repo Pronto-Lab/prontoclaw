@@ -887,7 +887,11 @@ type TaskOutcome =
 | 3 | Event-Based Continuation | 2초 | Self-Driving 실패 시 fallback |
 | 4 | Polling Continuation (기존) | ~5분 | 최후의 안전망 |
 
-**수정 대상:** ~735줄 (task-tool.ts, task-self-driving.ts 신규, task-step-continuation.ts 신규, server.impl.ts, server-close.ts, continuation-runner.ts, AGENTS.md ×11)
+**수정 대상 (3개 서비스):**
+- Gateway: ~735줄 (task-tool.ts, task-self-driving.ts, task-step-continuation.ts, server.impl.ts, AGENTS.md ×11)
+- Task Monitoring Server: ~140줄 (parseTaskFileMd Steps 파싱, API 응답 확장, WebSocket 이벤트)
+- Task Hub: ~255줄 (Task 타입 확장, ActiveTaskCard 프로그레스 바, TaskDetailModal 체크리스트, step action API)
+- **총 ~1,130줄**
 
 **상세 설계 문서:** [prontolab/TASK-STEPS-DESIGN.md](./prontolab/TASK-STEPS-DESIGN.md)
 
