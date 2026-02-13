@@ -863,6 +863,32 @@ type TaskOutcome =
 
 ---
 
+### 21. Task Steps + Event-Based Continuation (설계 완료, 미구현) 📐
+
+**Purpose:** 에이전트가 작업을 끝까지 완료하도록 강제하는 Sisyphus 동등 메커니즘. Task에 구조화된 하위 단계(steps)를 추가하고, 에이전트 실행 종료 시 즉시 continuation을 트리거한다.
+
+**핵심 메커니즘:**
+
+| 기능 | 현재 (As-Is) | 목표 (To-Be) |
+|------|------------|-------------|
+| 작업 단계 관리 | `progress` 자유 텍스트 | 구조화된 `TaskStep[]` (pending/in_progress/done/skipped) |
+| 완료 감지 속도 | 2분 폴링 + 3분 idle = 최대 5분 | `lifecycle:end` 이벤트 → 2초 |
+| Continuation prompt | task description만 포함 | **steps 체크리스트 + 현재 위치** 포함 |
+| task_complete 검증 | 없음 | 미완료 steps 있으면 경고 |
+
+**이중 안전망:**
+- Layer 1 (즉시): `lifecycle:end` → 2초 → step continuation prompt (신규)
+- Layer 2 (폴백): 2분 폴링 → 3분 idle → task continuation prompt (기존)
+
+**task_update 확장 (6개 step action):**
+`set_steps`, `add_step`, `complete_step`, `start_step`, `skip_step`, `reorder_steps`
+
+**수정 대상:** ~400줄 (task-tool.ts, task-step-continuation.ts 신규, server.impl.ts, server-close.ts, continuation-runner.ts, AGENTS.md)
+
+**상세 설계 문서:** [prontolab/TASK-STEPS-DESIGN.md](./prontolab/TASK-STEPS-DESIGN.md)
+
+---
+
 ## Upstream Merge History
 
 | Date | Version | Commit | Notes |

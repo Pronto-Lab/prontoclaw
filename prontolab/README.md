@@ -9,6 +9,7 @@
 | [SISYPHUS-DESIGN.md](./SISYPHUS-DESIGN.md) | Sisyphus 패턴 sub-agent orchestration 설계 | 설계 완료, 미구현 |
 | [IMPLEMENTATION-GUIDE.md](./IMPLEMENTATION-GUIDE.md) | Sisyphus 패턴 단계별 구현 가이드 | 미구현 |
 | [REFERENCES.md](./REFERENCES.md) | 소스 코드 참조, 설정 스냅샷, 서버 환경 | 참조 문서 |
+| [TASK-STEPS-DESIGN.md](./TASK-STEPS-DESIGN.md) | Task Steps + Event-Based Continuation 설계 | 설계 완료, 미구현 |
 
 ## 상위 문서
 
