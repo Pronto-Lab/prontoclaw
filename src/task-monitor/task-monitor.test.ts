@@ -102,6 +102,91 @@ A zombie task that was auto-abandoned
       ]);
       expect(result!.lastActivity).toBe("2026-02-05T10:00:00Z");
     });
+
+    it("parses Steps section from task file", () => {
+      const content = `# Task: task_steps_test
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** high
+- **Created:** 2026-02-13T12:00:00.000Z
+
+## Description
+OAuth login implementation
+
+## Steps
+- [x] (s1) Analyze existing auth structure
+- [>] (s2) Add Google OAuth strategy
+- [ ] (s3) Implement GitHub OAuth callback
+- [-] (s4) Skipped step
+
+## Progress
+- Task started
+- [s1] Auth analysis complete
+
+## Last Activity
+2026-02-13T12:30:00.000Z`;
+
+      const result = parseTaskFileMd(content, "task_steps_test.md");
+
+      expect(result).not.toBeNull();
+      expect(result!.steps).toHaveLength(4);
+      expect(result!.steps![0]).toEqual({
+        id: "s1",
+        content: "Analyze existing auth structure",
+        status: "done",
+        order: 1,
+      });
+      expect(result!.steps![1]).toEqual({
+        id: "s2",
+        content: "Add Google OAuth strategy",
+        status: "in_progress",
+        order: 2,
+      });
+      expect(result!.steps![2]).toEqual({
+        id: "s3",
+        content: "Implement GitHub OAuth callback",
+        status: "pending",
+        order: 3,
+      });
+      expect(result!.steps![3]).toEqual({
+        id: "s4",
+        content: "Skipped step",
+        status: "skipped",
+        order: 4,
+      });
+      expect(result!.stepsProgress).toEqual({
+        total: 4,
+        done: 1,
+        inProgress: 1,
+        pending: 1,
+        skipped: 1,
+      });
+    });
+
+    it("returns undefined steps for task without Steps section", () => {
+      const content = `# Task: task_no_steps
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-13T12:00:00.000Z
+
+## Description
+Simple task without steps
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-13T12:00:00.000Z`;
+
+      const result = parseTaskFileMd(content, "task_no_steps.md");
+
+      expect(result).not.toBeNull();
+      expect(result!.steps).toBeUndefined();
+      expect(result!.stepsProgress).toBeUndefined();
+    });
   });
 
   describe("priority sorting", () => {
@@ -151,7 +236,9 @@ A zombie task that was auto-abandoned
 
       expect(wsMessage).toHaveProperty("type");
       expect(wsMessage).toHaveProperty("timestamp");
-      expect(["agent_update", "task_update", "connected"]).toContain(wsMessage.type);
+      expect(["agent_update", "task_update", "task_step_update", "connected"]).toContain(
+        wsMessage.type,
+      );
     });
   });
 });
@@ -166,6 +253,13 @@ type TaskStatus =
   | "abandoned";
 type TaskPriority = "low" | "medium" | "high" | "urgent";
 
+type MonitorTaskStep = {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "done" | "skipped";
+  order: number;
+};
+
 interface TaskFile {
   id: string;
   status: TaskStatus;
@@ -176,6 +270,14 @@ interface TaskFile {
   created: string;
   lastActivity: string;
   progress: string[];
+  steps?: MonitorTaskStep[];
+  stepsProgress?: {
+    total: number;
+    done: number;
+    inProgress: number;
+    pending: number;
+    skipped: number;
+  };
 }
 
 function parseTaskFileMd(content: string, filename: string): TaskFile | null {
@@ -195,6 +297,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let created = "";
   let lastActivity = "";
   const progress: string[] = [];
+  const steps: MonitorTaskStep[] = [];
 
   let currentSection = "";
 
@@ -245,6 +348,22 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (trimmed.startsWith("- ")) {
         progress.push(trimmed.slice(2));
       }
+    } else if (currentSection === "steps") {
+      const stepMatch = trimmed.match(/^- \[([x> -])\] \((\w+)\) (.+)$/);
+      if (stepMatch) {
+        const statusMap: Record<string, MonitorTaskStep["status"]> = {
+          x: "done",
+          ">": "in_progress",
+          " ": "pending",
+          "-": "skipped",
+        };
+        steps.push({
+          id: stepMatch[2],
+          content: stepMatch[3],
+          status: statusMap[stepMatch[1]] || "pending",
+          order: steps.length + 1,
+        });
+      }
     }
   }
 
@@ -258,5 +377,16 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     created: created || new Date().toISOString(),
     lastActivity: lastActivity || created || new Date().toISOString(),
     progress,
+    steps: steps.length > 0 ? steps : undefined,
+    stepsProgress:
+      steps.length > 0
+        ? {
+            total: steps.length,
+            done: steps.filter((s) => s.status === "done").length,
+            inProgress: steps.filter((s) => s.status === "in_progress").length,
+            pending: steps.filter((s) => s.status === "pending").length,
+            skipped: steps.filter((s) => s.status === "skipped").length,
+          }
+        : undefined,
   };
 }

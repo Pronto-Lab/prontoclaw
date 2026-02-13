@@ -99,6 +99,21 @@ interface TaskFile {
   dueDate?: string;
   // Outcome (terminal state)
   outcome?: { kind: string; summary?: string; reason?: string };
+  steps?: MonitorTaskStep[];
+  stepsProgress?: {
+    total: number;
+    done: number;
+    inProgress: number;
+    pending: number;
+    skipped: number;
+  };
+}
+
+interface MonitorTaskStep {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "done" | "skipped";
+  order: number;
 }
 
 interface AgentInfo {
@@ -119,6 +134,7 @@ interface WsMessage {
   type:
     | "agent_update"
     | "task_update"
+    | "task_step_update"
     | "connected"
     | "team_state_update"
     | "event_log"
@@ -160,6 +176,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let created = "";
   let lastActivity = "";
   const progress: string[] = [];
+  const steps: MonitorTaskStep[] = [];
   // Blocked task fields
   let blockedReason: string | undefined;
   let unblockedBy: string[] | undefined;
@@ -265,6 +282,22 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       if (trimmed.startsWith("- ")) {
         progress.push(trimmed.slice(2));
       }
+    } else if (currentSection === "steps") {
+      const stepMatch = trimmed.match(/^- \[([x> -])\] \((\w+)\) (.+)$/);
+      if (stepMatch) {
+        const statusMap: Record<string, MonitorTaskStep["status"]> = {
+          x: "done",
+          ">": "in_progress",
+          " ": "pending",
+          "-": "skipped",
+        };
+        steps.push({
+          id: stepMatch[2],
+          content: stepMatch[3],
+          status: statusMap[stepMatch[1]] || "pending",
+          order: steps.length + 1,
+        });
+      }
     } else if (currentSection === "blocking") {
       // Parse JSON from code block in ## Blocking section
       // Format: ```json\n{...}\n```
@@ -364,6 +397,17 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     startDate,
     dueDate,
     outcome,
+    steps: steps.length > 0 ? steps : undefined,
+    stepsProgress:
+      steps.length > 0
+        ? {
+            total: steps.length,
+            done: steps.filter((s) => s.status === "done").length,
+            inProgress: steps.filter((s) => s.status === "in_progress").length,
+            pending: steps.filter((s) => s.status === "pending").length,
+            skipped: steps.filter((s) => s.status === "skipped").length,
+          }
+        : undefined,
   };
 }
 

@@ -9,12 +9,10 @@ vi.mock("node:fs/promises", () => ({
     readdir: vi.fn().mockResolvedValue([]),
     unlink: vi.fn().mockResolvedValue(undefined),
     rename: vi.fn().mockResolvedValue(undefined),
-    open: vi
-      .fn()
-      .mockResolvedValue({
-        write: vi.fn().mockResolvedValue(undefined),
-        close: vi.fn().mockResolvedValue(undefined),
-      }),
+    open: vi.fn().mockResolvedValue({
+      write: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    }),
     appendFile: vi.fn().mockResolvedValue(undefined),
     access: vi.fn().mockRejectedValue(new Error("ENOENT")),
   },
@@ -1475,6 +1473,438 @@ Active task
       expect(parsed.count).toBe(1);
       expect(parsed.tasks[0].id).toBe("task_backlog");
       expect(parsed.filter).toBe("backlog");
+    });
+  });
+
+  describe("task_update step actions", () => {
+    const baseTask = `# Task: task_abc123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Test task
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+    const taskWithSteps = `# Task: task_abc123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Test task
+
+## Steps
+- [>] (s1) Do X
+- [ ] (s2) Do Y
+- [ ] (s3) Do Z
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+    it("set_steps initializes steps and auto-starts first one", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(baseTask);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "set_steps",
+        steps: [{ content: "Step A" }, { content: "Step B" }, { content: "Step C" }],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      const steps = parsed.steps as Record<string, number>;
+      expect(steps.totalSteps).toBe(3);
+      expect(steps.inProgress).toBe(1);
+      expect(steps.pending).toBe(2);
+
+      const writeCall = vi
+        .mocked(fs.writeFile)
+        .mock.calls.find((call) => (call[0] as string).includes("task_abc123.md"));
+      expect(writeCall).toBeDefined();
+      const content = writeCall![1] as string;
+      expect(content).toContain("## Steps");
+      expect(content).toContain("[>] (s1) Step A");
+      expect(content).toContain("[ ] (s2) Step B");
+    });
+
+    it("complete_step marks step done and auto-starts next", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithSteps);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "complete_step",
+        step_id: "s1",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      const steps = parsed.steps as Record<string, number>;
+      expect(steps.done).toBe(1);
+      expect(steps.inProgress).toBe(1);
+    });
+
+    it("add_step adds a new step with correct ID", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithSteps);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "add_step",
+        step_content: "New step",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      const steps = parsed.steps as Record<string, number>;
+      expect(steps.totalSteps).toBe(4);
+    });
+
+    it("skip_step marks step as skipped and auto-starts next", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithSteps);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "skip_step",
+        step_id: "s1",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      const steps = parsed.steps as Record<string, number>;
+      expect(steps.skipped).toBe(1);
+      expect(steps.inProgress).toBe(1);
+    });
+
+    it("start_step starts a specific step, reverting current in_progress to pending", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithSteps);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "start_step",
+        step_id: "s3",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      const steps = parsed.steps as Record<string, number>;
+      expect(steps.inProgress).toBe(1);
+      expect(steps.pending).toBe(2);
+    });
+
+    it("reorder_steps reorders steps", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithSteps);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "reorder_steps",
+        steps_order: ["s3", "s1", "s2"],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+    });
+
+    it("set_steps with empty array returns error", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(baseTask);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "set_steps",
+        steps: [],
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+    });
+
+    it("complete_step with invalid step_id returns error", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithSteps);
+
+      const tool = createTaskUpdateTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        action: "complete_step",
+        step_id: "sNonexistent",
+      });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("Step not found");
+    });
+  });
+
+  describe("task_complete Stop Guard", () => {
+    const taskWithIncompleteSteps = `# Task: task_abc123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Test task
+
+## Steps
+- [x] (s1) Done step
+- [>] (s2) In progress step
+- [ ] (s3) Pending step
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+    const taskWithAllStepsDone = `# Task: task_abc123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Test task
+
+## Steps
+- [x] (s1) Done step
+- [x] (s2) Done step 2
+- [-] (s3) Skipped step
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+    it("blocks completion when incomplete steps exist", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithIncompleteSteps);
+
+      const tool = createTaskCompleteTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {});
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(false);
+      expect(parsed.blocked_by).toBe("stop_guard");
+      const remaining = parsed.remaining_steps as Array<{ id: string }>;
+      expect(remaining).toHaveLength(2);
+    });
+
+    it("allows force_complete with incomplete steps", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithIncompleteSteps);
+
+      const tool = createTaskCompleteTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { force_complete: "true" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.archived).toBe(true);
+    });
+
+    it("allows completion when all steps are done or skipped", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithAllStepsDone);
+
+      const tool = createTaskCompleteTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {});
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.archived).toBe(true);
+    });
+  });
+
+  describe("Steps serialization roundtrip", () => {
+    it("parseTaskFileMd handles all step markers via task_status", async () => {
+      const taskWithAllMarkers = `# Task: task_markers
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Marker test
+
+## Steps
+- [x] (s1) Done
+- [>] (s2) In progress
+- [ ] (s3) Pending
+- [-] (s4) Skipped
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_markers.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithAllMarkers);
+
+      const tool = createTaskStatusTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_markers" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.found).toBe(true);
+      const task = parsed.task as Record<string, unknown>;
+      const steps = task.steps as Array<{ id: string; status: string }>;
+      expect(steps).toHaveLength(4);
+      expect(steps[0]).toMatchObject({ id: "s1", status: "done" });
+      expect(steps[1]).toMatchObject({ id: "s2", status: "in_progress" });
+      expect(steps[2]).toMatchObject({ id: "s3", status: "pending" });
+      expect(steps[3]).toMatchObject({ id: "s4", status: "skipped" });
+    });
+  });
+
+  describe("task_status with steps", () => {
+    it("returns steps info for task with steps", async () => {
+      const taskWithSteps = `# Task: task_abc123
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Test task
+
+## Steps
+- [x] (s1) Step 1
+- [>] (s2) Step 2
+- [ ] (s3) Step 3
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      vi.mocked(fs.readFile).mockResolvedValue(taskWithSteps);
+
+      const tool = createTaskStatusTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", { task_id: "task_abc123" });
+
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.found).toBe(true);
+      const task = parsed.task as Record<string, unknown>;
+      expect(task.totalSteps).toBe(3);
+      expect(task.done).toBe(1);
+      expect(task.inProgress).toBe(1);
+      expect(task.pending).toBe(1);
+      expect(task.steps).toHaveLength(3);
+    });
+  });
+
+  describe("task_list with steps", () => {
+    it("returns stepsTotal and stepsDone for tasks with steps", async () => {
+      const taskWithSteps = `# Task: task_with_steps
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T11:00:00.000Z
+
+## Description
+Task with steps
+
+## Steps
+- [x] (s1) Done
+- [>] (s2) In progress
+- [ ] (s3) Pending
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T11:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      const taskWithoutSteps = `# Task: task_without_steps
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-04T12:00:00.000Z
+
+## Description
+Task without steps
+
+## Progress
+- Task started
+
+## Last Activity
+2026-02-04T12:00:00.000Z
+
+---
+*Managed by task tools*`;
+
+      vi.mocked(fs.readdir).mockResolvedValue([
+        "task_with_steps.md",
+        "task_without_steps.md",
+      ] as never);
+      vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+        if ((filePath as string).includes("task_with_steps")) {
+          return taskWithSteps;
+        }
+        if ((filePath as string).includes("task_without_steps")) {
+          return taskWithoutSteps;
+        }
+        throw new Error("Not found");
+      });
+
+      const tool = createTaskListTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {});
+
+      const parsed = result.details as Record<string, unknown>;
+      const tasks = parsed.tasks as Array<Record<string, unknown>>;
+      const withSteps = tasks.find((t) => t.id === "task_with_steps");
+      const withoutSteps = tasks.find((t) => t.id === "task_without_steps");
+
+      expect(withSteps!.stepsTotal).toBe(3);
+      expect(withSteps!.stepsDone).toBe(1);
+      expect(withoutSteps!.stepsTotal).toBeUndefined();
+      expect(withoutSteps!.stepsDone).toBeUndefined();
     });
   });
 });
