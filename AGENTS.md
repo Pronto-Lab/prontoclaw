@@ -316,3 +316,37 @@ Messages between agents include identity headers (`From:` / `To:`) so each agent
 - Publish: `npm publish --access public --otp="<otp>"` (run from the package dir).
 - Verify without local npmrc side effects: `npm view <pkg> version --userconfig "$(mktemp)"`.
 - Kill the tmux session after publish.
+
+
+## Task Steps (구조화된 작업 단계)
+
+복잡한 작업(3단계 이상)은 반드시 steps를 설정하라:
+
+```
+task_start("기능 구현")
+task_update(action: "set_steps", steps: [
+  {content: "현재 코드 분석"},
+  {content: "구현"},
+  {content: "테스트 작성"},
+  {content: "빌드 확인"}
+])
+```
+
+각 단계 완료 시:
+```
+task_update(action: "complete_step", step_id: "s1")
+```
+
+새 단계 발견 시:
+```
+task_update(action: "add_step", step_content: "새로 필요한 작업")
+```
+
+task_complete()는 모든 steps가 done/skipped일 때만 호출하라.
+steps가 남아있는데 task_complete를 호출하면 Stop Guard가 차단한다.
+
+## 연속 실행 규칙
+
+모든 steps가 완료될 때까지 연속으로 작업하라.
+중간에 멈추면 시스템이 자동으로 재개 프롬프트를 보낸다.
+멈출 필요가 없다면 멈추지 마라.

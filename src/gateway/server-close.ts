@@ -3,6 +3,8 @@ import type { WebSocketServer } from "ws";
 import type { CanvasHostHandler, CanvasHostServer } from "../canvas-host/server.js";
 import type { HeartbeatRunner } from "../infra/heartbeat-runner.js";
 import type { TaskContinuationRunner } from "../infra/task-continuation-runner.js";
+import type { TaskSelfDrivingHandle } from "../infra/task-self-driving.js";
+import type { TaskStepContinuationHandle } from "../infra/task-step-continuation.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
 import { stopGmailWatcher } from "../hooks/gmail-watcher.js";
@@ -17,6 +19,8 @@ export function createGatewayCloseHandler(params: {
   cron: { stop: () => void };
   heartbeatRunner: HeartbeatRunner;
   taskContinuationRunner: TaskContinuationRunner;
+  taskSelfDriving: TaskSelfDrivingHandle;
+  taskStepContinuation: TaskStepContinuationHandle;
   nodePresenceTimers: Map<string, ReturnType<typeof setInterval>>;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   tickInterval: ReturnType<typeof setInterval>;
@@ -73,6 +77,8 @@ export function createGatewayCloseHandler(params: {
     params.cron.stop();
     params.heartbeatRunner.stop();
     params.taskContinuationRunner.stop();
+    params.taskSelfDriving.stop();
+    params.taskStepContinuation.stop();
     for (const timer of params.nodePresenceTimers.values()) {
       clearInterval(timer);
     }

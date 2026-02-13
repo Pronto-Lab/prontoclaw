@@ -39,6 +39,8 @@ import {
   setSkillsRemoteRegistry,
 } from "../infra/skills-remote.js";
 import { startTaskContinuationRunner } from "../infra/task-continuation-runner.js";
+import { startTaskSelfDriving } from "../infra/task-self-driving.js";
+import { startTaskStepContinuation } from "../infra/task-step-continuation.js";
 import { scheduleGatewayUpdateCheck } from "../infra/update-startup.js";
 import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
@@ -461,6 +463,8 @@ export async function startGatewayServer(
 
   let heartbeatRunner = startHeartbeatRunner({ cfg: cfgAtStart });
   let taskContinuationRunner = startTaskContinuationRunner({ cfg: cfgAtStart });
+  const taskSelfDriving = startTaskSelfDriving({ cfg: cfgAtStart });
+  const taskStepContinuation = startTaskStepContinuation({ cfg: cfgAtStart });
 
   void cron.start().catch((err) => logCron.error(`failed to start: ${String(err)}`));
 
@@ -578,6 +582,8 @@ export async function startGatewayServer(
       hooksConfig,
       heartbeatRunner,
       taskContinuationRunner,
+      taskSelfDriving,
+      taskStepContinuation,
       cronState,
       browserControl,
     }),
@@ -622,6 +628,8 @@ export async function startGatewayServer(
     cron,
     heartbeatRunner,
     taskContinuationRunner,
+    taskSelfDriving,
+    taskStepContinuation,
     nodePresenceTimers,
     broadcast,
     tickInterval,

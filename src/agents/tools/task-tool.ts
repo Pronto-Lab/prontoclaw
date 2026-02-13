@@ -42,6 +42,15 @@ export type TaskOutcome =
   | { kind: "cancelled"; reason?: string; by?: string }
   | { kind: "error"; error: string; retriable?: boolean }
   | { kind: "interrupted"; by?: string; reason?: string };
+export type TaskStepStatus = "pending" | "in_progress" | "done" | "skipped";
+
+export interface TaskStep {
+  id: string;
+  content: string;
+  status: TaskStepStatus;
+  order: number;
+}
+
 export interface TaskFile {
   id: string;
   status: TaskStatus;
@@ -71,6 +80,7 @@ export interface TaskFile {
   // Milestone integration fields
   milestoneId?: string; // Linked milestone ID in Task Hub
   milestoneItemId?: string; // Linked milestone item ID in Task Hub
+  steps?: TaskStep[];
   /** Terminal outcome when task reaches completed/cancelled/interrupted. */
   outcome?: TaskOutcome;
 }
@@ -84,12 +94,21 @@ const TaskStartSchema = Type.Object({
 
 const TaskUpdateSchema = Type.Object({
   task_id: Type.Optional(Type.String()),
-  progress: Type.String(),
+  progress: Type.Optional(Type.String()),
+  action: Type.Optional(Type.String()),
+  step_content: Type.Optional(Type.String()),
+  step_id: Type.Optional(Type.String()),
+  steps_order: Type.Optional(Type.Array(Type.String())),
+  steps: Type.Optional(Type.Array(Type.Object({
+    content: Type.String(),
+    status: Type.Optional(Type.String()),
+  }))),
 });
 
 const TaskCompleteSchema = Type.Object({
   task_id: Type.Optional(Type.String()),
   summary: Type.Optional(Type.String()),
+  force_complete: Type.Optional(Type.String()),
 });
 
 const TaskStatusSchema = Type.Object({
@@ -182,6 +201,19 @@ function formatTaskFileMd(task: TaskFile): string {
     lines.push("## Context", task.context, "");
   }
 
+  if (task.steps && task.steps.length > 0) {
+    lines.push("## Steps");
+    const sortedSteps = [...task.steps].sort((a, b) => a.order - b.order);
+    for (const step of sortedSteps) {
+      const marker = step.status === "done" ? "x"
+        : step.status === "in_progress" ? ">"
+        : step.status === "skipped" ? "-"
+        : " ";
+      lines.push(`- [${marker}] (${step.id}) ${step.content}`);
+    }
+    lines.push("");
+  }
+
   lines.push("## Progress");
   for (const item of task.progress) {
     lines.push(`- ${item}`);
@@ -253,6 +285,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let created = "";
   let lastActivity = "";
   const progress: string[] = [];
+  const steps: TaskStep[] = [];
   let blockedReason: string | undefined;
   let unblockedBy: string[] | undefined;
   let unblockedAction: string | undefined;
@@ -324,6 +357,22 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       context = context ? `${context}\n${trimmed}` : trimmed;
     } else if (currentSection === "last activity") {
       lastActivity = trimmed;
+    } else if (currentSection === "steps") {
+      const stepMatch = trimmed.match(/^- \[([x>\ \-])\] \((\w+)\) (.+)$/);
+      if (stepMatch) {
+        const [, marker, stepId, stepContent] = stepMatch;
+        const stepStatus: TaskStepStatus =
+          marker === "x" ? "done"
+          : marker === ">" ? "in_progress"
+          : marker === "-" ? "skipped"
+          : "pending";
+        steps.push({
+          id: stepId,
+          content: stepContent,
+          status: stepStatus,
+          order: steps.length + 1,
+        });
+      }
     } else if (currentSection === "progress") {
       if (trimmed.startsWith("- ")) {
         progress.push(trimmed.slice(2));
@@ -388,6 +437,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     created,
     lastActivity: lastActivity || created,
     progress,
+    steps: steps.length > 0 ? steps : undefined,
     blockedReason,
     unblockedBy,
     unblockedAction,
@@ -849,11 +899,27 @@ export function createTaskUpdateTool(options: {
     label: "Task Update",
     name: "task_update",
     description:
-      "Update a task's progress. If task_id is omitted, updates the most recent in_progress task. Adds a new item to the Progress section.",
+      "Update a task's progress or manage steps. If task_id is omitted, updates the most recent in_progress task. Use 'progress' for free-form logs. Use 'action' for step management: set_steps, add_step, complete_step, start_step, skip_step, reorder_steps.",
     parameters: TaskUpdateSchema,
     execute: async (_toolCallId, params) => {
       const taskIdParam = readStringParam(params, "task_id");
-      const progress = readStringParam(params, "progress", { required: true });
+      const progress = readStringParam(params, "progress");
+      const action = readStringParam(params, "action");
+      const stepContent = readStringParam(params, "step_content");
+      const stepId = readStringParam(params, "step_id");
+      const rawStepsOrder = (params as Record<string, unknown>).steps_order;
+      const stepsOrder = Array.isArray(rawStepsOrder)
+        ? rawStepsOrder.filter((s): s is string => typeof s === "string")
+        : undefined;
+      const rawSteps = (params as Record<string, unknown>).steps;
+      const stepsInput = Array.isArray(rawSteps) ? rawSteps as Array<{ content: string; status?: string }> : undefined;
+
+      if (!progress && !action) {
+        return jsonResult({
+          success: false,
+          error: "Either progress or action is required",
+        });
+      }
 
       let task: TaskFile | null = null;
 
@@ -894,7 +960,131 @@ export function createTaskUpdateTool(options: {
 
         const now = new Date().toISOString();
         freshTask.lastActivity = now;
-        freshTask.progress.push(progress);
+
+        if (progress) {
+          freshTask.progress.push(progress);
+        }
+
+        if (action) {
+          if (!freshTask.steps) {
+            freshTask.steps = [];
+          }
+
+          switch (action) {
+            case "set_steps": {
+              if (!stepsInput || stepsInput.length === 0) {
+                return jsonResult({ success: false, error: "set_steps requires a non-empty steps array" });
+              }
+              freshTask.steps = stepsInput.map((s, i) => ({
+                id: `s${i + 1}`,
+                content: s.content,
+                status: (s.status === "done" || s.status === "in_progress" || s.status === "skipped"
+                  ? s.status : "pending") as TaskStepStatus,
+                order: i + 1,
+              }));
+              const firstPending = freshTask.steps.find(s => s.status === "pending");
+              if (firstPending) {
+                firstPending.status = "in_progress";
+              }
+              freshTask.progress.push(`Steps set: ${freshTask.steps.length} steps defined`);
+              break;
+            }
+            case "add_step": {
+              if (!stepContent) {
+                return jsonResult({ success: false, error: "add_step requires step_content" });
+              }
+              const existingNums = freshTask.steps
+                .map(s => { const m = s.id.match(/^s(\d+)$/); return m ? parseInt(m[1], 10) : 0; });
+              const maxNum = existingNums.length > 0 ? Math.max(...existingNums) : 0;
+              const nextId = `s${maxNum + 1}`;
+              const nextOrder = freshTask.steps.length > 0
+                ? Math.max(...freshTask.steps.map(s => s.order)) + 1
+                : 1;
+              freshTask.steps.push({ id: nextId, content: stepContent, status: "pending", order: nextOrder });
+              freshTask.progress.push(`Step added: (${nextId}) ${stepContent}`);
+              break;
+            }
+            case "complete_step": {
+              if (!stepId) {
+                return jsonResult({ success: false, error: "complete_step requires step_id" });
+              }
+              const step = freshTask.steps.find(s => s.id === stepId);
+              if (!step) {
+                return jsonResult({ success: false, error: `Step not found: ${stepId}` });
+              }
+              step.status = "done";
+              freshTask.progress.push(`[${stepId}] ${step.content} — completed`);
+              const sortedSteps = [...freshTask.steps].sort((a, b) => a.order - b.order);
+              const nextPending = sortedSteps.find(s => s.status === "pending");
+              if (nextPending) {
+                nextPending.status = "in_progress";
+              }
+              break;
+            }
+            case "start_step": {
+              if (!stepId) {
+                return jsonResult({ success: false, error: "start_step requires step_id" });
+              }
+              const targetStep = freshTask.steps.find(s => s.id === stepId);
+              if (!targetStep) {
+                return jsonResult({ success: false, error: `Step not found: ${stepId}` });
+              }
+              for (const s of freshTask.steps) {
+                if (s.status === "in_progress") {
+                  s.status = "pending";
+                }
+              }
+              targetStep.status = "in_progress";
+              freshTask.progress.push(`[${stepId}] ${targetStep.content} — started`);
+              break;
+            }
+            case "skip_step": {
+              if (!stepId) {
+                return jsonResult({ success: false, error: "skip_step requires step_id" });
+              }
+              const skipStep = freshTask.steps.find(s => s.id === stepId);
+              if (!skipStep) {
+                return jsonResult({ success: false, error: `Step not found: ${stepId}` });
+              }
+              skipStep.status = "skipped";
+              freshTask.progress.push(`[${stepId}] ${skipStep.content} — skipped`);
+              const sortedForSkip = [...freshTask.steps].sort((a, b) => a.order - b.order);
+              const hasInProgress = sortedForSkip.some(s => s.status === "in_progress");
+              if (!hasInProgress) {
+                const nextPendingAfterSkip = sortedForSkip.find(s => s.status === "pending");
+                if (nextPendingAfterSkip) {
+                  nextPendingAfterSkip.status = "in_progress";
+                }
+              }
+              break;
+            }
+            case "reorder_steps": {
+              if (!stepsOrder || stepsOrder.length === 0) {
+                return jsonResult({ success: false, error: "reorder_steps requires steps_order array" });
+              }
+              const stepMap = new Map(freshTask.steps.map(s => [s.id, s]));
+              let order = 1;
+              for (const sid of stepsOrder) {
+                const s = stepMap.get(sid);
+                if (s) {
+                  s.order = order++;
+                }
+              }
+              for (const s of freshTask.steps) {
+                if (!stepsOrder.includes(s.id)) {
+                  s.order = order++;
+                }
+              }
+              freshTask.progress.push(`Steps reordered: ${stepsOrder.join(", ")}`);
+              break;
+            }
+            default:
+              return jsonResult({
+                success: false,
+                error: `Unknown action: ${action}. Valid: set_steps, add_step, complete_step, start_step, skip_step, reorder_steps`,
+              });
+          }
+        }
 
         await writeTask(workspaceDir, freshTask);
         emit({
@@ -905,11 +1095,22 @@ export function createTaskUpdateTool(options: {
         });
         await updateCurrentTaskPointer(workspaceDir, freshTask.id);
 
+        const stepsInfo = freshTask.steps?.length
+          ? {
+              totalSteps: freshTask.steps.length,
+              done: freshTask.steps.filter(s => s.status === "done").length,
+              inProgress: freshTask.steps.filter(s => s.status === "in_progress").length,
+              pending: freshTask.steps.filter(s => s.status === "pending").length,
+              skipped: freshTask.steps.filter(s => s.status === "skipped").length,
+            }
+          : undefined;
+
         return jsonResult({
           success: true,
           taskId: freshTask.id,
           updated: now,
           progressCount: freshTask.progress.length,
+          steps: stepsInfo,
         });
       } finally {
         await lock.release();
@@ -972,24 +1173,71 @@ export function createTaskCompleteTool(options: {
       }
 
       try {
-        task.progress.push("Task completed");
-        task.status = "completed";
-        task.outcome = { kind: "completed", summary };
+        const freshTask = await readTask(workspaceDir, task.id);
+        if (!freshTask) {
+          return jsonResult({
+            success: false,
+            error: `Task ${task.id} was deleted during lock acquisition`,
+          });
+        }
 
-        const historyEntry = formatTaskHistoryEntry(task, summary);
+        // ─── STOP GUARD ───
+        if (freshTask.steps?.length) {
+          const incomplete = freshTask.steps.filter(
+            s => s.status === "pending" || s.status === "in_progress"
+          );
 
-        // Write task state first (ensures "completed" persists even if history append fails)
-        await writeTask(workspaceDir, task);
+          if (incomplete.length > 0) {
+            const forceComplete = readStringParam(params, "force_complete");
+
+            if (forceComplete !== "true") {
+              freshTask.progress.push(
+                `Stop Guard: task_complete blocked — ${incomplete.length} steps remaining`
+              );
+              freshTask.lastActivity = new Date().toISOString();
+              await writeTask(workspaceDir, freshTask);
+
+              return jsonResult({
+                success: false,
+                blocked_by: "stop_guard",
+                error: `Cannot complete task: ${incomplete.length} steps still incomplete`,
+                remaining_steps: incomplete.map(s => ({
+                  id: s.id,
+                  content: s.content,
+                  status: s.status,
+                })),
+                instructions: [
+                  "Complete remaining steps: task_update(action: 'complete_step', step_id: '...')",
+                  "Or skip them: task_update(action: 'skip_step', step_id: '...')",
+                  "Or force complete: task_complete(force_complete: 'true')",
+                ],
+              });
+            } else {
+              freshTask.progress.push(
+                `Force completed with ${incomplete.length} steps remaining: ${incomplete.map(s => s.id).join(", ")}`
+              );
+            }
+          }
+        }
+        // ─── END STOP GUARD ───
+
+        freshTask.progress.push("Task completed");
+        freshTask.status = "completed";
+        freshTask.outcome = { kind: "completed", summary };
+
+        const historyEntry = formatTaskHistoryEntry(freshTask, summary);
+
+        await writeTask(workspaceDir, freshTask);
         emit({
           type: EVENT_TYPES.TASK_COMPLETED,
           agentId,
           ts: Date.now(),
-          data: { taskId: task.id },
+          data: { taskId: freshTask.id },
         });
 
         const archivedTo = await appendToHistory(workspaceDir, historyEntry);
 
-        await deleteTask(workspaceDir, task.id);
+        await deleteTask(workspaceDir, freshTask.id);
 
         const remainingTasks = await listTasks(workspaceDir);
         const nextTask = remainingTasks.find((t) => t.status === "in_progress") || null;
@@ -1000,12 +1248,11 @@ export function createTaskCompleteTool(options: {
           disableAgentManagedMode(agentId);
         }
 
-        // Reverse-sync: update milestone item to "done" if linked
-        if (task.milestoneId && task.milestoneItemId) {
+        if (freshTask.milestoneId && freshTask.milestoneItemId) {
           const hubUrl = process.env.TASK_HUB_URL || "http://localhost:3102";
           try {
             await fetch(
-              `${hubUrl}/api/milestones/${task.milestoneId}/items/${task.milestoneItemId}`,
+              `${hubUrl}/api/milestones/${freshTask.milestoneId}/items/${freshTask.milestoneItemId}`,
               {
                 method: "PUT",
                 headers: {
@@ -1022,7 +1269,7 @@ export function createTaskCompleteTool(options: {
 
         return jsonResult({
           success: true,
-          taskId: task.id,
+          taskId: freshTask.id,
           archived: true,
           archivedTo,
           completedAt: new Date().toISOString(),
@@ -1068,6 +1315,19 @@ export function createTaskStatusTool(options: {
             error: `Task not found: ${taskIdParam}`,
           });
         }
+        const stepsInfo = task.steps?.length
+          ? {
+              steps: [...task.steps].sort((a, b) => a.order - b.order).map(s => ({
+                id: s.id, content: s.content, status: s.status,
+              })),
+              totalSteps: task.steps.length,
+              done: task.steps.filter(s => s.status === "done").length,
+              inProgress: task.steps.filter(s => s.status === "in_progress").length,
+              pending: task.steps.filter(s => s.status === "pending").length,
+              skipped: task.steps.filter(s => s.status === "skipped").length,
+            }
+          : undefined;
+
         return jsonResult({
           found: true,
           task: {
@@ -1080,6 +1340,7 @@ export function createTaskStatusTool(options: {
             lastActivity: task.lastActivity,
             progressCount: task.progress.length,
             latestProgress: task.progress[task.progress.length - 1],
+            ...(stepsInfo ? stepsInfo : {}),
           },
         });
       }
@@ -1160,6 +1421,10 @@ export function createTaskListTool(options: {
           created: t.created,
           lastActivity: t.lastActivity,
           progressCount: t.progress.length,
+          ...(t.steps?.length ? {
+            stepsTotal: t.steps.length,
+            stepsDone: t.steps.filter(s => s.status === "done").length,
+          } : {}),
         })),
       });
     },

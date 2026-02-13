@@ -298,7 +298,29 @@ function formatContinuationPrompt(task: TaskFile, pendingCount: number): string 
     `**Last Activity:** ${task.lastActivity}`,
   ];
 
-  if (task.progress.length > 0) {
+  if (task.steps && task.steps.length > 0) {
+    lines.push(``);
+    lines.push(`**Steps:**`);
+    const sortedSteps = [...task.steps].sort((a, b) => a.order - b.order);
+    for (const step of sortedSteps) {
+      const marker = step.status === "done" ? "✅"
+        : step.status === "in_progress" ? "▶"
+        : step.status === "skipped" ? "⏭"
+        : "□";
+      lines.push(`${marker} (${step.id}) ${step.content}`);
+    }
+    const incomplete = task.steps.filter(s => s.status === "pending" || s.status === "in_progress");
+    if (incomplete.length > 0) {
+      const current = task.steps.find(s => s.status === "in_progress");
+      lines.push(``);
+      if (current) {
+        lines.push(`Continue from: **${current.content}**`);
+      } else {
+        lines.push(`Start the next pending step.`);
+      }
+      lines.push(`Use task_update(action: "complete_step", step_id: "...") when each step is done.`);
+    }
+  } else if (task.progress.length > 0) {
     const lastProgress = task.progress[task.progress.length - 1];
     lines.push(`**Latest Progress:** ${lastProgress}`);
   }
