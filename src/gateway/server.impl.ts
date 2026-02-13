@@ -464,7 +464,10 @@ export async function startGatewayServer(
   let heartbeatRunner = startHeartbeatRunner({ cfg: cfgAtStart });
   let taskContinuationRunner = startTaskContinuationRunner({ cfg: cfgAtStart });
   const taskSelfDriving = startTaskSelfDriving({ cfg: cfgAtStart });
-  const taskStepContinuation = startTaskStepContinuation({ cfg: cfgAtStart });
+  const taskStepContinuation = startTaskStepContinuation({
+    cfg: cfgAtStart,
+    selfDriving: taskSelfDriving,
+  });
 
   void cron.start().catch((err) => logCron.error(`failed to start: ${String(err)}`));
 

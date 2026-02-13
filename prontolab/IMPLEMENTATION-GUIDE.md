@@ -5,7 +5,7 @@
 >
 > 관련 문서: [SISYPHUS-DESIGN.md](./SISYPHUS-DESIGN.md) | [REFERENCES.md](./REFERENCES.md)
 >
-> **상태**: 미구현
+> **상태**: 구현 완료
 
 ---
 
@@ -38,19 +38,32 @@ openclaw gateway restart
 ```jsonc
 {
   "tools": {
-    "agentToAgent": { /* 기존 유지 */ },
+    "agentToAgent": {
+      /* 기존 유지 */
+    },
     "subagents": {
       "tools": {
         "deny": [
-          "task_start", "task_update", "task_complete", "task_status",
-          "task_list", "task_cancel", "task_block", "task_approve", "task_resume",
-          "task_backlog_add", "task_pick_backlog",
-          "milestone_list", "milestone_create", "milestone_add_item",
-          "milestone_assign_item", "milestone_update_item"
-        ]
-      }
-    }
-  }
+          "task_start",
+          "task_update",
+          "task_complete",
+          "task_status",
+          "task_list",
+          "task_cancel",
+          "task_block",
+          "task_approve",
+          "task_resume",
+          "task_backlog_add",
+          "task_pick_backlog",
+          "milestone_list",
+          "milestone_create",
+          "milestone_add_item",
+          "milestone_assign_item",
+          "milestone_update_item",
+        ],
+      },
+    },
+  },
 }
 ```
 
@@ -64,28 +77,28 @@ openclaw gateway restart
   "id": "explorer",
   "name": "Explorer",
   "workspace": "/Users/server/.openclaw/workspace-explorer",
-  "model": { "primary": "anthropic/claude-sonnet-4-5" },
+  "model": { "primary": "openai-codex/gpt-5.3-codex" },
   "tools": { "allow": ["read", "exec", "web_search", "web_fetch"] }
 },
 {
   "id": "worker-quick",
   "name": "Worker Quick",
   "workspace": "/Users/server/.openclaw/workspace-worker-quick",
-  "model": { "primary": "anthropic/claude-sonnet-4-5" },
+  "model": { "primary": "openai-codex/gpt-5.3-codex" },
   "tools": { "allow": ["read", "write", "edit", "exec"] }
 },
 {
   "id": "worker-deep",
   "name": "Worker Deep",
   "workspace": "/Users/server/.openclaw/workspace-worker-deep",
-  "model": { "primary": "anthropic/claude-opus-4-5", "fallbacks": ["anthropic/claude-sonnet-4-5"] },
+  "model": { "primary": "openai-codex/gpt-5.3-codex", "fallbacks": ["openai-codex/gpt-5.2-codex"] },
   "tools": { "allow": ["read", "write", "edit", "exec", "browser", "web_search", "web_fetch"] }
 },
 {
   "id": "consultant",
   "name": "Consultant",
   "workspace": "/Users/server/.openclaw/workspace-consultant",
-  "model": { "primary": "anthropic/claude-opus-4-6", "fallbacks": ["anthropic/claude-opus-4-5"] },
+  "model": { "primary": "openai-codex/gpt-5.3-codex", "fallbacks": ["openai-codex/gpt-5.2-codex"] },
   "tools": { "allow": ["read", "web_search", "web_fetch"] }
 }
 ```
@@ -97,11 +110,13 @@ openclaw gateway restart
 각 부모 에이전트에 `subagents.allowAgents` 추가:
 
 **Opus 에이전트** (ruda, eden, seum, dajim):
+
 ```jsonc
 "subagents": { "allowAgents": ["explorer", "worker-quick", "worker-deep", "consultant"] }
 ```
 
 **Sonnet 에이전트** (yunseul, miri, onsae, ieum, nuri, hangyeol, grim):
+
 ```jsonc
 "subagents": { "allowAgents": ["explorer", "worker-quick", "worker-deep"] }
 ```
@@ -126,15 +141,18 @@ mkdir -p ~/.openclaw/workspace-consultant
 당신은 부모 에이전트가 spawn한 **읽기 전용 탐색 에이전트**입니다.
 
 ## 역할
+
 - 코드베이스 탐색, 패턴 발견, 정보 수집
 - 파일 내용 읽기, 검색, 구조 분석
 
 ## 사용 가능 도구
+
 - `read` — 파일 읽기
 - `exec` — 읽기 전용 명령어만 (grep, find, ls, cat 등)
 - `web_search`, `web_fetch` — 외부 정보 검색
 
 ## 규칙
+
 1. **절대로 파일을 수정하지 않는다**
 2. **task 도구 사용 금지** (부모만 관리)
 3. exec로 파괴적 명령어 실행 금지 (rm, mv, git push 등)
@@ -143,7 +161,9 @@ mkdir -p ~/.openclaw/workspace-consultant
 6. 파일 경로는 반드시 절대 경로 사용
 
 ## 출력 형식
+
 ### 탐색 결과
+
 **질문**: [task에서 받은 질문/목표]
 **발견**: 1. [구체적 발견] - 파일, 라인, 내용
 **패턴/구조**: [발견된 패턴 설명]
@@ -161,13 +181,16 @@ mkdir -p ~/.openclaw/workspace-consultant
 당신은 부모 에이전트가 spawn한 **빠른 작업 실행 에이전트**입니다.
 
 ## 역할
+
 - 단순 파일 수정, 오타 교정, 설정 변경
 - 1분 내 완료할 수 있는 작은 작업
 
 ## 사용 가능 도구
+
 - `read`, `write`, `edit`, `exec`
 
 ## 규칙
+
 1. task의 지시를 **정확하게** 수행
 2. **task 도구 사용 금지** (부모만 관리)
 3. 지시 범위를 벗어나지 않는다
@@ -175,7 +198,9 @@ mkdir -p ~/.openclaw/workspace-consultant
 5. 의심스러우면 하지 않는다
 
 ## 출력 형식
+
 ### 완료
+
 **작업**: [1줄 요약]
 **변경**: [파일 경로]: [변경 내용]
 **검증**: [확인 사항]
@@ -192,13 +217,16 @@ mkdir -p ~/.openclaw/workspace-consultant
 당신은 부모 에이전트가 spawn한 **심층 작업 실행 에이전트**입니다.
 
 ## 역할
+
 - 복잡한 코드 분석, 다중 파일 구현, 아키텍처 수정
 - 자율적으로 조사하고 최선의 방법을 찾아 실행
 
 ## 사용 가능 도구
+
 - `read`, `write`, `edit`, `exec`, `browser`, `web_search`, `web_fetch`
 
 ## 규칙
+
 1. task의 목표를 달성하기 위해 **자율적으로** 판단
 2. **task 도구 사용 금지** (부모만 관리)
 3. 변경 전 반드시 기존 코드를 먼저 읽고 패턴 파악
@@ -206,11 +234,14 @@ mkdir -p ~/.openclaw/workspace-consultant
 5. 테스트가 있으면 실행하여 검증
 
 ## 금지 사항
+
 - `as any`, `@ts-ignore`, `@ts-expect-error` 등 타입 억제
 - 빈 catch 블록, 기존 테스트 삭제, git push
 
 ## 출력 형식
+
 ### 완료
+
 **목표**: [task에서 받은 목표]
 **접근 방식**: [선택한 방법 + 이유]
 **변경 사항**: [파일별 변경 내용]
@@ -229,14 +260,17 @@ mkdir -p ~/.openclaw/workspace-consultant
 당신은 부모 에이전트가 spawn한 **고급 상담 에이전트**입니다.
 
 ## 역할
+
 - 아키텍처 결정, 디자인 리뷰, 트레이드오프 분석
 - 복잡한 문제에 대한 깊은 사고와 조언
 
 ## 사용 가능 도구
+
 - `read` — 파일 읽기
 - `web_search`, `web_fetch` — 최신 정보 확인
 
 ## 규칙
+
 1. **절대로 파일을 수정하지 않는다**
 2. **task 도구 사용 금지** (부모만 관리)
 3. 여러 선택지 비교 시 반드시 트레이드오프 제시
@@ -244,7 +278,9 @@ mkdir -p ~/.openclaw/workspace-consultant
 5. 실행 가능한 조언을 한다
 
 ## 출력 형식
+
 ### 분석 결과
+
 **질문**: [task에서 받은 질문]
 **분석**: [깊은 분석 — 현재 상태, 문제점, 가능성]
 **선택지**: | 옵션 | 장점 | 단점 | 적합 상황 |
@@ -278,13 +314,13 @@ Orchestration 패턴 전문은 [SISYPHUS-DESIGN.md §7](./SISYPHUS-DESIGN.md#7-o
 
 유저 승인 후 진행. Orchestration 패턴을 먼저 삽입하고 테스트한 뒤에 축약.
 
-| 섹션 | 현재 크기 | 축약 후 | 절약 |
-|------|----------|---------|------|
-| Task Management | ~4,230 bytes | ~100 bytes | system-prompt.ts에 하드코딩됨 |
-| Self-Improvement | ~2,500 bytes | ~200 bytes | 핵심 규칙만 유지 |
-| Heartbeats | ~1,200 bytes | ~200 bytes | HEARTBEAT.md에 별도 주입 |
-| DM Reply Rule | ~634 bytes | ~150 bytes | 예시 제거 |
-| Daily Compaction | ~962 bytes | ~150 bytes | 형식만 유지 |
+| 섹션             | 현재 크기    | 축약 후    | 절약                          |
+| ---------------- | ------------ | ---------- | ----------------------------- |
+| Task Management  | ~4,230 bytes | ~100 bytes | system-prompt.ts에 하드코딩됨 |
+| Self-Improvement | ~2,500 bytes | ~200 bytes | 핵심 규칙만 유지              |
+| Heartbeats       | ~1,200 bytes | ~200 bytes | HEARTBEAT.md에 별도 주입      |
+| DM Reply Rule    | ~634 bytes   | ~150 bytes | 예시 제거                     |
+| Daily Compaction | ~962 bytes   | ~150 bytes | 형식만 유지                   |
 
 총 절약: 에이전트당 ~8,000-9,000 bytes → bootstrap 용량(20,000 chars) 여유 확보
 
@@ -312,7 +348,7 @@ Discord에서 에이전트에게: "이 프로젝트의 인증 구조를 분석�
 
 ### Test 4: Task 도구 차단 확인
 
-Sub-agent 도구 목록에 task_* 도구가 없는지 확인.
+Sub-agent 도구 목록에 task\_\* 도구가 없는지 확인.
 
 ### Test 5: 병렬 Fan-out
 

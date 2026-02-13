@@ -4,7 +4,7 @@
 >
 > 관련 문서: [IMPLEMENTATION-GUIDE.md](./IMPLEMENTATION-GUIDE.md) | [REFERENCES.md](./REFERENCES.md)
 >
-> **상태**: 설계 완료, 미구현
+> **상태**: 구현 완료
 
 ---
 
@@ -19,6 +19,7 @@ prontolab-openclaw는 [openclaw/openclaw](https://github.com/openclaw/openclaw) 
 [oh-my-opencode](https://github.com/code-yeongyu/oh-my-opencode)의 **Sisyphus 패턴**을 prontolab-openclaw 에이전트에 적용한다.
 
 Sisyphus 패턴의 핵심:
+
 - **부모 에이전트 = Orchestrator**: 유저 대화, 작업 분해, 위임 판단, 결과 검증
 - **Sub-agent = 전문 작업자**: 자기만의 전문성(AGENTS.md)을 갖고 특정 작업에만 집중
 - **도구 = 손과 눈**: 부모가 직접 실행하는 원자적 작업 (read, write, edit, exec)
@@ -29,7 +30,7 @@ Sisyphus 패턴의 핵심:
 - **코드 수정 최소화**: Config(openclaw.json) + Workspace 파일(AGENTS.md) 우선
 - **프로덕션 서버에 바로 적용**: 테스트 환경 없음, 안전한 변경만
 - **Cross-agent delegation 제외**: 에이전트 간 호출은 이번 범위 밖
-- **Haiku 미사용**: 3계층 모델 — sonnet-4-5 / opus-4-5 / opus-4-6
+- **Haiku 미사용**: 서브에이전트 모델: openai-codex/gpt-5.3-codex 통일
 
 ---
 
@@ -37,19 +38,19 @@ Sisyphus 패턴의 핵심:
 
 ### 2.1 에이전트 목록
 
-| ID | 이름 | 역할 | 모델 | AGENTS.md 크기 |
-|----|------|------|------|---------------|
-| ruda | 루다 | 팀 리더 | opus-4-6 | 21,458 bytes |
-| eden | 이든 | 개발 | opus-4-5 | 23,886 bytes |
-| seum | 세움 | 인프라 | opus-4-5 | 18,182 bytes |
-| dajim | 다짐 | QA | opus-4-5 | 14,320 bytes |
-| yunseul | 윤슬 | 마케팅 | sonnet-4-5 | 17,140 bytes |
-| miri | 미리 | 비즈니스 분석 | sonnet-4-5 | 16,762 bytes |
-| onsae | 온새 | 개인비서 | sonnet-4-5 | 18,256 bytes |
-| ieum | 이음 | 소셜 커뮤니티 | sonnet-4-5 | 8,016 bytes |
-| nuri | 누리 | CS/커뮤니티 | sonnet-4-5 | 7,567 bytes |
-| hangyeol | 한결 | 법무 | sonnet-4-5 | 9,793 bytes |
-| grim | 그림 | UI/UX | sonnet-4-5 | 6,733 bytes |
+| ID       | 이름 | 역할          | 모델       | AGENTS.md 크기 |
+| -------- | ---- | ------------- | ---------- | -------------- |
+| ruda     | 루다 | 팀 리더       | opus-4-6   | 21,458 bytes   |
+| eden     | 이든 | 개발          | opus-4-5   | 23,886 bytes   |
+| seum     | 세움 | 인프라        | opus-4-5   | 18,182 bytes   |
+| dajim    | 다짐 | QA            | opus-4-5   | 14,320 bytes   |
+| yunseul  | 윤슬 | 마케팅        | sonnet-4-5 | 17,140 bytes   |
+| miri     | 미리 | 비즈니스 분석 | sonnet-4-5 | 16,762 bytes   |
+| onsae    | 온새 | 개인비서      | sonnet-4-5 | 18,256 bytes   |
+| ieum     | 이음 | 소셜 커뮤니티 | sonnet-4-5 | 8,016 bytes    |
+| nuri     | 누리 | CS/커뮤니티   | sonnet-4-5 | 7,567 bytes    |
+| hangyeol | 한결 | 법무          | sonnet-4-5 | 9,793 bytes    |
+| grim     | 그림 | UI/UX         | sonnet-4-5 | 6,733 bytes    |
 
 ### 2.2 현재 Sub-Agent 라이프사이클
 
@@ -87,6 +88,7 @@ Sub-Agent Run
 ### 3.1 Task 도구 충돌 (Critical)
 
 Sub-agent에게 task 도구가 허용되어 있어서:
+
 - Sub-agent가 `task_start` → 부모의 `workspace/tasks/` 폴더에 task 파일 생성
 - 부모의 task 상태를 변경/취소할 수 있음
 - 부모의 `task_list`에 sub-agent가 만든 task가 혼재
@@ -96,6 +98,7 @@ Sub-agent에게 task 도구가 허용되어 있어서:
 ### 3.2 AGENTS.md 과잉 주입 (High)
 
 Sub-agent는 단순 작업 실행자인데 부모의 전체 AGENTS.md (7K~24K chars)를 받음:
+
 - Task Management 튜토리얼 ~4,230 bytes (이미 차단될 도구 설명)
 - Self-Improvement ~2,500 bytes (sub-agent에 불필요)
 - Heartbeats ~1,200 bytes, Daily Compaction ~962 bytes (불필요)
@@ -122,14 +125,15 @@ Orchestration 패턴을 AGENTS.md에 추가하면 sub-agent도 orchestration 지
 4. Bootstrap: `workspace-explorer/AGENTS.md` 로드
 5. `promptMode = "minimal"` (isSubagentSessionKey이므로)
 
-| 항목 | agentId 미지정 (현재) | agentId 지정 (신규) |
-|------|---------------------|-------------------|
-| workspace | 부모와 동일 | **서브에이전트의 workspace** |
-| AGENTS.md | 부모의 전체 AGENTS.md | **서브에이전트 전용 AGENTS.md** |
-| 도구 | 부모와 동일 + deny | **서브에이전트의 tools.allow** |
-| 모델 | 부모 또는 model 파라미터 | **서브에이전트의 model** |
+| 항목      | agentId 미지정 (현재)    | agentId 지정 (신규)             |
+| --------- | ------------------------ | ------------------------------- |
+| workspace | 부모와 동일              | **서브에이전트의 workspace**    |
+| AGENTS.md | 부모의 전체 AGENTS.md    | **서브에이전트 전용 AGENTS.md** |
+| 도구      | 부모와 동일 + deny       | **서브에이전트의 tools.allow**  |
+| 모델      | 부모 또는 model 파라미터 | **서브에이전트의 model**        |
 
 필요 조건:
+
 1. `openclaw.json`의 `agents.list`에 서브에이전트 등록
 2. 부모 에이전트의 `subagents.allowAgents`에 서브에이전트 ID 추가
 3. 서브에이전트의 workspace 디렉토리에 AGENTS.md 생성
@@ -184,13 +188,13 @@ Orchestration 패턴을 AGENTS.md에 추가하면 sub-agent도 orchestration 지
 에이전트 = 다른 사람   → 목표만 주면 스스로 생각 + 실행
 ```
 
-| 판단 기준 | 도구로 직접 처리 | 에이전트에게 위임 |
-|----------|----------------|-----------------|
-| 뭘 해야 하는지 아는가? | ✅ 위치와 방법을 안다 | ❌ 탐색/판단이 먼저 필요 |
-| 몇 단계인가? | 1-2단계 | 3단계 이상 |
-| 내 대화 맥락에 답이 있는가? | ✅ 이미 알고 있다 | ❌ 새로 찾아야 한다 |
-| 특화된 시각이 필요한가? | ❌ 일반적 처리 | ✅ 전문 분석/추론 필요 |
-| 병렬화 이득이 있는가? | ❌ 순차적이면 충분 | ✅ 여러 작업을 동시에 |
+| 판단 기준                   | 도구로 직접 처리      | 에이전트에게 위임        |
+| --------------------------- | --------------------- | ------------------------ |
+| 뭘 해야 하는지 아는가?      | ✅ 위치와 방법을 안다 | ❌ 탐색/판단이 먼저 필요 |
+| 몇 단계인가?                | 1-2단계               | 3단계 이상               |
+| 내 대화 맥락에 답이 있는가? | ✅ 이미 알고 있다     | ❌ 새로 찾아야 한다      |
+| 특화된 시각이 필요한가?     | ❌ 일반적 처리        | ✅ 전문 분석/추론 필요   |
+| 병렬화 이득이 있는가?       | ❌ 순차적이면 충분    | ✅ 여러 작업을 동시에    |
 
 ---
 
@@ -198,12 +202,12 @@ Orchestration 패턴을 AGENTS.md에 추가하면 sub-agent도 orchestration 지
 
 ### 6.1 개요
 
-| 서브에이전트 | agentId | 모델 | 역할 | timeout | 비용 |
-|--------|---------|------|------|---------|------|
-| Explorer | `explorer` | sonnet-4-5 | 읽기 전용 탐색 | 120s | 저 |
-| Worker-Quick | `worker-quick` | sonnet-4-5 | 단순 수정 | 60s | 저 |
-| Worker-Deep | `worker-deep` | opus-4-5 | 복잡한 구현 | 600s | 중 |
-| Consultant | `consultant` | opus-4-6 | 아키텍처 상담 | 900s | 고 |
+| 서브에이전트 | agentId        | 모델      | 역할           | timeout | 비용 |
+| ------------ | -------------- | --------- | -------------- | ------- | ---- |
+| Explorer     | `explorer`     | codex-5.3 | 읽기 전용 탐색 | 120s    | 저   |
+| Worker-Quick | `worker-quick` | codex-5.3 | 단순 수정      | 60s     | 저   |
+| Worker-Deep  | `worker-deep`  | codex-5.3 | 복잡한 구현    | 600s    | 중   |
+| Consultant   | `consultant`   | codex-5.3 | 아키텍처 상담  | 900s    | 고   |
 
 ### 6.2 선택 가이드
 
@@ -249,6 +253,7 @@ Orchestration 패턴을 AGENTS.md에 추가하면 sub-agent도 orchestration 지
 ### 6.7 공통: Task 도구 차단
 
 모든 서브에이전트에서 task/milestone 도구 차단:
+
 - task_start, task_update, task_complete, task_status, task_list, task_cancel, task_block, task_approve, task_resume, task_backlog_add, task_pick_backlog
 - milestone_list, milestone_create, milestone_add_item, milestone_assign_item, milestone_update_item
 
@@ -285,11 +290,13 @@ sessions_spawn(
 부모 에이전트만 task를 관리. 서브에이전트는 task 도구 미사용.
 
 **기본 플로우 (직접 처리)**:
+
 ```
 유저 요청 → task_start → 도구로 작업 → task_complete → 유저에게 전달
 ```
 
 **단일 위임 플로우**:
+
 ```
 유저 요청 → task_start → task_update("위임")
   → sessions_spawn → announce 수신
@@ -297,6 +304,7 @@ sessions_spawn(
 ```
 
 **다단계 위임 (탐색 → 구현)**:
+
 ```
 유저 요청 → task_start
   → explorer spawn → announce (탐색 결과)
@@ -305,6 +313,7 @@ sessions_spawn(
 ```
 
 **병렬 Fan-out**:
+
 ```
 유저 요청 → task_start
   → explorer spawn (auth 분석) + explorer spawn (DB 분석)
@@ -316,6 +325,7 @@ sessions_spawn(
 ### 7.3 결과 검증 (Fan-in)
 
 Announce 수신 시 4가지 확인:
+
 1. 기대한 결과가 나왔는가? (task의 [출력] 조건 충족)
 2. 기존 코드 패턴을 따랐는가?
 3. [MUST DO]를 다 했는가?
@@ -323,18 +333,19 @@ Announce 수신 시 4가지 확인:
 
 실패 시 재spawn (최대 1회). **이전 결과 + 실패 이유를 task에 반드시 포함**.
 2회 연속 실패 → 3가지 선택지:
+
 - A. 부모가 직접 수정
 - B. consultant에게 상담 요청
 - C. 유저에게 상황 보고
 
 ### 7.4 타임아웃/에러 처리
 
-| Announce 상태 | 대응 |
-|-------------|------|
-| "completed successfully" | 정상 — 검증 체크리스트 진행 |
-| "timed out" | 부분 결과 확인 → 쓸 수 있으면 사용, 없으면 스코프 축소 재spawn |
-| "failed: {error}" | 에러 분석 → 수정 재spawn 또는 유저 보고 |
-| "(no output)" | explorer/worker-quick → 재spawn, worker-deep/consultant → 유저 보고 |
+| Announce 상태            | 대응                                                                |
+| ------------------------ | ------------------------------------------------------------------- |
+| "completed successfully" | 정상 — 검증 체크리스트 진행                                         |
+| "timed out"              | 부분 결과 확인 → 쓸 수 있으면 사용, 없으면 스코프 축소 재spawn      |
+| "failed: {error}"        | 에러 분석 → 수정 재spawn 또는 유저 보고                             |
+| "(no output)"            | explorer/worker-quick → 재spawn, worker-deep/consultant → 유저 보고 |
 
 ### 7.5 비용 가드레일
 
@@ -356,21 +367,21 @@ Announce 수신 시 4가지 확인:
 
 ## 8. 부모 에이전트 allowAgents 매핑
 
-| 부모 에이전트 | 모델 | allowAgents |
-|-------------|------|-------------|
-| ruda | opus-4-6 | explorer, worker-quick, worker-deep, consultant |
-| eden | opus-4-5 | explorer, worker-quick, worker-deep, consultant |
-| seum | opus-4-5 | explorer, worker-quick, worker-deep, consultant |
-| dajim | opus-4-5 | explorer, worker-quick, worker-deep, consultant |
-| yunseul | sonnet-4-5 | explorer, worker-quick, worker-deep |
-| miri | sonnet-4-5 | explorer, worker-quick, worker-deep |
-| onsae | sonnet-4-5 | explorer, worker-quick, worker-deep |
-| ieum | sonnet-4-5 | explorer, worker-quick, worker-deep |
-| nuri | sonnet-4-5 | explorer, worker-quick, worker-deep |
-| hangyeol | sonnet-4-5 | explorer, worker-quick, worker-deep |
-| grim | sonnet-4-5 | explorer, worker-quick, worker-deep |
+| 부모 에이전트 | 모델       | allowAgents                                     |
+| ------------- | ---------- | ----------------------------------------------- |
+| ruda          | opus-4-6   | explorer, worker-quick, worker-deep, consultant |
+| eden          | opus-4-5   | explorer, worker-quick, worker-deep, consultant |
+| seum          | opus-4-5   | explorer, worker-quick, worker-deep, consultant |
+| dajim         | opus-4-5   | explorer, worker-quick, worker-deep, consultant |
+| yunseul       | sonnet-4-5 | explorer, worker-quick, worker-deep             |
+| miri          | sonnet-4-5 | explorer, worker-quick, worker-deep             |
+| onsae         | sonnet-4-5 | explorer, worker-quick, worker-deep             |
+| ieum          | sonnet-4-5 | explorer, worker-quick, worker-deep             |
+| nuri          | sonnet-4-5 | explorer, worker-quick, worker-deep             |
+| hangyeol      | sonnet-4-5 | explorer, worker-quick, worker-deep             |
+| grim          | sonnet-4-5 | explorer, worker-quick, worker-deep             |
 
-Sonnet 에이전트에서 consultant 제외 이유: Sonnet이 opus-4-6 consultant를 spawn하면 비용 역전.
+Sonnet 에이전트에서 consultant 제외 이유: Sonnet이 codex-5.3 consultant를 spawn하면 비용 역전.
 
 ---
 
@@ -378,14 +389,14 @@ Sonnet 에이전트에서 consultant 제외 이유: Sonnet이 opus-4-6 consultan
 
 oh-my-opencode의 카테고리와 openclaw 서브에이전트 대응:
 
-| oh-my-opencode 카테고리 | 서브에이전트 매핑 | 근거 |
-|----------------------|----------------|------|
-| quick | `worker-quick` | 1:1 — 단순 수정, 설정 변경 |
-| writing | `worker-quick` 또는 `worker-deep` | 짧은 문서 → quick, 긴 문서 → deep |
-| visual-engineering | `worker-deep` | 프론트엔드 구현은 복잡한 판단 필요 |
-| artistry | `worker-deep` + consultant 선상담 | 창의적 접근 필요 시 consultant 먼저 |
-| deep | `worker-deep` | 1:1 — 복잡한 구현, 자율 판단 |
-| ultrabrain | `consultant` → `worker-deep` | consultant가 설계 → worker-deep이 구현 |
+| oh-my-opencode 카테고리 | 서브에이전트 매핑                 | 근거                                   |
+| ----------------------- | --------------------------------- | -------------------------------------- |
+| quick                   | `worker-quick`                    | 1:1 — 단순 수정, 설정 변경             |
+| writing                 | `worker-quick` 또는 `worker-deep` | 짧은 문서 → quick, 긴 문서 → deep      |
+| visual-engineering      | `worker-deep`                     | 프론트엔드 구현은 복잡한 판단 필요     |
+| artistry                | `worker-deep` + consultant 선상담 | 창의적 접근 필요 시 consultant 먼저    |
+| deep                    | `worker-deep`                     | 1:1 — 복잡한 구현, 자율 판단           |
+| ultrabrain              | `consultant` → `worker-deep`      | consultant가 설계 → worker-deep이 구현 |
 
 openclaw에서는 카테고리 이름 대신 **서브에이전트 이름으로 직접 선택**.
 
@@ -395,11 +406,11 @@ openclaw에서는 카테고리 이름 대신 **서브에이전트 이름으로 �
 
 `sessions_spawn`에서 `model` 파라미터로 모델을 일시적으로 덮어쓸 수 있음.
 
-| 시나리오 | 오버라이드 | 이유 |
-|---------|-----------|------|
-| explorer가 매우 복잡한 분석 | `model: "opus-4-5"` | sonnet으로는 깊은 분석 부족 |
-| worker-deep이 단순 반복 작업 | `model: "sonnet-4-5"` | opus가 과한 비용 |
-| consultant가 단순 비교 | `model: "opus-4-5"` | opus-4-6이 과한 비용 |
+| 시나리오                     | 오버라이드            | 이유                        |
+| ---------------------------- | --------------------- | --------------------------- |
+| explorer가 매우 복잡한 분석  | `model: "opus-4-5"`   | sonnet으로는 깊은 분석 부족 |
+| worker-deep이 단순 반복 작업 | `model: "sonnet-4-5"` | opus가 과한 비용            |
+| consultant가 단순 비교       | `model: "opus-4-5"`   | opus-4-6이 과한 비용        |
 
 기본 모델은 openclaw.json에서 관리. 오버라이드는 **예외 상황**에만.
 
@@ -407,14 +418,14 @@ openclaw에서는 카테고리 이름 대신 **서브에이전트 이름으로 �
 
 ## 11. 변경 요약
 
-| 항목 | As-Is | To-Be |
-|------|-------|-------|
-| sub-agent workspace | 부모와 동일 | **서브에이전트별 독립** |
-| sub-agent AGENTS.md | 부모와 동일 (과잉 주입) | **서브에이전트별 전용** |
-| 카테고리 주입 | task 텍스트에 의존 | **agentId로 서브에이전트 선택** |
-| Orchestration 지침 | 없음 | **부모 AGENTS.md에만 삽입** |
-| 도구 제어 | 전역 deny만 | **서브에이전트별 tools.allow + 전역 deny** |
-| task 도구 | sub-agent도 사용 가능 | **sub-agent에서 차단** |
+| 항목                | As-Is                   | To-Be                                      |
+| ------------------- | ----------------------- | ------------------------------------------ |
+| sub-agent workspace | 부모와 동일             | **서브에이전트별 독립**                    |
+| sub-agent AGENTS.md | 부모와 동일 (과잉 주입) | **서브에이전트별 전용**                    |
+| 카테고리 주입       | task 텍스트에 의존      | **agentId로 서브에이전트 선택**            |
+| Orchestration 지침  | 없음                    | **부모 AGENTS.md에만 삽입**                |
+| 도구 제어           | 전역 deny만             | **서브에이전트별 tools.allow + 전역 deny** |
+| task 도구           | sub-agent도 사용 가능   | **sub-agent에서 차단**                     |
 
 ---
 
