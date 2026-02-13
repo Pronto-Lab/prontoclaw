@@ -512,7 +512,7 @@ If a feature is generally useful, consider submitting a PR to upstream:
 
 ---
 
-_Last updated: 2026-02-04_
+
 
 ---
 
@@ -825,3 +825,50 @@ type TaskOutcome =
 | File | Purpose |
 |------|---------|
 | `src/infra/outbound/agent-delivery.ts` | Added `baseDelivery.lastAccountId` fallback |
+
+---
+
+### 20. Sisyphus Sub-Agent Orchestration (설계 완료, 미구현) 📐
+
+**Purpose:** oh-my-opencode의 Sisyphus 패턴을 prontolab-openclaw 에이전트에 적용하여, 부모 에이전트가 전문 서브에이전트를 spawn하여 작업을 위임하는 orchestration 체계 도입.
+
+**핵심 메커니즘:** `sessions_spawn(agentId: "explorer")` → `~/.openclaw/workspace-explorer/AGENTS.md`가 로드됨. 서브에이전트를 별도 에이전트로 등록하여 각 서브에이전트가 자기만의 전문성 AGENTS.md를 갖게 한다.
+
+**서브에이전트 4종:**
+
+| 서브에이전트 | agentId | 모델 | 역할 | timeout |
+|--------|---------|------|------|---------|
+| Explorer | `explorer` | sonnet-4-5 | 읽기 전용 탐색 | 120s |
+| Worker-Quick | `worker-quick` | sonnet-4-5 | 단순 수정 | 60s |
+| Worker-Deep | `worker-deep` | opus-4-5 | 복잡한 구현 | 600s |
+| Consultant | `consultant` | opus-4-6 | 아키텍처 상담 | 900s |
+
+**변경 요약:**
+
+| As-Is | To-Be |
+|-------|-------|
+| sub-agent workspace = 부모와 동일 | 서브에이전트별 독립 workspace |
+| sub-agent가 부모의 전체 AGENTS.md 받음 | 서브에이전트별 전용 AGENTS.md |
+| 카테고리 주입 = task 텍스트에 의존 | agentId로 서브에이전트 선택 |
+| Orchestration 지침 없음 | 부모 AGENTS.md에만 삽입 |
+| task 도구 = sub-agent도 사용 가능 | sub-agent에서 차단 |
+
+**상세 설계 문서:** [`prontolab/`](./prontolab/) 디렉토리 참조
+
+| 문서 | 내용 |
+|------|------|
+| [prontolab/SISYPHUS-DESIGN.md](./prontolab/SISYPHUS-DESIGN.md) | 전체 설계 (배경, As-Is/To-Be, 서브에이전트 정의, Orchestration 패턴) |
+| [prontolab/IMPLEMENTATION-GUIDE.md](./prontolab/IMPLEMENTATION-GUIDE.md) | 단계별 구현 가이드 (Phase 1-4) |
+| [prontolab/REFERENCES.md](./prontolab/REFERENCES.md) | 소스 코드 참조, 설정 스냅샷 |
+
+---
+
+## Upstream Merge History
+
+| Date | Version | Commit | Notes |
+|------|---------|--------|-------|
+| 2026-02-13 | v2026.2.12 | `375a30a52` | 5개 충돌 해결 (package.json, pnpm-lock.yaml, google.ts, model.ts, schema.ts). voice 패키지 유지, fork config UI 코드 유지, signature 패치 적용. |
+
+---
+
+_Last updated: 2026-02-13_

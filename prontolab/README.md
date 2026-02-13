@@ -1,0 +1,37 @@
+# Pronto-Lab 커스텀 설계 문서
+
+> prontolab-openclaw 포크의 커스텀 기능 설계 및 구현 문서 보관소
+
+## 문서 목록
+
+| 문서 | 내용 | 상태 |
+|------|------|------|
+| [SISYPHUS-DESIGN.md](./SISYPHUS-DESIGN.md) | Sisyphus 패턴 sub-agent orchestration 설계 | 설계 완료, 미구현 |
+| [IMPLEMENTATION-GUIDE.md](./IMPLEMENTATION-GUIDE.md) | Sisyphus 패턴 단계별 구현 가이드 | 미구현 |
+| [REFERENCES.md](./REFERENCES.md) | 소스 코드 참조, 설정 스냅샷, 서버 환경 | 참조 문서 |
+
+## 상위 문서
+
+- [PRONTOLAB.md](../PRONTOLAB.md) — 구현 완료된 기능 목록 (19개 기능 + upstream merge 기록)
+
+## 이 디렉토리의 목적
+
+`PRONTOLAB.md`는 **구현 완료된 기능**을 기록하는 운영 문서입니다.
+`prontolab/`은 **설계 중이거나 미구현 기능의 상세 설계**를 보관합니다.
+
+기능이 구현 완료되면:
+1. `PRONTOLAB.md`에 구현 완료 기록 추가
+2. `prontolab/` 설계 문서에 구현 상태 업데이트
+
+## 관련 리소스
+
+| 리소스 | 위치 |
+|--------|------|
+| 원본 설계 문서 | `/tmp/openclaw-final-design/` (서버 로컬) |
+| 포크 저장소 | https://github.com/Pronto-Lab/prontolab-openclaw |
+| Upstream | https://github.com/openclaw/openclaw |
+| 서버 SSH | `ssh -p 2222 server@ssh.speculatingwook.online` |
+
+---
+
+_작성일: 2026-02-13_
