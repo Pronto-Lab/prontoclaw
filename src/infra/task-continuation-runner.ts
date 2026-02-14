@@ -1,7 +1,12 @@
+import { openSync, readSync, closeSync, fstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
-import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import {
+  resolveAgentWorkspaceDir,
+  resolveDefaultAgentId,
+  resolveAgentDir,
+} from "../agents/agent-scope.js";
 import { createAgentToAgentPolicy } from "../agents/tools/sessions-helpers.js";
 import {
   findPickableBacklogTask,
@@ -35,6 +40,7 @@ const MAX_UNBLOCK_REQUESTS = 3;
 const UNBLOCK_COOLDOWN_MS = 30 * 60 * 1000;
 const MAX_UNBLOCK_FAILURES = 3;
 const CLEANUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_CONTEXT_OVERFLOW_RETRIES = 5; // After this many consecutive overflows, stop retrying
 const STATE_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Failure-based backoff configuration
@@ -301,24 +307,32 @@ function formatContinuationPrompt(task: TaskFile, pendingCount: number): string 
   if (task.steps && task.steps.length > 0) {
     lines.push(``);
     lines.push(`**Steps:**`);
-    const sortedSteps = [...task.steps].sort((a, b) => a.order - b.order);
+    const sortedSteps = [...task.steps].toSorted((a, b) => a.order - b.order);
     for (const step of sortedSteps) {
-      const marker = step.status === "done" ? "✅"
-        : step.status === "in_progress" ? "▶"
-        : step.status === "skipped" ? "⏭"
-        : "□";
+      const marker =
+        step.status === "done"
+          ? "✅"
+          : step.status === "in_progress"
+            ? "▶"
+            : step.status === "skipped"
+              ? "⏭"
+              : "□";
       lines.push(`${marker} (${step.id}) ${step.content}`);
     }
-    const incomplete = task.steps.filter(s => s.status === "pending" || s.status === "in_progress");
+    const incomplete = task.steps.filter(
+      (s) => s.status === "pending" || s.status === "in_progress",
+    );
     if (incomplete.length > 0) {
-      const current = task.steps.find(s => s.status === "in_progress");
+      const current = task.steps.find((s) => s.status === "in_progress");
       lines.push(``);
       if (current) {
         lines.push(`Continue from: **${current.content}**`);
       } else {
         lines.push(`Start the next pending step.`);
       }
-      lines.push(`Use task_update(action: "complete_step", step_id: "...") when each step is done.`);
+      lines.push(
+        `Use task_update(action: "complete_step", step_id: "...") when each step is done.`,
+      );
     }
   } else if (task.progress.length > 0) {
     const lastProgress = task.progress[task.progress.length - 1];
@@ -582,6 +596,56 @@ async function checkAgentForContinuation(
         deliver: false,
       });
 
+      // Check if the agent's session hit context overflow despite agentCommand "succeeding".
+      // agentCommand doesn't throw on overflow - the error is returned as a normal payload.
+      // We check the session file's last message to detect this.
+      const overflowCheck = await checkSessionForContextOverflow(agentId, cfg);
+      if (overflowCheck.isOverflow) {
+        const prevState = agentStates.get(agentId);
+        const consecutiveFailures = (prevState?.consecutiveFailures ?? 0) + 1;
+        const backoffMs = resolveBackoffMs("context_overflow", consecutiveFailures);
+        const backoffUntilMs = nowMs + backoffMs;
+
+        agentStates.set(agentId, {
+          lastContinuationSentMs: nowMs,
+          lastTaskId: activeTask.id,
+          backoffUntilMs,
+          consecutiveFailures,
+          lastFailureReason: "context_overflow",
+        });
+
+        if (consecutiveFailures >= MAX_CONTEXT_OVERFLOW_RETRIES) {
+          log.error(
+            "Agent session permanently stuck in context overflow - manual /reset or /new required",
+            {
+              agentId,
+              taskId: activeTask.id,
+              consecutiveFailures,
+            },
+          );
+        } else {
+          log.warn("Agent session hit context overflow after continuation prompt", {
+            agentId,
+            taskId: activeTask.id,
+            consecutiveFailures,
+            backoffSeconds: Math.round(backoffMs / 1000),
+          });
+        }
+
+        emit({
+          type: EVENT_TYPES.CONTINUATION_BACKOFF,
+          agentId,
+          ts: Date.now(),
+          data: {
+            taskId: activeTask.id,
+            reason: "context_overflow",
+            consecutiveFailures,
+            backoffMs,
+          },
+        });
+        return false;
+      }
+
       // Success - reset failure state
       agentStates.set(agentId, {
         lastContinuationSentMs: nowMs,
@@ -638,6 +702,83 @@ async function checkAgentForContinuation(
     }
   } finally {
     await continuationLock.release();
+  }
+}
+
+/**
+ * Check the agent's active session file for context overflow in the last assistant message.
+ * Reads only the tail of the JSONL to avoid loading multi-MB files.
+ */
+async function checkSessionForContextOverflow(
+  agentId: string,
+  cfg: OpenClawConfig,
+): Promise<{ isOverflow: boolean; messageCount?: number }> {
+  try {
+    const agentDir = resolveAgentDir(cfg, agentId);
+    const sessionsJsonPath = path.join(agentDir, "sessions", "sessions.json");
+    const sessionsJsonRaw = await fs.readFile(sessionsJsonPath, "utf8");
+    const sessionsStore = JSON.parse(sessionsJsonRaw) as Record<string, { sessionId?: string }>;
+
+    // Find the main session
+    const mainKey = `agent:${agentId}:main`;
+    const entry = sessionsStore[mainKey];
+    if (!entry?.sessionId) {
+      return { isOverflow: false };
+    }
+
+    const sessionFile = path.join(agentDir, "sessions", `${entry.sessionId}.jsonl`);
+
+    // Read only the last 4KB of the file to find the last message
+    const TAIL_BYTES = 4096;
+    let fd: number;
+    try {
+      fd = openSync(sessionFile, "r");
+    } catch {
+      return { isOverflow: false };
+    }
+    try {
+      const stat = fstatSync(fd);
+      const fileSize = stat.size;
+      if (fileSize === 0) {
+        return { isOverflow: false };
+      }
+
+      const readStart = Math.max(0, fileSize - TAIL_BYTES);
+      const readLen = fileSize - readStart;
+      const buf = Buffer.alloc(readLen);
+      readSync(fd, buf, 0, readLen, readStart);
+      const tail = buf.toString("utf8");
+
+      // Find the last complete JSON line
+      const lines = tail.split("\n").filter((l) => l.trim());
+      if (lines.length === 0) {
+        return { isOverflow: false };
+      }
+
+      const lastLine = lines[lines.length - 1];
+      try {
+        const msg = JSON.parse(lastLine);
+        const assistantMsg = msg?.message;
+        if (
+          assistantMsg?.role === "assistant" &&
+          assistantMsg?.stopReason === "error" &&
+          assistantMsg?.errorMessage &&
+          /context.*overflow|context.length.exceeded|token.*limit|too long|max.*token|prompt is too long|exceeds.*context/i.test(
+            assistantMsg.errorMessage,
+          )
+        ) {
+          return { isOverflow: true, messageCount: undefined };
+        }
+      } catch {
+        // Parse error on last line - not an overflow indicator
+      }
+    } finally {
+      closeSync(fd);
+    }
+    return { isOverflow: false };
+  } catch {
+    // Any error reading session - don't block continuation
+    return { isOverflow: false };
   }
 }
 
