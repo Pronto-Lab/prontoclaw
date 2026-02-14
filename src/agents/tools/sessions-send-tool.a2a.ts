@@ -32,7 +32,9 @@ export async function runSessionsSendA2AFlow(params: {
   requesterChannel?: GatewayMessageChannel;
   roundOneReply?: string;
   waitRunId?: string;
+  conversationId?: string;
 }) {
+  const conversationId = params.conversationId ?? crypto.randomUUID();
   const runContextId = params.waitRunId ?? "unknown";
   try {
     let primaryReply = params.roundOneReply;
@@ -101,6 +103,7 @@ export async function runSessionsSendA2AFlow(params: {
         targetSessionKey: params.targetSessionKey,
         message: params.message.slice(0, 200),
         runId: runContextId,
+        conversationId,
       },
     });
 
@@ -156,6 +159,7 @@ export async function runSessionsSendA2AFlow(params: {
             turn,
             maxTurns: params.maxPingPongTurns,
             replyPreview: replyText.slice(0, 200),
+            conversationId,
           },
         });
 
@@ -223,6 +227,7 @@ export async function runSessionsSendA2AFlow(params: {
           !isAnnounceSkip(announceReply)
         ),
         targetSessionKey: params.targetSessionKey,
+        conversationId,
       },
     });
   } catch (err) {

@@ -154,6 +154,8 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           maxTurns,
         });
 
+        const conversationId = crypto.randomUUID();
+
         // Emit a2a.auto_route event for task-hub visibility
         emit({
           type: EVENT_TYPES.A2A_AUTO_ROUTE,
@@ -165,6 +167,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
             channelId: message.channelId,
             maxTurns,
             message: (cleanMessage || text).slice(0, 200),
+            conversationId,
           },
         });
 
@@ -200,6 +203,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           requesterSessionKey: senderSessionKey,
           requesterChannel: "discord",
           waitRunId: runId,
+          conversationId,
         }).catch((err) => {
           a2aLog.warn("A2A auto-route flow failed", {
             error: err instanceof Error ? err.message : String(err),
