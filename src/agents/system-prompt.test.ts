@@ -478,3 +478,100 @@ describe("buildAgentSystemPrompt – Task Tracking conditional", () => {
     expect(prompt).toContain("task_start");
   });
 });
+
+// Quality Contract section tests
+describe("buildAgentSystemPrompt - Quality Contract", () => {
+  it("includes Quality Contract section in full prompt mode", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "full",
+    });
+
+    expect(prompt).toContain("## Quality Contract (MANDATORY)");
+    expect(prompt).toContain("### Structured Work Phases");
+    expect(prompt).toContain("### Evidence Requirements");
+    expect(prompt).toContain("### Failure Recovery");
+    expect(prompt).toContain("### Code Quality Rules");
+    expect(prompt).toContain("### Challenge Protocol");
+  });
+
+  it("includes Quality Contract when promptMode is default (not specified)", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain("## Quality Contract (MANDATORY)");
+  });
+
+  it("excludes Quality Contract section in minimal prompt mode", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "minimal",
+    });
+
+    expect(prompt).not.toContain("## Quality Contract (MANDATORY)");
+    expect(prompt).not.toContain("### Structured Work Phases");
+    expect(prompt).not.toContain("### Evidence Requirements");
+    expect(prompt).not.toContain("### Code Quality Rules");
+  });
+
+  it("excludes Quality Contract section in none prompt mode", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "none",
+    });
+
+    expect(prompt).not.toContain("## Quality Contract (MANDATORY)");
+  });
+
+  it("Quality Contract is positioned after Task Tracking and before Safety", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "full",
+    });
+
+    const taskTrackingIndex = prompt.indexOf("## Task Tracking (CRITICAL - MANDATORY)");
+    const qualityIndex = prompt.indexOf("## Quality Contract (MANDATORY)");
+    const safetyIndex = prompt.indexOf("## Safety");
+
+    expect(taskTrackingIndex).toBeGreaterThan(-1);
+    expect(qualityIndex).toBeGreaterThan(-1);
+    expect(safetyIndex).toBeGreaterThan(-1);
+
+    // Order: Task Tracking < Quality Contract < Safety
+    expect(qualityIndex).toBeGreaterThan(taskTrackingIndex);
+    expect(safetyIndex).toBeGreaterThan(qualityIndex);
+  });
+
+  it("includes specific evidence requirements", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain("After `write`");
+    expect(prompt).toContain("After `edit`");
+    expect(prompt).toContain("After `exec`");
+    expect(prompt).toContain("Before `write`/`edit`");
+  });
+
+  it("includes code quality rules", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain("`as any`");
+    expect(prompt).toContain("`@ts-ignore`");
+    expect(prompt).toContain("`catch {}`");
+    expect(prompt).toContain("`console.log`");
+  });
+
+  it("includes failure recovery protocol", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain("After 2 consecutive failures");
+    expect(prompt).toContain("After 3 consecutive failures");
+    expect(prompt).toContain("ask for guidance");
+  });
+});

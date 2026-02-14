@@ -7,6 +7,7 @@
 
 import type { PluginRegistry } from "./registry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { registerQualityEnforcerHook } from "./core-hooks/quality-enforcer.js";
 import { registerTaskEnforcerHook } from "./core-hooks/task-enforcer.js";
 import { createHookRunner, type HookRunner } from "./hooks.js";
 
@@ -21,6 +22,7 @@ let globalRegistry: PluginRegistry | null = null;
  */
 export function initializeGlobalHookRunner(registry: PluginRegistry): void {
   registerTaskEnforcerHook(registry);
+  registerQualityEnforcerHook(registry);
 
   globalRegistry = registry;
   globalHookRunner = createHookRunner(registry, {
