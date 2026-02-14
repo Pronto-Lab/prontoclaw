@@ -22,6 +22,7 @@ export const EVENT_TYPES = {
   A2A_RESPONSE: "a2a.response",
   A2A_COMPLETE: "a2a.complete",
   A2A_AUTO_ROUTE: "a2a.auto_route",
+  MILESTONE_SYNC_FAILED: "milestone.sync_failed",
 } as const;
 
 export type EventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];

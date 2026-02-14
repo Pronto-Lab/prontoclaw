@@ -33,6 +33,7 @@ export async function runSessionsSendA2AFlow(params: {
   roundOneReply?: string;
   waitRunId?: string;
   conversationId?: string;
+  skipPingPong?: boolean;
 }) {
   const conversationId = params.conversationId ?? crypto.randomUUID();
   const runContextId = params.waitRunId ?? "unknown";
@@ -113,7 +114,11 @@ export async function runSessionsSendA2AFlow(params: {
     });
     const targetChannel = announceTarget?.channel ?? "unknown";
 
+    const shouldSkipPingPong =
+      params.skipPingPong || /\[NO_REPLY_NEEDED\]|\[NOTIFICATION\]/i.test(params.message);
+
     if (
+      !shouldSkipPingPong &&
       params.maxPingPongTurns > 0 &&
       params.requesterSessionKey &&
       params.requesterSessionKey !== params.targetSessionKey

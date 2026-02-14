@@ -14,6 +14,8 @@ export type LoopGuardConfig = {
   windowMs?: number;
   /** Maximum A2A relay depth (default: 5). */
   maxDepth?: number;
+  /** Per-pair overrides keyed by "agentA::agentB" (alphabetically sorted). */
+  overrides?: Record<string, Omit<LoopGuardConfig, "overrides">>;
 };
 
 type ChannelWindow = {
@@ -41,7 +43,7 @@ function getWindow(key: string): ChannelWindow {
 
 function pruneWindow(w: ChannelWindow, now: number, windowMs: number): void {
   const cutoff = now - windowMs;
-  while (w.timestamps.length > 0 && w.timestamps[0]! < cutoff) {
+  while (w.timestamps.length > 0 && w.timestamps[0] < cutoff) {
     w.timestamps.shift();
   }
 }
@@ -65,11 +67,13 @@ export function isSelfMessage(
  * Returns true if the message should be BLOCKED (rate exceeded).
  */
 export function checkA2ARateLimit(fromId: string, toId: string, config?: LoopGuardConfig): boolean {
-  const maxMessages = config?.maxMessagesPerWindow ?? DEFAULT_MAX_MESSAGES;
-  const windowMs = config?.windowMs ?? DEFAULT_WINDOW_MS;
+  const key = channelKey(fromId, toId);
+  const pairConfig = config?.overrides?.[key];
+  const maxMessages =
+    pairConfig?.maxMessagesPerWindow ?? config?.maxMessagesPerWindow ?? DEFAULT_MAX_MESSAGES;
+  const windowMs = pairConfig?.windowMs ?? config?.windowMs ?? DEFAULT_WINDOW_MS;
   const now = Date.now();
 
-  const key = channelKey(fromId, toId);
   const w = getWindow(key);
   pruneWindow(w, now, windowMs);
 

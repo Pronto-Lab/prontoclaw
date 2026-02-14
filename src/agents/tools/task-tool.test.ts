@@ -1106,7 +1106,7 @@ describe("backlog functionality", () => {
       expect(parsed.dependsOn).toEqual(["task_abc123", "task_def456"]);
     });
 
-    it("forces low priority for cross-agent requests", async () => {
+    it("respects requester priority for cross-agent requests", async () => {
       const tool = createTaskBacklogAddTool({ config: mockConfig });
       const result = await tool!.execute("call-1", {
         description: "Cross-agent task",
@@ -1116,7 +1116,7 @@ describe("backlog functionality", () => {
 
       const parsed = result.details as Record<string, unknown>;
       expect(parsed.success).toBe(true);
-      expect(parsed.priority).toBe("low");
+      expect(parsed.priority).toBe("urgent");
       expect(parsed.isCrossAgent).toBe(true);
       expect(parsed.assignee).toBe("agent1");
     });

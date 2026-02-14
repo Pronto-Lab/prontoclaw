@@ -35,6 +35,8 @@ import { WebSocket, WebSocketServer } from "ws";
 
 const DEFAULT_PORT = 3847;
 const DEFAULT_HOST = "0.0.0.0";
+const TASK_HUB_URL = process.env.TASK_HUB_URL || "http://localhost:3102";
+const MILESTONE_POLL_INTERVAL_MS = 30_000;
 
 // Parse CLI args
 function parseArgs(): { port: number; host: string } {
@@ -154,6 +156,9 @@ const WORKSPACE_PREFIX = "workspace-";
 const TASKS_DIR = "tasks";
 const TASK_HISTORY_DIR = "task-history";
 const CURRENT_TASK_FILENAME = "CURRENT_TASK.md";
+
+// Module-level variable for milestone polling
+let lastMilestoneHash = "";
 
 // ============================================================================
 // Task Parsing (adapted from task-tool.ts)
@@ -653,6 +658,20 @@ async function getTaskHistory(
 }
 
 // ============================================================================
+// Utility Functions
+// ============================================================================
+
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    hash = (hash << 5) - hash + ch;
+    hash |= 0;
+  }
+  return hash.toString(36);
+}
+
+// ============================================================================
 // HTTP Request Handlers
 // ============================================================================
 
@@ -947,6 +966,21 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  // GET /api/milestones — Proxy to Task Hub
+  if (pathname === "/api/milestones" || pathname.startsWith("/api/milestones/")) {
+    try {
+      const targetUrl = `${TASK_HUB_URL}${pathname}`;
+      const resp = await fetch(targetUrl, {
+        headers: { Cookie: "task-hub-session=authenticated" },
+      });
+      const data = await resp.json();
+      jsonResponse(res, data, resp.status);
+    } catch (err) {
+      errorResponse(res, "Failed to proxy milestone request", 502);
+    }
+    return;
+  }
+
   errorResponse(res, "Not found", 404);
 }
 
@@ -1093,7 +1127,34 @@ function setupWebSocket(server: http.Server): WebSocketServer {
 
   console.log("[watch] Watching for task changes...");
 
+  startMilestonePolling(broadcast);
+
   return wss;
+}
+
+function startMilestonePolling(broadcast: (msg: WsMessage) => void): NodeJS.Timeout {
+  return setInterval(async () => {
+    try {
+      const resp = await fetch(`${TASK_HUB_URL}/api/milestones`, {
+        headers: { Cookie: "task-hub-session=authenticated" },
+      });
+      if (!resp.ok) {
+        return;
+      }
+      const body = await resp.text();
+      const hash = simpleHash(body);
+      if (hash !== lastMilestoneHash && lastMilestoneHash !== "") {
+        broadcast({
+          type: "task_update" as WsMessage["type"],
+          timestamp: new Date().toISOString(),
+          data: { event: "milestone_update", milestones: JSON.parse(body) },
+        });
+      }
+      lastMilestoneHash = hash;
+    } catch {
+      /* hub unreachable, skip */
+    }
+  }, MILESTONE_POLL_INTERVAL_MS);
 }
 
 // ============================================================================

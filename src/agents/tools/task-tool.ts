@@ -6,10 +6,14 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { AnyAgentTool } from "./common.js";
 import { emit } from "../../infra/events/bus.js";
 import { EVENT_TYPES } from "../../infra/events/schemas.js";
+import { retryAsync } from "../../infra/retry.js";
 import { acquireTaskLock } from "../../infra/task-lock.js";
 import { disableAgentManagedMode, enableAgentManagedMode } from "../../infra/task-tracker.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId, listAgentIds } from "../agent-scope.js";
 import { jsonResult, readStringParam } from "./common.js";
+
+const log = createSubsystemLogger("task-tool");
 
 const TASKS_DIR = "tasks";
 const TASK_HISTORY_DIR = "task-history";
@@ -80,6 +84,7 @@ export interface TaskFile {
   // Milestone integration fields
   milestoneId?: string; // Linked milestone ID in Task Hub
   milestoneItemId?: string; // Linked milestone item ID in Task Hub
+  reassignCount?: number; // Zombie recovery: number of times task was auto-reassigned
   steps?: TaskStep[];
   /** Terminal outcome when task reaches completed/cancelled/interrupted. */
   outcome?: TaskOutcome;
@@ -99,10 +104,14 @@ const TaskUpdateSchema = Type.Object({
   step_content: Type.Optional(Type.String()),
   step_id: Type.Optional(Type.String()),
   steps_order: Type.Optional(Type.Array(Type.String())),
-  steps: Type.Optional(Type.Array(Type.Object({
-    content: Type.String(),
-    status: Type.Optional(Type.String()),
-  }))),
+  steps: Type.Optional(
+    Type.Array(
+      Type.Object({
+        content: Type.String(),
+        status: Type.Optional(Type.String()),
+      }),
+    ),
+  ),
 });
 
 const TaskCompleteSchema = Type.Object({
@@ -117,6 +126,7 @@ const TaskStatusSchema = Type.Object({
 
 const TaskListSchema = Type.Object({
   status: Type.Optional(Type.String()),
+  scope: Type.Optional(Type.String()),
 });
 
 const TaskCancelSchema = Type.Object({
@@ -203,12 +213,16 @@ function formatTaskFileMd(task: TaskFile): string {
 
   if (task.steps && task.steps.length > 0) {
     lines.push("## Steps");
-    const sortedSteps = [...task.steps].sort((a, b) => a.order - b.order);
+    const sortedSteps = [...task.steps].toSorted((a, b) => a.order - b.order);
     for (const step of sortedSteps) {
-      const marker = step.status === "done" ? "x"
-        : step.status === "in_progress" ? ">"
-        : step.status === "skipped" ? "-"
-        : " ";
+      const marker =
+        step.status === "done"
+          ? "x"
+          : step.status === "in_progress"
+            ? ">"
+            : step.status === "skipped"
+              ? "-"
+              : " ";
       lines.push(`- [${marker}] (${step.id}) ${step.content}`);
     }
     lines.push("");
@@ -254,6 +268,7 @@ function formatTaskFileMd(task: TaskFile): string {
       dueDate: task.dueDate,
       milestoneId: task.milestoneId,
       milestoneItemId: task.milestoneItemId,
+      reassignCount: task.reassignCount,
     };
     lines.push("## Backlog", "```json", JSON.stringify(backlogData), "```", "");
   }
@@ -302,6 +317,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let dueDate: string | undefined;
   let milestoneId: string | undefined;
   let milestoneItemId: string | undefined;
+  let reassignCount: number | undefined;
   let outcome: TaskOutcome | undefined;
 
   let currentSection = "";
@@ -358,14 +374,17 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     } else if (currentSection === "last activity") {
       lastActivity = trimmed;
     } else if (currentSection === "steps") {
-      const stepMatch = trimmed.match(/^- \[([x>\ \-])\] \((\w+)\) (.+)$/);
+      const stepMatch = trimmed.match(/^- \[([x> -])\] \((\w+)\) (.+)$/);
       if (stepMatch) {
         const [, marker, stepId, stepContent] = stepMatch;
         const stepStatus: TaskStepStatus =
-          marker === "x" ? "done"
-          : marker === ">" ? "in_progress"
-          : marker === "-" ? "skipped"
-          : "pending";
+          marker === "x"
+            ? "done"
+            : marker === ">"
+              ? "in_progress"
+              : marker === "-"
+                ? "skipped"
+                : "pending";
         steps.push({
           id: stepId,
           content: stepContent,
@@ -405,6 +424,9 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
           dueDate = backlogData.dueDate;
           milestoneId = backlogData.milestoneId;
           milestoneItemId = backlogData.milestoneItemId;
+          if (typeof backlogData.reassignCount === "number") {
+            reassignCount = backlogData.reassignCount;
+          }
         } catch {
           // Ignore malformed JSON
         }
@@ -454,6 +476,7 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     dueDate,
     milestoneId,
     milestoneItemId,
+    reassignCount,
     outcome,
   };
 }
@@ -912,7 +935,9 @@ export function createTaskUpdateTool(options: {
         ? rawStepsOrder.filter((s): s is string => typeof s === "string")
         : undefined;
       const rawSteps = (params as Record<string, unknown>).steps;
-      const stepsInput = Array.isArray(rawSteps) ? rawSteps as Array<{ content: string; status?: string }> : undefined;
+      const stepsInput = Array.isArray(rawSteps)
+        ? (rawSteps as Array<{ content: string; status?: string }>)
+        : undefined;
 
       if (!progress && !action) {
         return jsonResult({
@@ -973,16 +998,20 @@ export function createTaskUpdateTool(options: {
           switch (action) {
             case "set_steps": {
               if (!stepsInput || stepsInput.length === 0) {
-                return jsonResult({ success: false, error: "set_steps requires a non-empty steps array" });
+                return jsonResult({
+                  success: false,
+                  error: "set_steps requires a non-empty steps array",
+                });
               }
               freshTask.steps = stepsInput.map((s, i) => ({
                 id: `s${i + 1}`,
                 content: s.content,
                 status: (s.status === "done" || s.status === "in_progress" || s.status === "skipped"
-                  ? s.status : "pending") as TaskStepStatus,
+                  ? s.status
+                  : "pending") as TaskStepStatus,
                 order: i + 1,
               }));
-              const firstPending = freshTask.steps.find(s => s.status === "pending");
+              const firstPending = freshTask.steps.find((s) => s.status === "pending");
               if (firstPending) {
                 firstPending.status = "in_progress";
               }
@@ -993,14 +1022,22 @@ export function createTaskUpdateTool(options: {
               if (!stepContent) {
                 return jsonResult({ success: false, error: "add_step requires step_content" });
               }
-              const existingNums = freshTask.steps
-                .map(s => { const m = s.id.match(/^s(\d+)$/); return m ? parseInt(m[1], 10) : 0; });
+              const existingNums = freshTask.steps.map((s) => {
+                const m = s.id.match(/^s(\d+)$/);
+                return m ? parseInt(m[1], 10) : 0;
+              });
               const maxNum = existingNums.length > 0 ? Math.max(...existingNums) : 0;
               const nextId = `s${maxNum + 1}`;
-              const nextOrder = freshTask.steps.length > 0
-                ? Math.max(...freshTask.steps.map(s => s.order)) + 1
-                : 1;
-              freshTask.steps.push({ id: nextId, content: stepContent, status: "pending", order: nextOrder });
+              const nextOrder =
+                freshTask.steps.length > 0
+                  ? Math.max(...freshTask.steps.map((s) => s.order)) + 1
+                  : 1;
+              freshTask.steps.push({
+                id: nextId,
+                content: stepContent,
+                status: "pending",
+                order: nextOrder,
+              });
               freshTask.progress.push(`Step added: (${nextId}) ${stepContent}`);
               break;
             }
@@ -1008,14 +1045,14 @@ export function createTaskUpdateTool(options: {
               if (!stepId) {
                 return jsonResult({ success: false, error: "complete_step requires step_id" });
               }
-              const step = freshTask.steps.find(s => s.id === stepId);
+              const step = freshTask.steps.find((s) => s.id === stepId);
               if (!step) {
                 return jsonResult({ success: false, error: `Step not found: ${stepId}` });
               }
               step.status = "done";
               freshTask.progress.push(`[${stepId}] ${step.content} — completed`);
-              const sortedSteps = [...freshTask.steps].sort((a, b) => a.order - b.order);
-              const nextPending = sortedSteps.find(s => s.status === "pending");
+              const sortedSteps = [...freshTask.steps].toSorted((a, b) => a.order - b.order);
+              const nextPending = sortedSteps.find((s) => s.status === "pending");
               if (nextPending) {
                 nextPending.status = "in_progress";
               }
@@ -1025,7 +1062,7 @@ export function createTaskUpdateTool(options: {
               if (!stepId) {
                 return jsonResult({ success: false, error: "start_step requires step_id" });
               }
-              const targetStep = freshTask.steps.find(s => s.id === stepId);
+              const targetStep = freshTask.steps.find((s) => s.id === stepId);
               if (!targetStep) {
                 return jsonResult({ success: false, error: `Step not found: ${stepId}` });
               }
@@ -1042,16 +1079,16 @@ export function createTaskUpdateTool(options: {
               if (!stepId) {
                 return jsonResult({ success: false, error: "skip_step requires step_id" });
               }
-              const skipStep = freshTask.steps.find(s => s.id === stepId);
+              const skipStep = freshTask.steps.find((s) => s.id === stepId);
               if (!skipStep) {
                 return jsonResult({ success: false, error: `Step not found: ${stepId}` });
               }
               skipStep.status = "skipped";
               freshTask.progress.push(`[${stepId}] ${skipStep.content} — skipped`);
-              const sortedForSkip = [...freshTask.steps].sort((a, b) => a.order - b.order);
-              const hasInProgress = sortedForSkip.some(s => s.status === "in_progress");
+              const sortedForSkip = [...freshTask.steps].toSorted((a, b) => a.order - b.order);
+              const hasInProgress = sortedForSkip.some((s) => s.status === "in_progress");
               if (!hasInProgress) {
-                const nextPendingAfterSkip = sortedForSkip.find(s => s.status === "pending");
+                const nextPendingAfterSkip = sortedForSkip.find((s) => s.status === "pending");
                 if (nextPendingAfterSkip) {
                   nextPendingAfterSkip.status = "in_progress";
                 }
@@ -1060,9 +1097,12 @@ export function createTaskUpdateTool(options: {
             }
             case "reorder_steps": {
               if (!stepsOrder || stepsOrder.length === 0) {
-                return jsonResult({ success: false, error: "reorder_steps requires steps_order array" });
+                return jsonResult({
+                  success: false,
+                  error: "reorder_steps requires steps_order array",
+                });
               }
-              const stepMap = new Map(freshTask.steps.map(s => [s.id, s]));
+              const stepMap = new Map(freshTask.steps.map((s) => [s.id, s]));
               let order = 1;
               for (const sid of stepsOrder) {
                 const s = stepMap.get(sid);
@@ -1098,10 +1138,10 @@ export function createTaskUpdateTool(options: {
         const stepsInfo = freshTask.steps?.length
           ? {
               totalSteps: freshTask.steps.length,
-              done: freshTask.steps.filter(s => s.status === "done").length,
-              inProgress: freshTask.steps.filter(s => s.status === "in_progress").length,
-              pending: freshTask.steps.filter(s => s.status === "pending").length,
-              skipped: freshTask.steps.filter(s => s.status === "skipped").length,
+              done: freshTask.steps.filter((s) => s.status === "done").length,
+              inProgress: freshTask.steps.filter((s) => s.status === "in_progress").length,
+              pending: freshTask.steps.filter((s) => s.status === "pending").length,
+              skipped: freshTask.steps.filter((s) => s.status === "skipped").length,
             }
           : undefined;
 
@@ -1184,7 +1224,7 @@ export function createTaskCompleteTool(options: {
         // ─── STOP GUARD ───
         if (freshTask.steps?.length) {
           const incomplete = freshTask.steps.filter(
-            s => s.status === "pending" || s.status === "in_progress"
+            (s) => s.status === "pending" || s.status === "in_progress",
           );
 
           if (incomplete.length > 0) {
@@ -1192,7 +1232,7 @@ export function createTaskCompleteTool(options: {
 
             if (forceComplete !== "true") {
               freshTask.progress.push(
-                `Stop Guard: task_complete blocked — ${incomplete.length} steps remaining`
+                `Stop Guard: task_complete blocked — ${incomplete.length} steps remaining`,
               );
               freshTask.lastActivity = new Date().toISOString();
               await writeTask(workspaceDir, freshTask);
@@ -1201,7 +1241,7 @@ export function createTaskCompleteTool(options: {
                 success: false,
                 blocked_by: "stop_guard",
                 error: `Cannot complete task: ${incomplete.length} steps still incomplete`,
-                remaining_steps: incomplete.map(s => ({
+                remaining_steps: incomplete.map((s) => ({
                   id: s.id,
                   content: s.content,
                   status: s.status,
@@ -1214,7 +1254,7 @@ export function createTaskCompleteTool(options: {
               });
             } else {
               freshTask.progress.push(
-                `Force completed with ${incomplete.length} steps remaining: ${incomplete.map(s => s.id).join(", ")}`
+                `Force completed with ${incomplete.length} steps remaining: ${incomplete.map((s) => s.id).join(", ")}`,
               );
             }
           }
@@ -1251,19 +1291,37 @@ export function createTaskCompleteTool(options: {
         if (freshTask.milestoneId && freshTask.milestoneItemId) {
           const hubUrl = process.env.TASK_HUB_URL || "http://localhost:3102";
           try {
-            await fetch(
-              `${hubUrl}/api/milestones/${freshTask.milestoneId}/items/${freshTask.milestoneItemId}`,
-              {
-                method: "PUT",
-                headers: {
-                  "Content-Type": "application/json",
-                  Cookie: "task-hub-session=authenticated",
-                },
-                body: JSON.stringify({ status: "done" }),
+            await retryAsync(
+              async () => {
+                const resp = await fetch(
+                  `${hubUrl}/api/milestones/${freshTask.milestoneId}/items/${freshTask.milestoneItemId}`,
+                  {
+                    method: "PUT",
+                    headers: {
+                      "Content-Type": "application/json",
+                      Cookie: "task-hub-session=authenticated",
+                    },
+                    body: JSON.stringify({ status: "done" }),
+                  },
+                );
+                if (!resp.ok) {
+                  throw new Error(`Milestone sync HTTP ${resp.status}`);
+                }
               },
+              { attempts: 3, minDelayMs: 500, maxDelayMs: 5000, label: "milestone-sync" },
             );
-          } catch {
-            // Milestone sync failure should not block task completion
+          } catch (err) {
+            log.warn("Milestone sync failed after retries", {
+              taskId: freshTask.id,
+              milestoneId: freshTask.milestoneId,
+              error: String(err),
+            });
+            emit({
+              type: EVENT_TYPES.MILESTONE_SYNC_FAILED,
+              agentId,
+              ts: Date.now(),
+              data: { taskId: freshTask.id, milestoneId: freshTask.milestoneId },
+            });
           }
         }
 
@@ -1317,14 +1375,18 @@ export function createTaskStatusTool(options: {
         }
         const stepsInfo = task.steps?.length
           ? {
-              steps: [...task.steps].sort((a, b) => a.order - b.order).map(s => ({
-                id: s.id, content: s.content, status: s.status,
-              })),
+              steps: [...task.steps]
+                .toSorted((a, b) => a.order - b.order)
+                .map((s) => ({
+                  id: s.id,
+                  content: s.content,
+                  status: s.status,
+                })),
               totalSteps: task.steps.length,
-              done: task.steps.filter(s => s.status === "done").length,
-              inProgress: task.steps.filter(s => s.status === "in_progress").length,
-              pending: task.steps.filter(s => s.status === "pending").length,
-              skipped: task.steps.filter(s => s.status === "skipped").length,
+              done: task.steps.filter((s) => s.status === "done").length,
+              inProgress: task.steps.filter((s) => s.status === "in_progress").length,
+              pending: task.steps.filter((s) => s.status === "pending").length,
+              skipped: task.steps.filter((s) => s.status === "skipped").length,
             }
           : undefined;
 
@@ -1393,10 +1455,11 @@ export function createTaskListTool(options: {
     label: "Task List",
     name: "task_list",
     description:
-      "List all tasks. Optionally filter by status: 'all', 'pending', 'pending_approval', 'in_progress', 'blocked', 'backlog'. Returns tasks sorted by priority then creation time.",
+      "List all tasks. Optionally filter by status: 'all', 'pending', 'pending_approval', 'in_progress', 'blocked', 'backlog'. Use scope='all' to aggregate tasks from ALL agents. Returns tasks sorted by priority then creation time.",
     parameters: TaskListSchema,
     execute: async (_toolCallId, params) => {
       const statusParam = readStringParam(params, "status") || "all";
+      const scopeParam = readStringParam(params, "scope");
       const statusFilter = [
         "all",
         "pending",
@@ -1407,6 +1470,51 @@ export function createTaskListTool(options: {
       ].includes(statusParam)
         ? (statusParam as TaskStatus | "all")
         : "all";
+
+      // M7: scope='all' aggregates tasks from all agents
+      if (scopeParam === "all" && cfg) {
+        const allAgentIds = listAgentIds(cfg);
+        const aggregated: Array<{
+          agentId: string;
+          id: string;
+          status: string;
+          priority: string;
+          description: string;
+          created: string;
+          lastActivity: string;
+          progressCount: number;
+          stepsTotal?: number;
+          stepsDone?: number;
+        }> = [];
+        for (const aid of allAgentIds) {
+          const ws = resolveAgentWorkspaceDir(cfg, aid);
+          const agentTasks = await listTasks(ws, statusFilter);
+          for (const t of agentTasks) {
+            aggregated.push({
+              agentId: aid,
+              id: t.id,
+              status: t.status,
+              priority: t.priority,
+              description: t.description,
+              created: t.created,
+              lastActivity: t.lastActivity,
+              progressCount: t.progress.length,
+              ...(t.steps?.length
+                ? {
+                    stepsTotal: t.steps.length,
+                    stepsDone: t.steps.filter((s) => s.status === "done").length,
+                  }
+                : {}),
+            });
+          }
+        }
+        return jsonResult({
+          filter: statusFilter,
+          scope: "all",
+          count: aggregated.length,
+          tasks: aggregated,
+        });
+      }
 
       const tasks = await listTasks(workspaceDir, statusFilter);
 
@@ -1421,10 +1529,12 @@ export function createTaskListTool(options: {
           created: t.created,
           lastActivity: t.lastActivity,
           progressCount: t.progress.length,
-          ...(t.steps?.length ? {
-            stepsTotal: t.steps.length,
-            stepsDone: t.steps.filter(s => s.status === "done").length,
-          } : {}),
+          ...(t.steps?.length
+            ? {
+                stepsTotal: t.steps.length,
+                stepsDone: t.steps.filter((s) => s.status === "done").length,
+              }
+            : {}),
         })),
       });
     },
@@ -1506,19 +1616,37 @@ export function createTaskCancelTool(options: {
         if (task.milestoneId && task.milestoneItemId) {
           const hubUrl = process.env.TASK_HUB_URL || "http://localhost:3102";
           try {
-            await fetch(
-              `${hubUrl}/api/milestones/${task.milestoneId}/items/${task.milestoneItemId}`,
-              {
-                method: "PUT",
-                headers: {
-                  "Content-Type": "application/json",
-                  Cookie: "task-hub-session=authenticated",
-                },
-                body: JSON.stringify({ status: "done" }),
+            await retryAsync(
+              async () => {
+                const resp = await fetch(
+                  `${hubUrl}/api/milestones/${task.milestoneId}/items/${task.milestoneItemId}`,
+                  {
+                    method: "PUT",
+                    headers: {
+                      "Content-Type": "application/json",
+                      Cookie: "task-hub-session=authenticated",
+                    },
+                    body: JSON.stringify({ status: "done" }),
+                  },
+                );
+                if (!resp.ok) {
+                  throw new Error(`Milestone sync HTTP ${resp.status}`);
+                }
               },
+              { attempts: 3, minDelayMs: 500, maxDelayMs: 5000, label: "milestone-sync" },
             );
-          } catch {
-            // Milestone sync failure should not block task completion
+          } catch (err) {
+            log.warn("Milestone sync failed after retries", {
+              taskId: task.id,
+              milestoneId: task.milestoneId,
+              error: String(err),
+            });
+            emit({
+              type: EVENT_TYPES.MILESTONE_SYNC_FAILED,
+              agentId,
+              ts: Date.now(),
+              data: { taskId: task.id, milestoneId: task.milestoneId },
+            });
           }
         }
 
@@ -1878,11 +2006,9 @@ export function createTaskBacklogAddTool(options: {
         }
       }
 
-      const priority: TaskPriority = isCrossAgent
-        ? "low"
-        : ["low", "medium", "high", "urgent"].includes(priorityRaw)
-          ? (priorityRaw as TaskPriority)
-          : "medium";
+      const priority: TaskPriority = ["low", "medium", "high", "urgent"].includes(priorityRaw)
+        ? (priorityRaw as TaskPriority)
+        : "medium";
 
       const estimatedEffort: EstimatedEffort | undefined =
         estimatedEffortRaw && ["small", "medium", "large"].includes(estimatedEffortRaw)

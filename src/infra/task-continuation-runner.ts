@@ -21,7 +21,7 @@ import {
 import { parseDurationMs } from "../cli/parse-duration.js";
 import { agentCommand } from "../commands/agent.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { getQueueSize } from "../process/command-queue.js";
+import { getQueueSize, getActiveTaskCount } from "../process/command-queue.js";
 // CommandLane import removed - using agent-specific lanes
 import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { normalizeAgentId } from "../routing/session-key.js";
@@ -89,6 +89,24 @@ type AgentContinuationState = {
 };
 
 const agentStates = new Map<string, AgentContinuationState>();
+
+/**
+ * Check if an agent is actively processing commands (not just queued).
+ * Returns true only if there are pending items OR active execution happening.
+ * A queue with size 1 but no active tasks means the item just completed.
+ */
+function isAgentActivelyProcessing(agentLane: string): boolean {
+  const queueSize = getQueueSize(agentLane);
+  if (queueSize === 0) {
+    return false;
+  }
+  if (queueSize > 1) {
+    return true;
+  }
+  // Queue size is 1 — could be active or just-completed
+  const activeCount = getActiveTaskCount();
+  return activeCount > 0;
+}
 
 function cleanupStaleAgentStates(): void {
   const now = Date.now();
@@ -408,9 +426,8 @@ async function checkAgentForContinuation(
     // Check agent-specific queue, not global main queue
     // Agent lanes follow pattern: session:agent:{agentId}:main
     const agentLane = `session:agent:${agentId}:main`;
-    const agentQueueSize = getQueueSize(agentLane);
-    if (agentQueueSize > 0) {
-      log.debug("Agent busy, skipping continuation check", { agentId, queueSize: agentQueueSize });
+    if (isAgentActivelyProcessing(agentLane)) {
+      log.debug("Agent busy, skipping continuation check", { agentId });
       return false;
     }
 
@@ -833,8 +850,7 @@ async function checkBlockedTasksForResume(
 
   // Check agent-specific queue
   const agentLane = `session:agent:${agentId}:main`;
-  const agentQueueSize = getQueueSize(agentLane);
-  if (agentQueueSize > 0) {
+  if (isAgentActivelyProcessing(agentLane)) {
     return; // Agent busy
   }
 
@@ -1158,71 +1174,111 @@ async function checkZombieTasksForAbandonment(
                 continue;
               }
             }
-            freshTask.status = "interrupted";
-            freshTask.outcome = {
-              kind: "interrupted",
-              reason: `No activity for ${Math.round(ageMs / 3600000)}h (TTL: ${Math.round(zombieTaskTtlMs / 3600000)}h)`,
-            };
-            freshTask.progress.push(
-              `Auto-interrupted: no activity for ${Math.round(ageMs / 3600000)}h (TTL: ${Math.round(zombieTaskTtlMs / 3600000)}h)`,
-            );
+            const reassignCount = (freshTask.reassignCount ?? 0) + 1;
+            freshTask.reassignCount = reassignCount;
             freshTask.lastActivity = new Date().toISOString();
-            await writeTask(workspaceDir, freshTask);
-            await updateAgentEntry(workspaceDir, agentId, {
-              status: "interrupted",
-              currentTaskId: null,
-              lastFailureReason: "zombie_timeout",
-            });
-            emit({
-              type: EVENT_TYPES.ZOMBIE_ABANDONED,
-              agentId,
-              ts: Date.now(),
-              data: { taskId: task.id, ageHours: Math.round(ageMs / 3600000) },
-            });
-            log.info("Zombie task interrupted", {
-              agentId,
-              taskId: task.id,
-              ageHours: Math.round(ageMs / 3600000),
-            });
-            // Notify lead agent about the interrupted task
-            try {
-              const teamState = await readTeamState(workspaceDir);
-              const lead = findLeadAgent(teamState);
-              if (lead && lead.agentId !== agentId) {
-                const leadWorkspaceDir = resolveAgentWorkspaceDir(cfg, lead.agentId);
-                const leadAccountId = resolveAgentBoundAccountId(
-                  cfg,
-                  lead.agentId,
-                  cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
-                );
-                await agentCommand({
-                  message: [
-                    `[SYSTEM - ZOMBIE TASK INTERRUPTED]`,
-                    ``,
-                    `Agent "${agentId}" had a task interrupted due to inactivity.`,
-                    `**Task ID:** ${freshTask.id}`,
-                    `**Description:** ${freshTask.description}`,
-                    `**Inactive for:** ${Math.round(ageMs / 3600000)}h`,
-                    ``,
-                    `The task status is now "interrupted" and can be resumed.`,
-                    `Consider reassigning or resuming this task.`,
-                  ].join("\n"),
-                  agentId: lead.agentId,
-                  accountId: leadAccountId,
-                  deliver: false,
-                });
-                log.info("Lead agent notified about interrupted zombie task", {
-                  leadAgentId: lead.agentId,
-                  interruptedAgentId: agentId,
+
+            if (reassignCount < 3) {
+              // Auto-recover: move to backlog for re-pickup
+              freshTask.status = "backlog";
+              freshTask.outcome = undefined;
+              freshTask.progress.push(
+                `Auto-recovered to backlog after zombie detection (reassign #${reassignCount}/3)`,
+              );
+              await writeTask(workspaceDir, freshTask);
+              await updateAgentEntry(workspaceDir, agentId, {
+                status: "idle",
+                currentTaskId: null,
+              });
+              emit({
+                type: EVENT_TYPES.ZOMBIE_ABANDONED,
+                agentId,
+                ts: Date.now(),
+                data: {
+                  taskId: task.id,
+                  ageHours: Math.round(ageMs / 3600000),
+                  reassignCount,
+                  action: "moved_to_backlog",
+                },
+              });
+              log.info("Zombie task auto-recovered to backlog", {
+                agentId,
+                taskId: task.id,
+                ageHours: Math.round(ageMs / 3600000),
+                reassignCount,
+              });
+            } else {
+              // Exceeded reassign limit — keep interrupted, notify lead agent
+              freshTask.status = "interrupted";
+              freshTask.outcome = {
+                kind: "interrupted",
+                reason: `Reassigned ${reassignCount} times — escalating. No activity for ${Math.round(ageMs / 3600000)}h`,
+              };
+              freshTask.progress.push(
+                `Kept interrupted: exceeded reassign limit of 3 (inactive ${Math.round(ageMs / 3600000)}h)`,
+              );
+              await writeTask(workspaceDir, freshTask);
+              await updateAgentEntry(workspaceDir, agentId, {
+                status: "interrupted",
+                currentTaskId: null,
+                lastFailureReason: "zombie_timeout_escalated",
+              });
+              emit({
+                type: EVENT_TYPES.ZOMBIE_ABANDONED,
+                agentId,
+                ts: Date.now(),
+                data: {
+                  taskId: task.id,
+                  ageHours: Math.round(ageMs / 3600000),
+                  reassignCount,
+                  action: "escalated",
+                },
+              });
+              log.info("Zombie task escalated (reassign limit exceeded)", {
+                agentId,
+                taskId: task.id,
+                ageHours: Math.round(ageMs / 3600000),
+                reassignCount,
+              });
+              // Notify lead agent about the escalated task
+              try {
+                const teamState = await readTeamState(workspaceDir);
+                const lead = findLeadAgent(teamState);
+                if (lead && lead.agentId !== agentId) {
+                  const leadAccountId = resolveAgentBoundAccountId(
+                    cfg,
+                    lead.agentId,
+                    cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+                  );
+                  await agentCommand({
+                    message: [
+                      `[SYSTEM - ZOMBIE TASK ESCALATED]`,
+                      ``,
+                      `Agent "${agentId}" had a task interrupted after ${reassignCount} reassign attempts.`,
+                      `**Task ID:** ${freshTask.id}`,
+                      `**Description:** ${freshTask.description}`,
+                      `**Inactive for:** ${Math.round(ageMs / 3600000)}h`,
+                      ``,
+                      `The task has exceeded the auto-recovery limit and needs manual attention.`,
+                      `Consider investigating why the agent keeps abandoning this task.`,
+                    ].join("\n"),
+                    agentId: lead.agentId,
+                    accountId: leadAccountId,
+                    deliver: false,
+                  });
+                  log.info("Lead agent notified about escalated zombie task", {
+                    leadAgentId: lead.agentId,
+                    interruptedAgentId: agentId,
+                    taskId: freshTask.id,
+                  });
+                }
+              } catch (notifyError) {
+                log.warn("Failed to notify lead agent about escalated task", {
+                  agentId,
                   taskId: freshTask.id,
+                  error: String(notifyError),
                 });
               }
-            } catch (notifyError) {
-              log.warn("Failed to notify lead agent about interrupted task", {
-                agentId,
-                taskId: freshTask.id,
-                error: String(notifyError),
-              });
             }
           } finally {
             await lock.release();
