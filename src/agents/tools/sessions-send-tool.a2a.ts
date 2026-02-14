@@ -31,20 +31,48 @@ export async function runSessionsSendA2AFlow(params: {
     let primaryReply = params.roundOneReply;
     let latestReply = params.roundOneReply;
     if (!primaryReply && params.waitRunId) {
-      const waitMs = Math.min(params.announceTimeoutMs, 120_000);
-      const wait = await callGateway<{ status: string }>({
-        method: "agent.wait",
-        params: {
+      // Retry-based wait: instead of a single timeout that silently gives up,
+      // poll agent.wait in 30s chunks.  agent.wait returns immediately when the
+      // run completes, so this is NOT busy-polling — each chunk is event-driven
+      // on the gateway side.  We only loop to survive transient timeouts.
+      const CHUNK_MS = 30_000;
+      const MAX_WAIT_MS = 300_000; // 5 min absolute ceiling
+      let elapsed = 0;
+      while (elapsed < MAX_WAIT_MS) {
+        try {
+          const wait = await callGateway<{ status: string }>({
+            method: "agent.wait",
+            params: {
+              runId: params.waitRunId,
+              timeoutMs: CHUNK_MS,
+            },
+            timeoutMs: CHUNK_MS + 5_000,
+          });
+          if (wait?.status === "ok") {
+            primaryReply = await readLatestAssistantReply({
+              sessionKey: params.targetSessionKey,
+            });
+            latestReply = primaryReply;
+            break;
+          }
+          // "not_found" / "error" → run is gone, stop waiting
+          if (wait?.status === "not_found" || wait?.status === "error") {
+            log.warn("agent.wait returned non-retriable status", {
+              runId: params.waitRunId,
+              status: wait?.status,
+            });
+            break;
+          }
+        } catch {
+          // Gateway connection hiccup — retry
+        }
+        elapsed += CHUNK_MS;
+      }
+      if (elapsed >= MAX_WAIT_MS) {
+        log.warn("agent.wait exhausted max wait ceiling", {
           runId: params.waitRunId,
-          timeoutMs: waitMs,
-        },
-        timeoutMs: waitMs + 2000,
-      });
-      if (wait?.status === "ok") {
-        primaryReply = await readLatestAssistantReply({
-          sessionKey: params.targetSessionKey,
+          maxWaitMs: MAX_WAIT_MS,
         });
-        latestReply = primaryReply;
       }
     }
     if (!latestReply) {
