@@ -4,33 +4,46 @@
  * Tracks Discord bot user IDs of sibling agents in the same deployment.
  * Messages from sibling bots bypass the standard bot-drop filter so that
  * multi-agent setups can communicate within guild channels.
+ *
+ * Also maps bot user IDs to their owning agent IDs so that the
+ * auto-routing layer can resolve the sender agent for A2A flows.
  */
 
-const siblingBotIds = new Set<string>();
+/** Map from Discord bot user ID → agent ID. */
+const siblingBotMap = new Map<string, string>();
 
 /** Register a bot user ID as a sibling agent. */
-export function registerSiblingBot(botId: string): void {
+export function registerSiblingBot(botId: string, agentId?: string): void {
   if (botId) {
-    siblingBotIds.add(botId);
+    siblingBotMap.set(botId, agentId ?? "");
   }
 }
 
 /** Unregister a bot user ID when an account disconnects. */
 export function unregisterSiblingBot(botId: string): void {
-  siblingBotIds.delete(botId);
+  siblingBotMap.delete(botId);
 }
 
 /** Check whether a user ID belongs to a registered sibling bot. */
 export function isSiblingBot(userId: string): boolean {
-  return siblingBotIds.has(userId);
+  return siblingBotMap.has(userId);
+}
+
+/**
+ * Resolve the agent ID that owns a given Discord bot user ID.
+ * Returns `undefined` if the bot is not registered or has no agent mapping.
+ */
+export function getAgentIdForBot(botUserId: string): string | undefined {
+  const agentId = siblingBotMap.get(botUserId);
+  return agentId || undefined;
 }
 
 /** Return all registered sibling bot IDs (for diagnostics). */
 export function listSiblingBots(): string[] {
-  return [...siblingBotIds];
+  return [...siblingBotMap.keys()];
 }
 
 /** Clear all registrations (for tests). */
 export function clearSiblingBots(): void {
-  siblingBotIds.clear();
+  siblingBotMap.clear();
 }

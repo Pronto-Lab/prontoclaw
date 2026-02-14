@@ -4,8 +4,10 @@ import {
   normalizeChannelId as normalizeAnyChannelId,
 } from "../../channels/plugins/index.js";
 import { normalizeChannelId as normalizeChatChannelId } from "../../channels/registry.js";
+import { callGateway } from "../../gateway/call.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolveAgentConfig } from "../agent-scope.js";
+import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 
 const ANNOUNCE_SKIP_TOKEN = "ANNOUNCE_SKIP";
 const REPLY_SKIP_TOKEN = "REPLY_SKIP";
@@ -91,11 +93,90 @@ function buildAgentLabel(agentId: string, config: OpenClawConfig | undefined): s
   return agentId;
 }
 
+export async function buildRequesterContextSummary(
+  sessionKey: string,
+  limit?: number,
+): Promise<string> {
+  try {
+    const result = await callGateway<{ messages: Array<unknown> }>({
+      method: "chat.history",
+      params: { sessionKey, limit: limit ?? 10 },
+    });
+
+    if (!result?.messages || !Array.isArray(result.messages)) {
+      return "";
+    }
+
+    const filtered = stripToolMessages(result.messages);
+    if (filtered.length === 0) {
+      return "";
+    }
+
+    const messageParts: string[] = [];
+    let charCount = 0;
+    const maxChars = 3000;
+
+    for (const msg of filtered) {
+      if (!msg || typeof msg !== "object") {
+        continue;
+      }
+
+      const role = (msg as { role?: unknown }).role;
+      let content = "";
+
+      if (role === "assistant") {
+        content = extractAssistantText(msg) ?? "";
+      } else if (role === "user") {
+        const rawContent = (msg as { content?: unknown }).content;
+        if (typeof rawContent === "string") {
+          content = rawContent;
+        } else if (Array.isArray(rawContent)) {
+          const textParts: string[] = [];
+          for (const block of rawContent) {
+            if (block && typeof block === "object") {
+              const text = (block as { text?: unknown }).text;
+              if (typeof text === "string") {
+                textParts.push(text);
+              }
+            }
+          }
+          content = textParts.join(" ");
+        }
+      } else {
+        continue;
+      }
+
+      if (!content) {
+        continue;
+      }
+
+      const truncated = content.length > 500 ? content.substring(0, 500) + "..." : content;
+      const line = `[${role}]: ${truncated}`;
+
+      if (charCount + line.length > maxChars) {
+        break;
+      }
+
+      messageParts.push(line);
+      charCount += line.length;
+    }
+
+    if (messageParts.length === 0) {
+      return "";
+    }
+
+    return `## Requester's Recent Context\n${messageParts.join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
 export function buildAgentToAgentMessageContext(params: {
   requesterSessionKey?: string;
   requesterChannel?: string;
   targetSessionKey: string;
   config?: OpenClawConfig;
+  requesterContextSummary?: string;
 }) {
   const requesterAgentId = params.requesterSessionKey
     ? resolveAgentIdFromSessionKey(params.requesterSessionKey)
@@ -114,6 +195,9 @@ export function buildAgentToAgentMessageContext(params: {
       : undefined,
     params.requesterChannel ? `From channel: ${params.requesterChannel}.` : undefined,
     `To: ${targetLabel}, session: ${params.targetSessionKey}.`,
+    params.requesterContextSummary && params.requesterContextSummary.trim()
+      ? params.requesterContextSummary
+      : undefined,
   ].filter(Boolean);
   return lines.join("\n");
 }

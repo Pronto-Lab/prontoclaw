@@ -20,6 +20,8 @@ import { danger, logVerbose, shouldLogVerbose, warn } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createDiscordRetryRunner } from "../../infra/retry-policy.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { listBindings } from "../../routing/bindings.js";
+import { normalizeAccountId, normalizeAgentId } from "../../routing/session-key.js";
 import { resolveDiscordAccount } from "../accounts.js";
 import { attachDiscordGatewayLogging } from "../gateway-logging.js";
 import { getDiscordGatewayEmitter, waitForDiscordGatewayStop } from "../monitor.gateway.js";
@@ -641,7 +643,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
           voicePipeline = await initVoicePipeline({
             guildId,
             channelId,
-            botUserId: botUserId!,
+            botUserId: botUserId,
             userId,
             cfg,
             sessionKey: `agent:ruda:discord:channel:voice:${guildId}:${channelId}:${userId}`,
@@ -685,7 +687,29 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   }
 
   if (botUserId) {
-    registerSiblingBot(botUserId);
+    // Resolve the agent ID bound to this Discord account so the sibling
+    // bot registry can map botUserId -> agentId for A2A auto-routing.
+    const boundAgentId = (() => {
+      const normalizedAcct = normalizeAccountId(account.accountId);
+      for (const binding of listBindings(cfg)) {
+        const match = binding?.match;
+        if (!match || typeof match !== "object") {
+          continue;
+        }
+        const channel = (typeof match.channel === "string" ? match.channel : "")
+          .trim()
+          .toLowerCase();
+        if (channel !== "discord") {
+          continue;
+        }
+        const acct = typeof match.accountId === "string" ? normalizeAccountId(match.accountId) : "";
+        if (acct === normalizedAcct && binding.agentId) {
+          return normalizeAgentId(binding.agentId);
+        }
+      }
+      return undefined;
+    })();
+    registerSiblingBot(botUserId, boundAgentId);
   }
   runtime.log?.(`logged in to discord${botUserId ? ` as ${botUserId}` : ""}`);
 

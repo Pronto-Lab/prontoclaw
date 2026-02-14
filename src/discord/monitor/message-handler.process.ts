@@ -1,7 +1,16 @@
+import type { User } from "@buape/carbon";
 import { ChannelType } from "@buape/carbon";
+import crypto from "node:crypto";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
 import { resolveAckReaction, resolveHumanDelayConfig } from "../../agents/identity.js";
+import { AGENT_LANE_NESTED } from "../../agents/lanes.js";
+import {
+  buildRequesterContextSummary,
+  buildAgentToAgentMessageContext,
+  resolvePingPongTurns,
+} from "../../agents/tools/sessions-send-helpers.js";
+import { runSessionsSendA2AFlow } from "../../agents/tools/sessions-send-tool.a2a.js";
 import { resolveChunkMode } from "../../auto-reply/chunk.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { formatInboundEnvelope, resolveEnvelopeFormatOptions } from "../../auto-reply/envelope.js";
@@ -19,13 +28,17 @@ import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
 import { createTypingCallbacks } from "../../channels/typing.js";
+import { loadConfig } from "../../config/config.js";
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import { readSessionUpdatedAt, resolveStorePath } from "../../config/sessions.js";
+import { callGateway } from "../../gateway/call.js";
 import { danger, logVerbose, shouldLogVerbose } from "../../globals.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
 import { buildUntrustedChannelMetadata } from "../../security/channel-metadata.js";
 import { truncateUtf16Safe } from "../../utils.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { markDmResponded, resolveDmRetryConfig } from "../dm-retry/index.js";
 import { reactMessageDiscord, removeReactionDiscord } from "../send.js";
 import { normalizeDiscordSlug, resolveDiscordOwnerAllowFrom } from "./allow-list.js";
@@ -37,8 +50,11 @@ import {
 } from "./message-utils.js";
 import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-context.js";
 import { deliverDiscordReply } from "./reply-delivery.js";
+import { getAgentIdForBot, isSiblingBot } from "./sibling-bots.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
 import { sendTyping } from "./typing.js";
+
+const a2aLog = createSubsystemLogger("discord/a2a-auto-route");
 
 export async function processDiscordMessage(ctx: DiscordMessagePreflightContext) {
   const {
@@ -89,6 +105,105 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     logVerbose(`discord: drop message ${message.id} (empty content)`);
     return;
   }
+
+  // ── A2A Auto-Routing ──────────────────────────────────────────────
+  // When a sibling bot @mentions us, route through the A2A flow instead
+  // of normal message processing.  This injects the sender's conversation
+  // context so the receiving agent understands what the sender is working on.
+  if (isSiblingBot(author.id) && isGuildMessage && ctx.botUserId) {
+    const senderAgentId = getAgentIdForBot(author.id);
+    const mentionsUs = message.mentionedUsers?.some((user: User) => user.id === ctx.botUserId);
+    if (senderAgentId && mentionsUs) {
+      try {
+        const freshCfg = loadConfig();
+
+        // Build sender's session key for the channel where the message originated
+        const senderSessionKey = buildAgentSessionKey({
+          agentId: senderAgentId,
+          channel: "discord",
+          peer: { kind: "channel", id: message.channelId },
+        });
+
+        // Target is the receiving agent (us) — session key from preflight route
+        const targetSessionKey = route.sessionKey;
+
+        const requesterContext = await buildRequesterContextSummary(senderSessionKey);
+
+        const enrichedContext = buildAgentToAgentMessageContext({
+          requesterSessionKey: senderSessionKey,
+          requesterChannel: "discord",
+          targetSessionKey,
+          config: freshCfg,
+          requesterContextSummary: requesterContext,
+        });
+
+        const cleanMessage = (baseText ?? text)
+          .replace(new RegExp(`<@!?${ctx.botUserId}>`, "g"), "")
+          .trim();
+
+        const maxTurns = resolvePingPongTurns(freshCfg);
+        const idempotencyKey = crypto.randomUUID();
+
+        a2aLog.info("auto-routing sibling bot mention via A2A", {
+          senderAgentId,
+          senderSessionKey,
+          targetSessionKey,
+          channelId: message.channelId,
+          maxTurns,
+        });
+
+        const response = await callGateway<{ runId: string }>({
+          method: "agent",
+          params: {
+            message: cleanMessage || text,
+            sessionKey: targetSessionKey,
+            idempotencyKey,
+            deliver: false,
+            channel: INTERNAL_MESSAGE_CHANNEL,
+            lane: AGENT_LANE_NESTED,
+            extraSystemPrompt: enrichedContext,
+            inputProvenance: {
+              kind: "inter_session",
+              sourceSessionKey: senderSessionKey,
+              sourceChannel: "discord",
+              sourceTool: "discord_a2a_auto_route",
+            },
+          },
+          timeoutMs: 10_000,
+        });
+
+        const runId =
+          typeof response?.runId === "string" && response.runId ? response.runId : idempotencyKey;
+
+        void runSessionsSendA2AFlow({
+          targetSessionKey,
+          displayKey: targetSessionKey,
+          message: cleanMessage || text,
+          announceTimeoutMs: 30_000,
+          maxPingPongTurns: maxTurns,
+          requesterSessionKey: senderSessionKey,
+          requesterChannel: "discord",
+          waitRunId: runId,
+        }).catch((err) => {
+          a2aLog.warn("A2A auto-route flow failed", {
+            error: err instanceof Error ? err.message : String(err),
+            senderAgentId,
+            targetSessionKey,
+          });
+        });
+
+        return; // Skip normal message processing
+      } catch (err) {
+        // Graceful fallback: log and continue to normal processing
+        a2aLog.warn("A2A auto-routing failed, falling back to normal processing", {
+          error: err instanceof Error ? err.message : String(err),
+          authorId: author.id,
+          channelId: message.channelId,
+        });
+      }
+    }
+  }
+  // ── End A2A Auto-Routing ──────────────────────────────────────────
   const ackReaction = resolveAckReaction(cfg, route.agentId);
   const removeAckAfterReply = cfg.messages?.removeAckAfterReply ?? false;
   const shouldAckReaction = () =>
