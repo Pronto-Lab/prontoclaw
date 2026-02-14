@@ -28,6 +28,7 @@ import {
   upsertChannelPairingRequest,
 } from "../../pairing/pairing-store.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
+import { checkA2ARateLimit } from "../loop-guard.js";
 import { fetchPluralKitMessageInfo } from "../pluralkit.js";
 import { sendMessageDiscord } from "../send.js";
 import {
@@ -99,6 +100,21 @@ export async function preflightDiscordMessage(
   if (author.bot) {
     // Sibling bots (other agents in the same deployment) always bypass the bot filter
     const siblingBypass = isSiblingBot(author.id);
+
+    // Rate-limit agent-to-agent messages to prevent infinite ping-pong loops
+    if (siblingBypass && params.botUserId) {
+      const blocked = checkA2ARateLimit(author.id, params.botUserId, {
+        maxMessagesPerWindow: 6,
+        windowMs: 60_000,
+      });
+      if (blocked) {
+        logVerbose(
+          `discord: drop sibling bot message (A2A rate limit exceeded: ${author.id} <-> ${params.botUserId})`,
+        );
+        return null;
+      }
+    }
+
     if (!allowBots && !sender.isPluralKit && !siblingBypass) {
       // When historyIncludeBots is enabled, record bot messages to guild history
       // before dropping them — gives multi-agent setups visibility into sibling output.
