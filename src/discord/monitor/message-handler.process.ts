@@ -179,7 +179,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           targetSessionKey,
           displayKey: targetSessionKey,
           message: cleanMessage || text,
-          announceTimeoutMs: 30_000,
+          announceTimeoutMs: 120_000,
           maxPingPongTurns: maxTurns,
           requesterSessionKey: senderSessionKey,
           requesterChannel: "discord",
