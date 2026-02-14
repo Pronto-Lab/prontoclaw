@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { callGateway } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { emit } from "../../infra/events/bus.js";
+import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import { readLatestAssistantReply, runAgentStep } from "./agent-step.js";
@@ -14,6 +16,11 @@ import {
 } from "./sessions-send-helpers.js";
 
 const log = createSubsystemLogger("agents/sessions-send");
+
+function extractAgentId(sessionKey: string): string {
+  const parts = sessionKey.split(":");
+  return parts.length >= 2 ? parts[1] : sessionKey;
+}
 
 export async function runSessionsSendA2AFlow(params: {
   targetSessionKey: string;
@@ -79,6 +86,24 @@ export async function runSessionsSendA2AFlow(params: {
       return;
     }
 
+    // Emit a2a.send event
+    const fromAgent = params.requesterSessionKey
+      ? extractAgentId(params.requesterSessionKey)
+      : "unknown";
+    const toAgent = extractAgentId(params.targetSessionKey);
+    emit({
+      type: EVENT_TYPES.A2A_SEND,
+      agentId: fromAgent,
+      ts: Date.now(),
+      data: {
+        fromAgent,
+        toAgent,
+        targetSessionKey: params.targetSessionKey,
+        message: params.message.slice(0, 200),
+        runId: runContextId,
+      },
+    });
+
     const announceTarget = await resolveAnnounceTarget({
       sessionKey: params.targetSessionKey,
       displayKey: params.displayKey,
@@ -119,6 +144,21 @@ export async function runSessionsSendA2AFlow(params: {
         if (!replyText || isReplySkip(replyText)) {
           break;
         }
+
+        // Emit a2a.response event
+        emit({
+          type: EVENT_TYPES.A2A_RESPONSE,
+          agentId: extractAgentId(currentSessionKey),
+          ts: Date.now(),
+          data: {
+            fromAgent: extractAgentId(currentSessionKey),
+            toAgent: extractAgentId(nextSessionKey),
+            turn,
+            maxTurns: params.maxPingPongTurns,
+            replyPreview: replyText.slice(0, 200),
+          },
+        });
+
         latestReply = replyText;
         incomingMessage = replyText;
         const swap = currentSessionKey;
@@ -168,6 +208,23 @@ export async function runSessionsSendA2AFlow(params: {
         });
       }
     }
+    // Emit a2a.complete event
+    emit({
+      type: EVENT_TYPES.A2A_COMPLETE,
+      agentId: fromAgent,
+      ts: Date.now(),
+      data: {
+        fromAgent,
+        toAgent,
+        announced: !!(
+          announceTarget &&
+          announceReply &&
+          announceReply.trim() &&
+          !isAnnounceSkip(announceReply)
+        ),
+        targetSessionKey: params.targetSessionKey,
+      },
+    });
   } catch (err) {
     log.warn("sessions_send announce flow failed", {
       runId: runContextId,

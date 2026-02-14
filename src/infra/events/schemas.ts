@@ -18,6 +18,10 @@ export const EVENT_TYPES = {
   PLAN_SUBMITTED: "plan.submitted",
   PLAN_APPROVED: "plan.approved",
   PLAN_REJECTED: "plan.rejected",
+  A2A_SEND: "a2a.send",
+  A2A_RESPONSE: "a2a.response",
+  A2A_COMPLETE: "a2a.complete",
+  A2A_AUTO_ROUTE: "a2a.auto_route",
 } as const;
 
 export type EventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];

@@ -18,6 +18,7 @@ import {
   readConfigFileSnapshot,
   writeConfigFile,
 } from "../config/config.js";
+import { resolveStateDir } from "../config/paths.js";
 import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import { clearAgentRunContext, onAgentEvent } from "../infra/agent-events.js";
 import {
@@ -27,6 +28,7 @@ import {
 } from "../infra/control-ui-assets.js";
 import { isDiagnosticsEnabled } from "../infra/diagnostic-events.js";
 import { logAcceptedEnvOption } from "../infra/env.js";
+import { startEventLog } from "../infra/events/event-log.js";
 import { createExecApprovalForwarder } from "../infra/exec-approval-forwarder.js";
 import { onHeartbeatEvent } from "../infra/heartbeat-events.js";
 import { startHeartbeatRunner } from "../infra/heartbeat-runner.js";
@@ -463,6 +465,7 @@ export async function startGatewayServer(
 
   let heartbeatRunner = startHeartbeatRunner({ cfg: cfgAtStart });
   let taskContinuationRunner = startTaskContinuationRunner({ cfg: cfgAtStart });
+  startEventLog(path.join(resolveStateDir(process.env), "logs"));
   const taskSelfDriving = startTaskSelfDriving({ cfg: cfgAtStart });
   const taskStepContinuation = startTaskStepContinuation({
     cfg: cfgAtStart,

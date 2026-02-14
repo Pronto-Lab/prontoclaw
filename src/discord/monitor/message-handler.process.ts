@@ -33,6 +33,8 @@ import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import { readSessionUpdatedAt, resolveStorePath } from "../../config/sessions.js";
 import { callGateway } from "../../gateway/call.js";
 import { danger, logVerbose, shouldLogVerbose } from "../../globals.js";
+import { emit } from "../../infra/events/bus.js";
+import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
@@ -150,6 +152,20 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           targetSessionKey,
           channelId: message.channelId,
           maxTurns,
+        });
+
+        // Emit a2a.auto_route event for task-hub visibility
+        emit({
+          type: EVENT_TYPES.A2A_AUTO_ROUTE,
+          agentId: senderAgentId,
+          ts: Date.now(),
+          data: {
+            senderAgentId,
+            targetAgentId: route.agentId,
+            channelId: message.channelId,
+            maxTurns,
+            message: (cleanMessage || text).slice(0, 200),
+          },
         });
 
         const response = await callGateway<{ runId: string }>({
