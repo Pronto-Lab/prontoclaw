@@ -855,7 +855,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (pathname === "/api/events") {
     const limit = Number(url.searchParams.get("limit")) || 100;
     const since = url.searchParams.get("since");
-    const eventLogPath = path.join(OPENCLAW_DIR, "coordination-events.ndjson");
+    const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
     try {
       const raw = await fs.readFile(eventLogPath, "utf-8");
       const lines = raw.trim().split("\n").filter(Boolean);
@@ -1006,7 +1006,7 @@ function setupWebSocket(server: http.Server): WebSocketServer {
   const watchPaths: string[] = [
     // Global files
     path.join(OPENCLAW_DIR, "team-state.json"),
-    path.join(OPENCLAW_DIR, "coordination-events.ndjson"),
+    path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson"),
     path.join(OPENCLAW_DIR, "plans"),
   ];
 
