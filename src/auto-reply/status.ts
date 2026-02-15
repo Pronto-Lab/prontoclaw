@@ -58,6 +58,7 @@ type QueueStatus = {
 type StatusArgs = {
   config?: OpenClawConfig;
   agent: AgentConfig;
+  agentId?: string;
   sessionEntry?: SessionEntry;
   sessionKey?: string;
   sessionScope?: SessionScope;
@@ -168,6 +169,7 @@ const formatQueueDetails = (queue?: QueueStatus) => {
 const readUsageFromSessionLog = (
   sessionId?: string,
   sessionEntry?: SessionEntry,
+  agentId?: string,
   sessionKey?: string,
   storePath?: string,
 ):
@@ -185,11 +187,12 @@ const readUsageFromSessionLog = (
   }
   let logPath: string;
   try {
-    const agentId = sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined;
+    const resolvedAgentId =
+      agentId ?? (sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined);
     logPath = resolveSessionFilePath(
       sessionId,
       sessionEntry,
-      resolveSessionFilePathOptions({ agentId, storePath }),
+      resolveSessionFilePathOptions({ agentId: resolvedAgentId, storePath }),
     );
   } catch {
     return undefined;
@@ -351,6 +354,7 @@ export function buildStatusMessage(args: StatusArgs): string {
     const logUsage = readUsageFromSessionLog(
       entry?.sessionId,
       entry,
+      args.agentId,
       args.sessionKey,
       args.sessionStorePath,
     );

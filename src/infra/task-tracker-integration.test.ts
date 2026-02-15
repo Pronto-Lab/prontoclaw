@@ -89,9 +89,11 @@ describe("zombie task abandonment", () => {
     __resetAgentStates();
     vi.mocked(findActiveTask).mockResolvedValue(null);
     vi.mocked(agentCommand).mockResolvedValue({
-      text: "ok",
-      sessionId: "test",
-      usage: { inputTokens: 0, outputTokens: 0 },
+      payloads: [],
+      meta: {
+        durationMs: 0,
+        agentMeta: { sessionId: "test", provider: "mock", model: "mock" },
+      },
     });
     vi.mocked(getQueueSize).mockReturnValue(0);
   });
@@ -100,7 +102,7 @@ describe("zombie task abandonment", () => {
     vi.useRealTimers();
   });
 
-  it("marks in_progress task as abandoned after 24h", async () => {
+  it("moves in_progress task to backlog after 24h (reassign #1)", async () => {
     const zombieTask = {
       id: "task_zombie1",
       status: "in_progress" as const,
@@ -132,18 +134,20 @@ describe("zombie task abandonment", () => {
     // Advance past the check interval (2 minutes)
     await vi.advanceTimersByTimeAsync(3 * 60_000);
 
-    // writeTask should have been called with abandoned status
     expect(writeTask).toHaveBeenCalledWith(
       "/tmp/test-workspace",
       expect.objectContaining({
         id: "task_zombie1",
-        status: "abandoned",
+        status: "backlog",
+        reassignCount: 1,
       }),
     );
 
     // Verify progress was appended
     const writtenTask = vi.mocked(writeTask).mock.calls[0]?.[1] as any;
-    expect(writtenTask.progress).toContainEqual(expect.stringContaining("Auto-abandoned"));
+    expect(writtenTask.progress).toContainEqual(
+      expect.stringContaining("Auto-recovered to backlog after zombie detection"),
+    );
 
     runner.stop();
   });
@@ -224,9 +228,11 @@ describe("channel config propagation", () => {
     __resetAgentStates();
     vi.mocked(fs.readdir).mockResolvedValue([]);
     vi.mocked(agentCommand).mockResolvedValue({
-      text: "ok",
-      sessionId: "test",
-      usage: { inputTokens: 0, outputTokens: 0 },
+      payloads: [],
+      meta: {
+        durationMs: 0,
+        agentMeta: { sessionId: "test", provider: "mock", model: "mock" },
+      },
     });
     vi.mocked(getQueueSize).mockReturnValue(0);
   });

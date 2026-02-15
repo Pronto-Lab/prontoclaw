@@ -33,7 +33,7 @@ export const discordOutbound: ChannelOutboundAdapter = {
   textChunkLimit: 2000,
   pollMaxOptions: 10,
   sendText: async (ctx) => {
-    const { to, text, accountId, deps, replyToId } = ctx;
+    const { to, text, accountId, deps, replyToId, silent } = ctx;
 
     const webhook = resolveAgentWebhook(ctx);
     if (webhook) {
@@ -50,11 +50,12 @@ export const discordOutbound: ChannelOutboundAdapter = {
       verbose: false,
       replyTo: replyToId ?? undefined,
       accountId: accountId ?? undefined,
+      silent: silent ?? undefined,
     });
     return { channel: "discord", ...result };
   },
   sendMedia: async (ctx) => {
-    const { to, text, mediaUrl, accountId, deps, replyToId } = ctx;
+    const { to, text, mediaUrl, accountId, deps, replyToId, silent } = ctx;
 
     const webhook = resolveAgentWebhook(ctx);
     if (webhook) {
@@ -73,11 +74,13 @@ export const discordOutbound: ChannelOutboundAdapter = {
       mediaUrl,
       replyTo: replyToId ?? undefined,
       accountId: accountId ?? undefined,
+      silent: silent ?? undefined,
     });
     return { channel: "discord", ...result };
   },
-  sendPoll: async ({ to, poll, accountId }) =>
+  sendPoll: async ({ to, poll, accountId, silent }) =>
     await sendPollDiscord(to, poll, {
       accountId: accountId ?? undefined,
+      silent: silent ?? undefined,
     }),
 };
