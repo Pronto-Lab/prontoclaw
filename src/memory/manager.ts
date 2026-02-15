@@ -101,6 +101,22 @@ const EMBEDDING_QUERY_TIMEOUT_LOCAL_MS = 5 * 60_000;
 const EMBEDDING_BATCH_TIMEOUT_REMOTE_MS = 2 * 60_000;
 const EMBEDDING_BATCH_TIMEOUT_LOCAL_MS = 10 * 60_000;
 
+const IGNORED_MEMORY_WATCH_DIR_NAMES = new Set([
+  ".git",
+  "node_modules",
+  ".pnpm-store",
+  ".venv",
+  "venv",
+  ".tox",
+  "__pycache__",
+]);
+
+const shouldIgnoreMemoryWatchPath = (watchPath: string): boolean => {
+  const normalized = path.normalize(watchPath);
+  const parts = normalized.split(path.sep).map((segment) => segment.trim().toLowerCase());
+  return parts.some((segment) => IGNORED_MEMORY_WATCH_DIR_NAMES.has(segment));
+};
+
 const log = createSubsystemLogger("memory");
 
 const INDEX_CACHE = new Map<string, MemoryIndexManager>();
@@ -165,10 +181,12 @@ export class MemoryIndexManager implements MemorySearchManager {
   >();
   private sessionWarm = new Set<string>();
   private syncing: Promise<void> | null = null;
+  private readonly mode: "full" | "status";
 
   static async get(params: {
     cfg: OpenClawConfig;
     agentId: string;
+    purpose?: "default" | "status";
   }): Promise<MemoryIndexManager | null> {
     const { cfg, agentId } = params;
     const settings = resolveMemorySearchConfig(cfg, agentId);
@@ -176,7 +194,8 @@ export class MemoryIndexManager implements MemorySearchManager {
       return null;
     }
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-    const key = `${agentId}:${workspaceDir}:${JSON.stringify(settings)}`;
+    const mode = params.purpose === "status" ? "status" : "full";
+    const key = `${agentId}:${workspaceDir}:${JSON.stringify(settings)}:${mode}`;
     const existing = INDEX_CACHE.get(key);
     if (existing) {
       return existing;
@@ -197,6 +216,7 @@ export class MemoryIndexManager implements MemorySearchManager {
       workspaceDir,
       settings,
       providerResult,
+      mode,
     });
     INDEX_CACHE.set(key, manager);
     return manager;
@@ -209,12 +229,14 @@ export class MemoryIndexManager implements MemorySearchManager {
     workspaceDir: string;
     settings: ResolvedMemorySearchConfig;
     providerResult: EmbeddingProviderResult;
+    mode: "full" | "status";
   }) {
     this.cacheKey = params.cacheKey;
     this.cfg = params.cfg;
     this.agentId = params.agentId;
     this.workspaceDir = params.workspaceDir;
     this.settings = params.settings;
+    this.mode = params.mode;
     this.provider = params.providerResult.provider;
     this.requestedProvider = params.providerResult.requestedProvider;
     this.fallbackFrom = params.providerResult.fallbackFrom;
@@ -240,10 +262,14 @@ export class MemoryIndexManager implements MemorySearchManager {
     if (meta?.vectorDims) {
       this.vector.dims = meta.vectorDims;
     }
-    this.ensureWatcher();
-    this.ensureSessionListener();
-    this.ensureIntervalSync();
-    this.dirty = this.sources.has("memory");
+    if (this.mode === "full") {
+      this.ensureWatcher();
+      this.ensureSessionListener();
+      this.ensureIntervalSync();
+      this.dirty = this.sources.has("memory");
+    } else {
+      this.dirty = this.sources.has("memory") && !meta;
+    }
     this.batch = this.resolveBatchConfig();
   }
 
@@ -832,6 +858,7 @@ export class MemoryIndexManager implements MemorySearchManager {
     ]);
     this.watcher = chokidar.watch(Array.from(watchPaths), {
       ignoreInitial: true,
+      ignored: (watchPath) => shouldIgnoreMemoryWatchPath(String(watchPath)),
       awaitWriteFinish: {
         stabilityThreshold: this.settings.sync.watchDebounceMs,
         pollInterval: 100,

@@ -11,10 +11,11 @@ import { randomUUID } from "node:crypto";
 import type { ClientToolDefinition } from "../agents/pi-embedded-runner/run/params.js";
 import type { ImageContent } from "../commands/agent/types.js";
 import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
-import { buildHistoryContextFromEntries, type HistoryEntry } from "../auto-reply/reply/history.js";
+import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { agentCommand } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
+import { logWarn } from "../logger.js";
 import {
   DEFAULT_INPUT_FILE_MAX_BYTES,
   DEFAULT_INPUT_FILE_MAX_CHARS,
@@ -34,12 +35,16 @@ import {
   type InputImageSource,
 } from "../media/input-files.js";
 import { defaultRuntime } from "../runtime.js";
+import {
+  buildAgentMessageFromConversationEntries,
+  type ConversationEntry,
+} from "./agent-prompt.js";
 import { authorizeGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
 import {
   readJsonBodyOrError,
+  sendGatewayAuthFailure,
   sendJson,
   sendMethodNotAllowed,
-  sendUnauthorized,
   setSseHeaders,
   writeDone,
 } from "./http-common.js";
@@ -60,6 +65,7 @@ type OpenResponsesHttpOptions = {
   maxBodyBytes?: number;
   config?: GatewayHttpResponsesConfig;
   trustedProxies?: string[];
+  rateLimiter?: AuthRateLimiter;
 };
 
 const DEFAULT_BODY_BYTES = 20 * 1024 * 1024;
@@ -193,8 +199,7 @@ export function buildAgentPrompt(input: string | ItemParam[]): {
   }
 
   const systemParts: string[] = [];
-  const conversationEntries: Array<{ role: "user" | "assistant" | "tool"; entry: HistoryEntry }> =
-    [];
+  const conversationEntries: ConversationEntry[] = [];
 
   for (const item of input) {
     if (item.type === "message") {
@@ -224,36 +229,7 @@ export function buildAgentPrompt(input: string | ItemParam[]): {
     // Skip reasoning and item_reference for prompt building (Phase 1)
   }
 
-  let message = "";
-  if (conversationEntries.length > 0) {
-    // Find the last user or tool message as the current message
-    let currentIndex = -1;
-    for (let i = conversationEntries.length - 1; i >= 0; i -= 1) {
-      const entryRole = conversationEntries[i]?.role;
-      if (entryRole === "user" || entryRole === "tool") {
-        currentIndex = i;
-        break;
-      }
-    }
-    if (currentIndex < 0) {
-      currentIndex = conversationEntries.length - 1;
-    }
-
-    const currentEntry = conversationEntries[currentIndex]?.entry;
-    if (currentEntry) {
-      const historyEntries = conversationEntries.slice(0, currentIndex).map((entry) => entry.entry);
-      if (historyEntries.length === 0) {
-        message = currentEntry.body;
-      } else {
-        const formatEntry = (entry: HistoryEntry) => `${entry.sender}: ${entry.body}`;
-        message = buildHistoryContextFromEntries({
-          entries: [...historyEntries, currentEntry],
-          currentMessage: formatEntry(currentEntry),
-          formatEntry,
-        });
-      }
-    }
-  }
+  const message = buildAgentMessageFromConversationEntries(conversationEntries);
 
   return {
     message,
@@ -364,9 +340,10 @@ export async function handleOpenResponsesHttpRequest(
     connectAuth: { token, password: token },
     req,
     trustedProxies: opts.trustedProxies,
+    rateLimiter: opts.rateLimiter,
   });
   if (!authResult.ok) {
-    sendUnauthorized(res);
+    sendGatewayAuthFailure(res, authResult);
     return true;
   }
 
@@ -482,8 +459,9 @@ export async function handleOpenResponsesHttpRequest(
       }
     }
   } catch (err) {
+    logWarn(`openresponses: request parsing failed: ${String(err)}`);
     sendJson(res, 400, {
-      error: { message: String(err), type: "invalid_request_error" },
+      error: { message: "invalid request", type: "invalid_request_error" },
     });
     return true;
   }
@@ -499,8 +477,9 @@ export async function handleOpenResponsesHttpRequest(
     resolvedClientTools = toolChoiceResult.tools;
     toolChoicePrompt = toolChoiceResult.extraSystemPrompt;
   } catch (err) {
+    logWarn(`openresponses: tool configuration failed: ${String(err)}`);
     sendJson(res, 400, {
-      error: { message: String(err), type: "invalid_request_error" },
+      error: { message: "invalid tool configuration", type: "invalid_request_error" },
     });
     return true;
   }
@@ -614,12 +593,13 @@ export async function handleOpenResponsesHttpRequest(
 
       sendJson(res, 200, response);
     } catch (err) {
+      logWarn(`openresponses: non-stream response failed: ${String(err)}`);
       const response = createResponseResource({
         id: responseId,
         model,
         status: "failed",
         output: [],
-        error: { code: "api_error", message: String(err) },
+        error: { code: "api_error", message: "internal error" },
       });
       sendJson(res, 500, response);
     }
@@ -909,6 +889,7 @@ export async function handleOpenResponsesHttpRequest(
         });
       }
     } catch (err) {
+      logWarn(`openresponses: streaming response failed: ${String(err)}`);
       if (closed) {
         return;
       }
@@ -919,7 +900,7 @@ export async function handleOpenResponsesHttpRequest(
         model,
         status: "failed",
         output: [],
-        error: { code: "api_error", message: String(err) },
+        error: { code: "api_error", message: "internal error" },
         usage: finalUsage,
       });
 

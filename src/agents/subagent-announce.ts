@@ -296,10 +296,12 @@ async function buildSubagentStatsLine(params: {
   });
 
   const sessionId = entry?.sessionId;
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
   let transcriptPath: string | undefined;
   if (sessionId && storePath) {
     try {
       transcriptPath = resolveSessionFilePath(sessionId, entry, {
+        agentId,
         sessionsDir: path.dirname(storePath),
       });
     } catch {
@@ -364,6 +366,7 @@ async function readLatestAssistantReplyWithRetry(params: {
   initialReply?: string;
   maxWaitMs: number;
 }): Promise<string | undefined> {
+  const RETRY_INTERVAL_MS = 100;
   let reply = params.initialReply?.trim() ? params.initialReply : undefined;
   if (reply) {
     return reply;
@@ -371,7 +374,7 @@ async function readLatestAssistantReplyWithRetry(params: {
 
   const deadline = Date.now() + Math.max(0, Math.min(params.maxWaitMs, 15_000));
   while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, RETRY_INTERVAL_MS));
     const latest = await readLatestAssistantReply({ sessionKey: params.sessionKey });
     if (latest?.trim()) {
       return latest;
