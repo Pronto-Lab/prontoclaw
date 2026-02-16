@@ -11,6 +11,7 @@
 | [REFERENCES.md](./REFERENCES.md)                     | 소스 코드 참조, 설정 스냅샷, 서버 환경     | 참조 문서                               |
 | [TASK-STEPS-DESIGN.md](./TASK-STEPS-DESIGN.md)       | Task Steps + Event-Based Continuation 설계 | 핵심 로직 구현, 모니터링 연동 확장 가능 |
 | [OPERATIONS-RUNBOOK.md](./OPERATIONS-RUNBOOK.md)     | Upstream sync/버전 스큐 방지 운영 런북     | 운영 문서                               |
+| [WORKSESSION-COLLAB-DESIGN.md](./WORKSESSION-COLLAB-DESIGN.md) | `workSessionId` 기반 3인+ 협업/Conversations 구조 설계 | 설계 문서 (구현 전 검토용) |
 
 ## 상위 문서
 

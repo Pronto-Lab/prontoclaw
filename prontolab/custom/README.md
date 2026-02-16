@@ -11,4 +11,5 @@ Included:
 - REFERENCES.md
 - SISYPHUS-DESIGN.md
 - TASK-STEPS-DESIGN.md
+- WORKSESSION-COLLAB-DESIGN.md
 - deferred-fallback-discord-default-bot.md
