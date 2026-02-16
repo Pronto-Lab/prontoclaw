@@ -66,3 +66,41 @@ If either command fails, do not finalize the sync.
 
 - Primary operational tracker: `../PRONTOLAB.md`
 - ProntoLab design/docs index: `./README.md`
+
+## Runtime Validation - Collaboration Conversations (2026-02-16)
+
+### A) OpenClaw 이벤트 체인 확인
+
+```bash
+# spawn / response / complete 이벤트가 동일 conversationId로 묶이는지 확인
+tail -n 200 ~/.openclaw/logs/coordination-events.ndjson
+```
+
+확인 포인트:
+
+- `a2a.spawn`, `a2a.send`, `a2a.spawn_result`, `a2a.response`, `a2a.complete` 순서
+- 동일 `conversationId` 유지
+- `spawn_result.status`가 `accepted` 또는 `error`로 명시
+
+### B) Task-Hub 반영 상태 확인
+
+```bash
+cd /Users/server/Projects/task-hub
+/Applications/OrbStack.app/Contents/MacOS/xbin/docker compose up -d --build task-hub
+/Applications/OrbStack.app/Contents/MacOS/xbin/docker compose ps task-hub
+```
+
+확인 포인트:
+
+- 컨테이너가 `Up` 상태
+- Conversations 목록 제목이 고정 `Work Session`이 아닌 작업 요약 1줄로 표시
+
+### C) 테스트 (기존 테스트 수정 없이 추가 테스트만 사용)
+
+```bash
+cd /Users/server/prontolab-openclaw
+pnpm vitest run --config vitest.unit.config.ts \
+  src/agents/tools/sessions-spawn-tool.events.test.ts \
+  src/task-monitor/task-monitor-parser-integration.test.ts
+```
+

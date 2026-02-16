@@ -272,3 +272,54 @@ pnpm vitest run --config vitest.unit.config.ts \
   src/discord/monitor/sibling-bots.test.ts \
   src/discord/loop-guard.test.ts
 ```
+
+## Phase 7: Spawn Conversation Timeline + Task-Hub Conversations (2026-02-16)
+
+### 목적
+
+- 에이전트 간 협업 과정을 Task-Hub Conversations에서 실제 대화처럼 추적
+- 단순 세션 이름 대신 "무슨 작업을 협업 중인지"를 한 줄 요약으로 노출
+
+### 구현 요약
+
+1. Spawn 이벤트 계층화
+- `a2a.spawn`, `a2a.spawn_result` 이벤트 타입 추가
+- spawn 시점에 `conversationId`를 생성하고 후속 이벤트에 전달
+
+2. Announce 단계 대화화
+- subagent announce 결과에서 `a2a.response`, `a2a.complete` 발행
+- `replyPreview`, `runId`, `announced`를 함께 기록
+
+3. Continuation 가시성
+- monitor server가 `coordination-events.ndjson` 변경 시 `continuation_event`를 브로드캐스트
+- task 파일 변경 시 step 진행률(`task_step_update`)을 즉시 전송
+
+4. Task-Hub Conversations 개선 (연동 레포)
+- 제목: 고정 `Work Session` → 작업 요약 한 줄
+- 요약 소스: `label` 우선, `[Goal]` 파싱, 본문/preview fallback
+- 부제: 참여 에이전트 + 시각 + 상대시간
+
+### 파일 매핑
+
+OpenClaw:
+
+- `src/agents/tools/sessions-spawn-tool.ts`
+- `src/agents/subagent-registry.ts`
+- `src/agents/subagent-announce.ts`
+- `src/infra/events/schemas.ts`
+- `src/infra/task-continuation-runner.ts`
+- `scripts/task-monitor-server.ts`
+
+Task-Hub:
+
+- `/Users/server/Projects/task-hub/src/app/conversations/page.tsx`
+- `/Users/server/Projects/task-hub/src/lib/auth-session.ts`
+- `/Users/server/Projects/task-hub/src/app/api/proxy/[...path]/route.ts`
+
+### 검증
+
+- 단위/통합 테스트 추가:
+  - `src/agents/tools/sessions-spawn-tool.events.test.ts`
+  - `src/task-monitor/task-monitor-parser-integration.test.ts`
+- 실서버 로그에서 동일 `conversationId` 체인 확인
+

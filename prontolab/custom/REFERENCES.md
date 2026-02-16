@@ -202,4 +202,66 @@ subagents?: {
 
 ---
 
+## 4. 2026-02-16 변경 반영 (협업/Conversations)
+
+### 4.1 Spawn 대화 이벤트 체인 (Gateway)
+
+다음 이벤트 체인이 추가되어, Task-Hub Conversations에서 spawn 기반 협업 흐름이 끊기지 않고 보이도록 정렬됨:
+
+- `a2a.spawn` → `a2a.send` → `a2a.spawn_result` → `a2a.response` → `a2a.complete`
+- `conversationId`를 spawn 시점에 생성해 전 단계 이벤트에 공유
+- `spawn_result`에 `status`, `error`, `replyPreview`, `runId`를 포함
+
+핵심 파일:
+
+- `src/agents/tools/sessions-spawn-tool.ts`
+- `src/agents/subagent-registry.ts`
+- `src/agents/subagent-announce.ts`
+- `src/infra/events/schemas.ts`
+
+### 4.2 Task Continuation + Team State 정합성
+
+`task-continuation-runner`의 team-state 업데이트 경로를 workspace 기준에서 stateDir 기준으로 정리하여,
+실행 중/유휴 상태가 Task-Hub에 일관되게 반영되도록 보정함.
+
+핵심 파일:
+
+- `src/infra/task-continuation-runner.ts`
+
+### 4.3 Task Monitor 서버 연동 강화
+
+- `parseTaskFileMd`를 export하여 통합 테스트 가능하게 변경
+- task 파일 변경 시 `task_step_update` WebSocket 이벤트 브로드캐스트
+- coordination log 변경 시 `continuation_event` 브로드캐스트
+- `/api/workspace-file` 쓰기 요청에 토큰/루프백 인증 추가
+- `/api/milestones` 프록시 시 Cookie + query 전달
+
+핵심 파일:
+
+- `scripts/task-monitor-server.ts`
+- `src/task-monitor/task-monitor-parser-integration.test.ts`
+
+### 4.4 Task-Hub Conversations UX/인증 반영 (외부 레포 연동)
+
+Task-Hub(`/Users/server/Projects/task-hub`)의 Conversations 화면에서:
+
+- 세션 제목 고정값 `Work Session` 제거
+- `label`, `[Goal]`, 메시지 본문 기반 1줄 요약 노출
+- 참여 에이전트 요약(`A · B 외 n`) 노출
+- 협업 이벤트 필터를 `a2a.*` + `continuation.*` + `plan.*` + `unblock.*` + `zombie.*`로 확장
+
+관련 파일:
+
+- `/Users/server/Projects/task-hub/src/app/conversations/page.tsx`
+- `/Users/server/Projects/task-hub/src/lib/auth-session.ts`
+- `/Users/server/Projects/task-hub/src/app/api/proxy/[...path]/route.ts`
+- `/Users/server/Projects/task-hub/src/middleware.ts`
+
+### 4.5 신규 테스트
+
+- `src/agents/tools/sessions-spawn-tool.events.test.ts`
+- `src/task-monitor/task-monitor-parser-integration.test.ts`
+
+---
+
 _작성일: 2026-02-16 | 기준 시점: 2026-02-16 서버 점검_
