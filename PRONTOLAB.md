@@ -471,14 +471,62 @@ pnpm test src/gateway/server-restart-sentinel.test.ts
 
 ---
 
-## Upstream Sync
+## Upstream Sync (Intent-Preserving, Anti-Skew)
+
+**Goal:** merge upstream changes without breaking ProntoLab behavior.
+
+### 1) Prepare sync branch
 
 ```bash
-git fetch upstream
-git checkout main
-git merge upstream/main
-git push origin main
+git fetch upstream --tags
+git checkout sync-upstream-v2026.2.15
 ```
+
+### 2) Merge upstream tag (not main head)
+
+```bash
+git merge --no-ff v2026.2.15
+```
+
+### 3) Conflict policy (ProntoLab-first)
+
+- Keep ProntoLab intent first for runtime-critical paths (`src/gateway/*`, `src/discord/monitor/*`, `src/infra/task-*`, `src/agents/tools/*`).
+- Pull upstream changes only when they do not alter ProntoLab operational semantics.
+- Avoid mixed-version clusters (HEAD tests + MERGE_HEAD helpers, or vice versa).
+
+### 4) Version-skew audit (required)
+
+Run this after conflict resolution to detect mixed file families:
+
+```bash
+# compare current blob with HEAD and MERGE_HEAD for key clusters
+for f in \
+  src/test-utils/channel-plugins.ts \
+  src/infra/outbound/message-action-runner.ts \
+  src/infra/outbound/targets.ts \
+  src/discord/send.ts \
+  src/auto-reply/reply/get-reply-run.ts \
+  src/agents/subagent-announce-queue.ts
+do
+  cur=$(git hash-object "$f")
+  h=$(git rev-parse "HEAD:$f" 2>/dev/null || true)
+  m=$(git rev-parse "MERGE_HEAD:$f" 2>/dev/null || true)
+  [ "$cur" = "$h" ] && ah=true || ah=false
+  [ "$cur" = "$m" ] && am=true || am=false
+  echo "$f,AT_HEAD=$ah,AT_MERGE_HEAD=$am"
+done
+```
+
+**Rule:** for a failing cluster, align related implementation+tests+helpers to one side (usually HEAD/ProntoLab) instead of partial mixing.
+
+### 5) Validation gate (required)
+
+```bash
+pnpm build
+pnpm test:fast
+```
+
+Do not finalize sync if either command fails.
 
 ---
 

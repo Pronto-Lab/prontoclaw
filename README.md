@@ -432,6 +432,8 @@ Use these when you’re past the onboarding flow and want the deeper reference.
 - [Platform guides: Windows (WSL2)](https://docs.openclaw.ai/platforms/windows), [Linux](https://docs.openclaw.ai/platforms/linux), [macOS](https://docs.openclaw.ai/platforms/macos), [iOS](https://docs.openclaw.ai/platforms/ios), [Android](https://docs.openclaw.ai/platforms/android)
 - [Debug common failures with the troubleshooting guide.](https://docs.openclaw.ai/channels/troubleshooting)
 - [Review security guidance before exposing anything.](https://docs.openclaw.ai/gateway/security)
+- [ProntoLab fork operations guide (`PRONTOLAB.md`).](./PRONTOLAB.md)
+- [ProntoLab design and runbook index (`prontolab/README.md`).](./prontolab/README.md)
 
 ## Advanced docs (discovery + control)
 

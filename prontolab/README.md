@@ -10,10 +10,12 @@
 | [IMPLEMENTATION-GUIDE.md](./IMPLEMENTATION-GUIDE.md) | Sisyphus 패턴 단계별 구현 가이드 | 미구현 |
 | [REFERENCES.md](./REFERENCES.md) | 소스 코드 참조, 설정 스냅샷, 서버 환경 | 참조 문서 |
 | [TASK-STEPS-DESIGN.md](./TASK-STEPS-DESIGN.md) | Task Steps + Event-Based Continuation 설계 | 설계 완료, 미구현 |
+| [OPERATIONS-RUNBOOK.md](./OPERATIONS-RUNBOOK.md) | Upstream sync/버전 스큐 방지 운영 런북 | 운영 문서 |
 
 ## 상위 문서
 
-- [PRONTOLAB.md](../PRONTOLAB.md) — 구현 완료된 기능 목록 (19개 기능 + upstream merge 기록)
+- [PRONTOLAB.md](../PRONTOLAB.md) — 구현 완료된 기능 목록 + 운영 기준 문서
+- [OPERATIONS-RUNBOOK.md](./OPERATIONS-RUNBOOK.md) — PRONTOLAB 운영 절차를 prontolab 디렉토리에 동기화한 문서
 
 ## 이 디렉토리의 목적
 
