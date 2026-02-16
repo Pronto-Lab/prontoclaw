@@ -29,7 +29,7 @@ export function resolveAgentWorkspaceDir(cfg: OpenClawConfig, agentId: string) {
 
 **파일**: `src/agents/tools/sessions-spawn-tool.ts`
 
-핵심 로직 (line 144-168):
+핵심 로직 (현재 구현 기준):
 
 ```typescript
 const targetAgentId = requestedAgentId ? normalizeAgentId(requestedAgentId) : requesterAgentId; // agentId 미지정 → 부모 자신
@@ -44,11 +44,11 @@ const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`
 
 스키마 파라미터: `task`(필수), `label`, `agentId`, `model`, `thinking`, `runTimeoutSeconds`, `cleanup`
 
-Sub-agent 재귀 차단 (line 122-127): `isSubagentSessionKey` 체크로 sub-agent의 sub-agent spawn 금지.
+Sub-agent 재귀 차단: `isSubagentSessionKey` 체크로 sub-agent의 sub-agent spawn 금지.
 
 ### 1.3 Sub-Agent 도구 정책
 
-**파일**: `src/agents/pi-tools.policy.ts:79-106`
+**파일**: `src/agents/pi-tools.policy.ts`
 
 ```typescript
 const DEFAULT_SUBAGENT_TOOL_DENY = [
@@ -63,6 +63,22 @@ const DEFAULT_SUBAGENT_TOOL_DENY = [
   "cron",
   "memory_search",
   "memory_get",
+  "task_start",
+  "task_update",
+  "task_complete",
+  "task_status",
+  "task_list",
+  "task_cancel",
+  "task_block",
+  "task_approve",
+  "task_resume",
+  "task_backlog_add",
+  "task_pick_backlog",
+  "milestone_list",
+  "milestone_create",
+  "milestone_add_item",
+  "milestone_assign_item",
+  "milestone_update_item",
 ];
 ```
 
@@ -92,7 +108,7 @@ const promptMode = isSubagentSessionKey(params.sessionKey) ? "minimal" : "full";
 
 파일 목록: `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`, `MEMORY.md`
 
-**한도**: `DEFAULT_BOOTSTRAP_MAX_CHARS = 20_000` (bootstrap.ts:84)
+**한도**: `DEFAULT_BOOTSTRAP_MAX_CHARS = 20_000` (`src/agents/pi-embedded-helpers/bootstrap.ts:85`)
 초과 시 head 70% + tail 20% + 중간 생략 방식으로 트리밍.
 
 Sub-agent는 bootstrap 시 **AGENTS.md와 TOOLS.md만** 로딩 (filterBootstrapFilesForSession).
@@ -186,4 +202,4 @@ subagents?: {
 
 ---
 
-_작성일: 2026-02-13 | 기준 시점: 2026-02-12 서버 상태_
+_작성일: 2026-02-16 | 기준 시점: 2026-02-16 서버 점검_

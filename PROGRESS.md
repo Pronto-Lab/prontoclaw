@@ -13,3 +13,4 @@
 - 2026-02-16 19:47 KST: Relocated mirrored documentation from docs/prontolab/ into repo-root prontolab/ (preserved existing root prontolab custom docs), removed docs/prontolab, and verified key channel/gateway docs now exist under prontolab/.
 - 2026-02-16 19:53 KST: Added prontolab/custom/ as a curated custom-docs collection (copied key custom docs + deferred fallback plan) while keeping original top-level prontolab files intact for link compatibility.
 - 2026-02-16 19:56 KST: Updated prontolab/index.md to add a direct link to the custom docs collection at /prontolab/custom/README.
+- Audited .openclaw and prontolab-openclaw against prontolab/custom docs, then updated prontolab/README.md status wording and refreshed drifted references in prontolab/custom/REFERENCES.md (subagent deny list, bootstrap symbol path, and snapshot timestamp).
