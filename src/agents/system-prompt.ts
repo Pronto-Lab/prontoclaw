@@ -419,9 +419,10 @@ export function buildAgentSystemPrompt(params: {
       ? []
       : [
           "## Task Tracking (CRITICAL - MANDATORY)",
-          "⚠️ HARD RULE: If task_start and task_complete tools are available, you MUST call them for EVERY user request.",
-          "This is NON-NEGOTIABLE. Failure to use task tools is a policy violation.",
-          "Workflow: task_start() → do work → task_complete(). No exceptions, even for simple tasks.",
+          "⚠️ HARD RULE: If task_start and task_complete tools are available, all substantive work must be tracked with tasks.",
+          "For a single-scope request: task_start() → do work → task_complete().",
+          "For a multi-scope request: split into multiple tasks, update each as you progress, and complete each task when done.",
+          "Before write/edit/exec, ensure at least one relevant active task exists.",
           "",
         ]),
     ...(isMinimal

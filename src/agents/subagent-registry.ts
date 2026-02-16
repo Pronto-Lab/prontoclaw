@@ -19,6 +19,9 @@ export type SubagentRunRecord = {
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  conversationId?: string;
+  requesterAgentId?: string;
+  targetAgentId?: string;
   createdAt: number;
   startedAt?: number;
   endedAt?: number;
@@ -77,6 +80,9 @@ function resumeSubagentRun(runId: string) {
       endedAt: entry.endedAt,
       label: entry.label,
       outcome: entry.outcome,
+      conversationId: entry.conversationId,
+      requesterAgentId: entry.requesterAgentId,
+      targetAgentId: entry.targetAgentId,
     }).then((didAnnounce) => {
       finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
     });
@@ -240,6 +246,9 @@ function ensureListener() {
       endedAt: entry.endedAt,
       label: entry.label,
       outcome: entry.outcome,
+      conversationId: entry.conversationId,
+      requesterAgentId: entry.requesterAgentId,
+      targetAgentId: entry.targetAgentId,
     }).then((didAnnounce) => {
       finalizeSubagentCleanup(evt.runId, entry.cleanup, didAnnounce);
     });
@@ -291,6 +300,9 @@ export function registerSubagentRun(params: {
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  conversationId?: string;
+  requesterAgentId?: string;
+  targetAgentId?: string;
   runTimeoutSeconds?: number;
 }) {
   const now = Date.now();
@@ -308,6 +320,9 @@ export function registerSubagentRun(params: {
     task: params.task,
     cleanup: params.cleanup,
     label: params.label,
+    conversationId: params.conversationId,
+    requesterAgentId: params.requesterAgentId,
+    targetAgentId: params.targetAgentId,
     createdAt: now,
     startedAt: now,
     archiveAtMs,
@@ -388,6 +403,9 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
       endedAt: entry.endedAt,
       label: entry.label,
       outcome: entry.outcome,
+      conversationId: entry.conversationId,
+      requesterAgentId: entry.requesterAgentId,
+      targetAgentId: entry.targetAgentId,
     }).then((didAnnounce) => {
       finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
     });

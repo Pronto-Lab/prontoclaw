@@ -34,9 +34,11 @@ import { WebSocket, WebSocketServer } from "ws";
 // ============================================================================
 
 const DEFAULT_PORT = 3847;
-const DEFAULT_HOST = "0.0.0.0";
+const DEFAULT_HOST = "127.0.0.1";
 const TASK_HUB_URL = process.env.TASK_HUB_URL || "http://localhost:3102";
 const MILESTONE_POLL_INTERVAL_MS = 30_000;
+const TASK_HUB_PROXY_COOKIE = process.env.TASK_HUB_PROXY_COOKIE?.trim() || "";
+const TASK_MONITOR_WRITE_TOKEN = process.env.TASK_MONITOR_WRITE_TOKEN?.trim() || "";
 
 // Parse CLI args
 function parseArgs(): { port: number; host: string } {
@@ -140,7 +142,8 @@ interface WsMessage {
     | "connected"
     | "team_state_update"
     | "event_log"
-    | "plan_update";
+    | "plan_update"
+    | "continuation_event";
   agentId?: string;
   taskId?: string;
   timestamp: string;
@@ -164,7 +167,7 @@ let lastMilestoneHash = "";
 // Task Parsing (adapted from task-tool.ts)
 // ============================================================================
 
-function parseTaskFileMd(content: string, filename: string): TaskFile | null {
+export function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   if (!content || content.includes("*(No task)*")) {
     return null;
   }
@@ -671,6 +674,84 @@ function simpleHash(str: string): string {
   return hash.toString(36);
 }
 
+function parseJsonSafe(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) {
+    return false;
+  }
+  return (
+    address === "127.0.0.1" ||
+    address === "::1" ||
+    address === "::ffff:127.0.0.1" ||
+    address.startsWith("::ffff:127.")
+  );
+}
+
+function isAuthorizedWriteRequest(req: http.IncomingMessage): boolean {
+  if (TASK_MONITOR_WRITE_TOKEN) {
+    const provided = String(req.headers["x-task-monitor-token"] || "").trim();
+    return provided.length > 0 && provided === TASK_MONITOR_WRITE_TOKEN;
+  }
+  return isLoopbackAddress(req.socket.remoteAddress);
+}
+
+function normalizeTeamState(rawState: unknown): {
+  version: number;
+  agents: Record<string, unknown>;
+  lastUpdatedMs: number;
+} {
+  const state = rawState && typeof rawState === "object" ? (rawState as Record<string, unknown>) : {};
+  const lastUpdatedMsRaw = state.lastUpdatedMs;
+  const updatedAtRaw = state.updatedAt;
+  const lastUpdatedMs =
+    typeof lastUpdatedMsRaw === "number" && Number.isFinite(lastUpdatedMsRaw)
+      ? lastUpdatedMsRaw
+      : typeof updatedAtRaw === "string"
+        ? new Date(updatedAtRaw).getTime() || 0
+        : 0;
+
+  return {
+    version: typeof state.version === "number" && Number.isFinite(state.version) ? state.version : 1,
+    agents:
+      state.agents && typeof state.agents === "object"
+        ? (state.agents as Record<string, unknown>)
+        : {},
+    lastUpdatedMs,
+  };
+}
+
+function buildTaskHubCookieHeader(req?: http.IncomingMessage): string | null {
+  const forwarded = String(req?.headers.cookie || "").trim();
+  if (forwarded) {
+    return forwarded;
+  }
+  if (TASK_HUB_PROXY_COOKIE) {
+    return TASK_HUB_PROXY_COOKIE;
+  }
+  return null;
+}
+
+async function readLastCoordinationEvent(): Promise<any | null> {
+  const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
+  try {
+    const raw = await fs.readFile(eventLogPath, "utf-8");
+    const lines = raw.trim().split("\n").filter(Boolean);
+    if (lines.length === 0) {
+      return null;
+    }
+    return JSON.parse(lines[lines.length - 1]);
+  } catch {
+    return null;
+  }
+}
+
 // ============================================================================
 // HTTP Request Handlers
 // ============================================================================
@@ -680,7 +761,7 @@ function jsonResponse(res: http.ServerResponse, data: unknown, status = 200): vo
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Task-Monitor-Token, Cookie");
   res.end(JSON.stringify(data, null, 2));
 }
 
@@ -696,7 +777,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Task-Monitor-Token, Cookie");
     res.statusCode = 204;
     res.end();
     return;
@@ -860,7 +941,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const teamStatePath = path.join(OPENCLAW_DIR, "team-state.json");
     try {
       const raw = await fs.readFile(teamStatePath, "utf-8");
-      const state = JSON.parse(raw);
+      const state = normalizeTeamState(parseJsonSafe(raw));
       jsonResponse(res, state);
     } catch {
       jsonResponse(res, { version: 1, agents: {}, lastUpdatedMs: 0 });
@@ -932,6 +1013,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   // POST /api/workspace-file — Write a file to a workspace directory
   if (pathname === "/api/workspace-file" && req.method === "POST") {
+    if (!isAuthorizedWriteRequest(req)) {
+      errorResponse(res, "Unauthorized", 401);
+      return;
+    }
+
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -948,17 +1034,20 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       errorResponse(res, "path and content are required", 400);
       return;
     }
-    const safePath = body.path.replace(/\.\./g, "");
-    const targetPath = path.join(OPENCLAW_DIR, safePath);
-    if (!targetPath.startsWith(OPENCLAW_DIR)) {
+
+    const normalizedInputPath = body.path.replace(/\\/g, "/").trim();
+    const targetPath = path.resolve(OPENCLAW_DIR, normalizedInputPath);
+    const relativePath = path.relative(OPENCLAW_DIR, targetPath);
+    if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
       errorResponse(res, "Path traversal not allowed", 403);
       return;
     }
+
     try {
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, body.content, "utf-8");
-      console.log(`[workspace-file] Wrote ${safePath} (${body.content.length} bytes)`);
-      jsonResponse(res, { ok: true, path: safePath, bytes: body.content.length });
+      console.log(`[workspace-file] Wrote ${relativePath} (${body.content.length} bytes)`);
+      jsonResponse(res, { ok: true, path: relativePath, bytes: body.content.length });
     } catch (err) {
       console.error(`[workspace-file] Write failed:`, err);
       errorResponse(res, "Failed to write file", 500);
@@ -969,12 +1058,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   // GET /api/milestones — Proxy to Task Hub
   if (pathname === "/api/milestones" || pathname.startsWith("/api/milestones/")) {
     try {
-      const targetUrl = `${TASK_HUB_URL}${pathname}`;
+      const targetUrl = `${TASK_HUB_URL}${pathname}${url.search}`;
+      const cookieHeader = buildTaskHubCookieHeader(req);
+      const headers: Record<string, string> = {};
+      if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+      }
       const resp = await fetch(targetUrl, {
-        headers: { Cookie: "task-hub-session=authenticated" },
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
       });
-      const data = await resp.json();
-      jsonResponse(res, data, resp.status);
+      const body = await resp.text();
+      jsonResponse(res, parseJsonSafe(body), resp.status);
     } catch (err) {
       errorResponse(res, "Failed to proxy milestone request", 502);
     }
@@ -1084,6 +1178,26 @@ function setupWebSocket(server: http.Server): WebSocketServer {
 
       console.log(`[watch] ${event}: (global)/${basename}`);
       broadcast(message);
+      if (isEventLog) {
+        void (async () => {
+          const lastEvent = await readLastCoordinationEvent();
+          const eventType = String(lastEvent?.type || "");
+          if (!eventType.startsWith("continuation.")) {
+            return;
+          }
+          broadcast({
+            type: "continuation_event",
+            agentId: lastEvent?.agentId,
+            timestamp: new Date().toISOString(),
+            data: {
+              event,
+              file: basename,
+              eventType,
+              eventData: lastEvent,
+            },
+          });
+        })();
+      }
       return;
     }
 
@@ -1119,6 +1233,32 @@ function setupWebSocket(server: http.Server): WebSocketServer {
 
     console.log(`[watch] ${event}: ${agentId}/${basename}`);
     broadcast(message);
+
+    if (taskMatch) {
+      void (async () => {
+        try {
+          const content = await fs.readFile(filePath, "utf-8");
+          const parsedTask = parseTaskFileMd(content, basename);
+          if (!parsedTask?.stepsProgress) {
+            return;
+          }
+          broadcast({
+            type: "task_step_update",
+            agentId,
+            taskId: parsedTask.id,
+            timestamp: new Date().toISOString(),
+            data: {
+              event,
+              file: basename,
+              stepsProgress: parsedTask.stepsProgress,
+              stepCount: parsedTask.steps?.length ?? 0,
+            },
+          });
+        } catch {
+          // best effort only
+        }
+      })();
+    }
   });
 
   watcher.on("error", (err) => {
@@ -1135,8 +1275,13 @@ function setupWebSocket(server: http.Server): WebSocketServer {
 function startMilestonePolling(broadcast: (msg: WsMessage) => void): NodeJS.Timeout {
   return setInterval(async () => {
     try {
+      const cookieHeader = buildTaskHubCookieHeader();
+      const headers: Record<string, string> = {};
+      if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+      }
       const resp = await fetch(`${TASK_HUB_URL}/api/milestones`, {
-        headers: { Cookie: "task-hub-session=authenticated" },
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
       });
       if (!resp.ok) {
         return;
@@ -1147,7 +1292,7 @@ function startMilestonePolling(broadcast: (msg: WsMessage) => void): NodeJS.Time
         broadcast({
           type: "task_update" as WsMessage["type"],
           timestamp: new Date().toISOString(),
-          data: { event: "milestone_update", milestones: JSON.parse(body) },
+          data: { event: "milestone_update", milestones: parseJsonSafe(body) },
         });
       }
       lastMilestoneHash = hash;
@@ -1221,7 +1366,9 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  console.error("Failed to start server:", err);
-  process.exit(1);
-});
+if (String(process.argv[1] || "").includes("task-monitor-server")) {
+  main().catch((err) => {
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  });
+}

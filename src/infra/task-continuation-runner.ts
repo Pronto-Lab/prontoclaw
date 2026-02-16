@@ -2,6 +2,7 @@ import { openSync, readSync, closeSync, fstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
+import { resolveStateDir } from "../config/paths.js";
 import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
@@ -31,6 +32,7 @@ import { acquireTaskLock } from "./task-lock.js";
 import { updateAgentEntry, readTeamState, findLeadAgent } from "./team-state.js";
 
 const log = createSubsystemLogger("task-continuation");
+const TEAM_STATE_DIR = resolveStateDir(process.env);
 
 const DEFAULT_ZOMBIE_TASK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_CHECK_INTERVAL_MS = 2 * 60 * 1000;
@@ -501,7 +503,7 @@ async function checkAgentForContinuation(
               ts: Date.now(),
               data: { taskId: freshTask.id },
             });
-            await updateAgentEntry(workspaceDir, agentId, {
+            await updateAgentEntry(TEAM_STATE_DIR, agentId, {
               status: "active",
               currentTaskId: freshTask.id,
             });
@@ -528,7 +530,7 @@ async function checkAgentForContinuation(
       }
 
       agentStates.delete(agentId);
-      await updateAgentEntry(workspaceDir, agentId, {
+      await updateAgentEntry(TEAM_STATE_DIR, agentId, {
         status: "idle",
         currentTaskId: null,
       });
@@ -678,7 +680,7 @@ async function checkAgentForContinuation(
         ts: Date.now(),
         data: { taskId: activeTask.id },
       });
-      await updateAgentEntry(workspaceDir, agentId, {
+      await updateAgentEntry(TEAM_STATE_DIR, agentId, {
         status: "active",
         currentTaskId: activeTask.id,
       });
@@ -1186,7 +1188,7 @@ async function checkZombieTasksForAbandonment(
                 `Auto-recovered to backlog after zombie detection (reassign #${reassignCount}/3)`,
               );
               await writeTask(workspaceDir, freshTask);
-              await updateAgentEntry(workspaceDir, agentId, {
+              await updateAgentEntry(TEAM_STATE_DIR, agentId, {
                 status: "idle",
                 currentTaskId: null,
               });
@@ -1218,7 +1220,7 @@ async function checkZombieTasksForAbandonment(
                 `Kept interrupted: exceeded reassign limit of 3 (inactive ${Math.round(ageMs / 3600000)}h)`,
               );
               await writeTask(workspaceDir, freshTask);
-              await updateAgentEntry(workspaceDir, agentId, {
+              await updateAgentEntry(TEAM_STATE_DIR, agentId, {
                 status: "interrupted",
                 currentTaskId: null,
                 lastFailureReason: "zombie_timeout_escalated",
@@ -1242,7 +1244,7 @@ async function checkZombieTasksForAbandonment(
               });
               // Notify lead agent about the escalated task
               try {
-                const teamState = await readTeamState(workspaceDir);
+                const teamState = await readTeamState(TEAM_STATE_DIR);
                 const lead = findLeadAgent(teamState);
                 if (lead && lead.agentId !== agentId) {
                   const leadAccountId = resolveAgentBoundAccountId(

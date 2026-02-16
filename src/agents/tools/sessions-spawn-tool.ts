@@ -5,6 +5,8 @@ import type { AnyAgentTool } from "./common.js";
 import { formatThinkingLevels, normalizeThinkLevel } from "../../auto-reply/thinking.js";
 import { loadConfig } from "../../config/config.js";
 import { callGateway } from "../../gateway/call.js";
+import { emit } from "../../infra/events/bus.js";
+import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import {
   isSubagentSessionKey,
   normalizeAgentId,
@@ -165,8 +167,35 @@ export function createSessionsSpawnTool(opts?: {
           });
         }
       }
-      const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`;
+      const childSessionKey = "agent:" + targetAgentId + ":subagent:" + crypto.randomUUID();
       const spawnedByKey = requesterInternalKey;
+      const conversationId = crypto.randomUUID();
+      const spawnRequestPreview = task.slice(0, 200);
+      emit({
+        type: EVENT_TYPES.A2A_SPAWN,
+        agentId: requesterAgentId,
+        ts: Date.now(),
+        data: {
+          fromAgent: requesterAgentId,
+          toAgent: targetAgentId,
+          targetSessionKey: childSessionKey,
+          message: spawnRequestPreview,
+          conversationId,
+          label: label || undefined,
+        },
+      });
+      emit({
+        type: EVENT_TYPES.A2A_SEND,
+        agentId: requesterAgentId,
+        ts: Date.now(),
+        data: {
+          fromAgent: requesterAgentId,
+          toAgent: targetAgentId,
+          targetSessionKey: childSessionKey,
+          message: spawnRequestPreview,
+          conversationId,
+        },
+      });
       const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
       const resolvedModel =
         normalizeModelSelection(modelOverride) ??
@@ -205,9 +234,24 @@ export function createSessionsSpawnTool(opts?: {
           const recoverable =
             messageText.includes("invalid model") || messageText.includes("model not allowed");
           if (!recoverable) {
+            emit({
+              type: EVENT_TYPES.A2A_SPAWN_RESULT,
+              agentId: requesterAgentId,
+              ts: Date.now(),
+              data: {
+                fromAgent: requesterAgentId,
+                toAgent: targetAgentId,
+                targetSessionKey: childSessionKey,
+                conversationId,
+                status: "error",
+                error: messageText,
+                replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+              },
+            });
             return jsonResult({
               status: "error",
               error: messageText,
+              replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
               childSessionKey,
             });
           }
@@ -227,9 +271,24 @@ export function createSessionsSpawnTool(opts?: {
         } catch (err) {
           const messageText =
             err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+          emit({
+            type: EVENT_TYPES.A2A_SPAWN_RESULT,
+            agentId: requesterAgentId,
+            ts: Date.now(),
+            data: {
+              fromAgent: requesterAgentId,
+              toAgent: targetAgentId,
+              targetSessionKey: childSessionKey,
+              conversationId,
+              status: "error",
+              error: messageText,
+              replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+            },
+          });
           return jsonResult({
             status: "error",
             error: messageText,
+            replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
             childSessionKey,
           });
         }
@@ -275,11 +334,27 @@ export function createSessionsSpawnTool(opts?: {
       } catch (err) {
         const messageText =
           err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+        emit({
+          type: EVENT_TYPES.A2A_SPAWN_RESULT,
+          agentId: requesterAgentId,
+          ts: Date.now(),
+          data: {
+            fromAgent: requesterAgentId,
+            toAgent: targetAgentId,
+            targetSessionKey: childSessionKey,
+            conversationId,
+            runId: childRunId,
+            status: "error",
+            error: messageText,
+            replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+          },
+        });
         return jsonResult({
           status: "error",
           error: messageText,
           childSessionKey,
           runId: childRunId,
+          replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
         });
       }
 
@@ -292,7 +367,26 @@ export function createSessionsSpawnTool(opts?: {
         task,
         cleanup,
         label: label || undefined,
+        conversationId,
+        requesterAgentId,
+        targetAgentId,
         runTimeoutSeconds,
+      });
+
+      emit({
+        type: EVENT_TYPES.A2A_SPAWN_RESULT,
+        agentId: requesterAgentId,
+        ts: Date.now(),
+        data: {
+          fromAgent: requesterAgentId,
+          toAgent: targetAgentId,
+          targetSessionKey: childSessionKey,
+          conversationId,
+          runId: childRunId,
+          status: "accepted",
+          label: label || undefined,
+          replyPreview: (`spawn accepted · run ${childRunId}`).slice(0, 200),
+        },
       });
 
       return jsonResult({

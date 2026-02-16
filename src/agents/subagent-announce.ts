@@ -10,6 +10,8 @@ import {
   resolveStorePath,
 } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
+import { emit } from "../infra/events/bus.js";
+import { EVENT_TYPES } from "../infra/events/schemas.js";
 import { normalizeMainKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import {
@@ -458,9 +460,17 @@ export async function runSubagentAnnounceFlow(params: {
   label?: string;
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
+  conversationId?: string;
+  requesterAgentId?: string;
+  targetAgentId?: string;
 }): Promise<boolean> {
   let didAnnounce = false;
   let shouldDeleteChildSession = params.cleanup === "delete";
+  const fromAgent =
+    params.targetAgentId ?? resolveAgentIdFromSessionKey(params.childSessionKey);
+  const toAgent =
+    params.requesterAgentId ?? resolveAgentIdFromSessionKey(params.requesterSessionKey);
+  const conversationId = params.conversationId ?? params.childRunId;
   try {
     const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
     const childSessionId = (() => {
@@ -561,6 +571,23 @@ export async function runSubagentAnnounceFlow(params: {
             ? `failed: ${outcome.error || "unknown error"}`
             : "finished with unknown status";
 
+    const responsePreview = (reply?.trim() || `[${statusLabel}]`).slice(0, 200);
+    emit({
+      type: EVENT_TYPES.A2A_RESPONSE,
+      agentId: fromAgent,
+      ts: Date.now(),
+      data: {
+        fromAgent,
+        toAgent,
+        turn: 1,
+        maxTurns: 1,
+        replyPreview: responsePreview,
+        targetSessionKey: params.requesterSessionKey,
+        conversationId,
+        runId: params.childRunId,
+      },
+    });
+
     // Build instructional message for main agent
     const announceType = params.announceType ?? "subagent task";
     const taskLabel = params.label || params.task || "task";
@@ -603,11 +630,39 @@ export async function runSubagentAnnounceFlow(params: {
       maxAgeMs: announceMaxAgeMs,
     });
     if (queued === "steered") {
+      emit({
+        type: EVENT_TYPES.A2A_COMPLETE,
+        agentId: fromAgent,
+        ts: Date.now(),
+        data: {
+          fromAgent,
+          toAgent,
+          announced: true,
+          totalTurns: 1,
+          targetSessionKey: params.requesterSessionKey,
+          conversationId,
+          runId: params.childRunId,
+        },
+      });
       markSameRunAnnounce(sameRunAnnounceKey);
       didAnnounce = true;
       return true;
     }
     if (queued === "queued") {
+      emit({
+        type: EVENT_TYPES.A2A_COMPLETE,
+        agentId: fromAgent,
+        ts: Date.now(),
+        data: {
+          fromAgent,
+          toAgent,
+          announced: true,
+          totalTurns: 1,
+          targetSessionKey: params.requesterSessionKey,
+          conversationId,
+          runId: params.childRunId,
+        },
+      });
       markSameRunAnnounce(sameRunAnnounceKey);
       didAnnounce = true;
       return true;
@@ -639,9 +694,37 @@ export async function runSubagentAnnounceFlow(params: {
       timeoutMs: announceDeliveryTimeoutMs,
     });
 
+    emit({
+      type: EVENT_TYPES.A2A_COMPLETE,
+      agentId: fromAgent,
+      ts: Date.now(),
+      data: {
+        fromAgent,
+        toAgent,
+        announced: true,
+        totalTurns: 1,
+        targetSessionKey: params.requesterSessionKey,
+        conversationId,
+        runId: params.childRunId,
+      },
+    });
     markSameRunAnnounce(sameRunAnnounceKey);
     didAnnounce = true;
   } catch (err) {
+    emit({
+      type: EVENT_TYPES.A2A_COMPLETE,
+      agentId: fromAgent,
+      ts: Date.now(),
+      data: {
+        fromAgent,
+        toAgent,
+        announced: false,
+        totalTurns: 1,
+        targetSessionKey: params.requesterSessionKey,
+        conversationId,
+        runId: params.childRunId,
+      },
+    });
     defaultRuntime.error?.(`Subagent announce failed: ${String(err)}`);
     // Best-effort follow-ups; ignore failures to avoid breaking the caller response.
   } finally {
