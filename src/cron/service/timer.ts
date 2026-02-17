@@ -3,7 +3,7 @@ import type { CronJob } from "../types.js";
 import type { CronEvent, CronServiceState } from "./state.js";
 import { DEFAULT_AGENT_ID } from "../../routing/session-key.js";
 import { resolveCronDeliveryPlan } from "../delivery.js";
-import { sweepCronRunSessions } from "../session-reaper.js";
+import { sweepCronRunSessions, sweepA2ASessions } from "../session-reaper.js";
 import {
   computeJobNextRunAtMs,
   nextWakeAtMs,
@@ -316,6 +316,19 @@ export async function onTimer(state: CronServiceState) {
           });
         } catch (err) {
           state.deps.log.warn({ err: String(err), storePath }, "cron: session reaper sweep failed");
+        }
+
+        try {
+          await sweepA2ASessions({
+            sessionStorePath: storePath,
+            nowMs,
+            log: state.deps.log,
+          });
+        } catch (err) {
+          state.deps.log.warn(
+            { err: String(err), storePath },
+            "cron: a2a session reaper sweep failed",
+          );
         }
       }
     }

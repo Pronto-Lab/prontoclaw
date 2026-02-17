@@ -398,7 +398,7 @@ export async function runSessionsSendA2AFlow(params: {
           messageIntent: intentResult.intent,
           previousTurnSummary,
         });
-        const replyText = await runAgentStep({
+        const stepResult = await runAgentStep({
           sessionKey: currentSessionKey,
           message: incomingMessage,
           extraSystemPrompt: replyPrompt,
@@ -409,6 +409,7 @@ export async function runSessionsSendA2AFlow(params: {
             nextSessionKey === params.requesterSessionKey ? params.requesterChannel : targetChannel,
           sourceTool: "sessions_send",
         });
+        const replyText = stepResult.reply;
 
         if (!replyText || isReplySkip(replyText)) {
           earlyTermination = true;
@@ -489,7 +490,7 @@ export async function runSessionsSendA2AFlow(params: {
         roundOneReply: primaryReply,
         latestReply,
       });
-      const announceReply = await runAgentStep({
+      const announceResult = await runAgentStep({
         sessionKey: params.targetSessionKey,
         message: "Agent-to-agent announce step.",
         extraSystemPrompt: announcePrompt,
@@ -499,6 +500,7 @@ export async function runSessionsSendA2AFlow(params: {
         sourceChannel: params.requesterChannel,
         sourceTool: "sessions_send",
       });
+      const announceReply = announceResult.reply;
 
       if (announceReply && announceReply.trim() && !isAnnounceSkip(announceReply)) {
         try {

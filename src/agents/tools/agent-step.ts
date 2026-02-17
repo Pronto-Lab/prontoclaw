@@ -30,6 +30,22 @@ export async function readLatestAssistantReply(params: {
   return undefined;
 }
 
+export type AgentStepResult = {
+  /** The assistant's reply text, if any. */
+  reply: string | undefined;
+  /** Whether the step completed successfully. */
+  ok: boolean;
+  /** Error information when ok=false. */
+  error?: {
+    /** Error category for retry classification. */
+    code: "timeout" | "not_found" | "gateway_error" | "no_reply";
+    /** Human-readable error description. */
+    message: string;
+    /** The raw wait status from agent.wait, if available. */
+    waitStatus?: string;
+  };
+};
+
 export async function runAgentStep(params: {
   sessionKey: string;
   message: string;
@@ -40,7 +56,7 @@ export async function runAgentStep(params: {
   sourceSessionKey?: string;
   sourceChannel?: string;
   sourceTool?: string;
-}): Promise<string | undefined> {
+}): Promise<AgentStepResult> {
   const stepIdem = crypto.randomUUID();
   const response = await callGateway<{ runId?: string }>({
     method: "agent",
@@ -74,7 +90,33 @@ export async function runAgentStep(params: {
     timeoutMs: stepWaitMs + 2000,
   });
   if (wait?.status !== "ok") {
-    return undefined;
+    const waitStatus = typeof wait?.status === "string" ? wait.status : "unknown";
+    const code =
+      waitStatus === "not_found"
+        ? ("not_found" as const)
+        : waitStatus === "timeout"
+          ? ("timeout" as const)
+          : ("gateway_error" as const);
+    return {
+      reply: undefined,
+      ok: false,
+      error: {
+        code,
+        message: `agent.wait returned status: ${waitStatus}`,
+        waitStatus,
+      },
+    };
   }
-  return await readLatestAssistantReply({ sessionKey: params.sessionKey });
+  const reply = await readLatestAssistantReply({ sessionKey: params.sessionKey });
+  if (!reply) {
+    return {
+      reply: undefined,
+      ok: false,
+      error: {
+        code: "no_reply",
+        message: "Agent step completed but no assistant reply found",
+      },
+    };
+  }
+  return { reply, ok: true };
 }

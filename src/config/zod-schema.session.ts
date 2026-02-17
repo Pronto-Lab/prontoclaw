@@ -61,7 +61,24 @@ export const SessionSchema = z
     sendPolicy: SessionSendPolicySchema.optional(),
     agentToAgent: z
       .object({
-        maxPingPongTurns: z.number().int().min(0).max(5).optional(),
+        maxPingPongTurns: z.number().int().min(0).max(10).optional(),
+        autoTerminate: z.boolean().optional(),
+        retry: z
+          .object({
+            enabled: z.boolean().optional(),
+            maxAttempts: z.number().int().min(1).max(10).optional(),
+            baseBackoffMs: z.number().int().min(100).max(30_000).optional(),
+            maxBackoffMs: z.number().int().min(1_000).max(300_000).optional(),
+          })
+          .strict()
+          .optional(),
+        timeout: z
+          .object({
+            maxWaitMs: z.number().int().min(10_000).max(600_000).optional(),
+            chunkMs: z.number().int().min(5_000).max(60_000).optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

@@ -102,8 +102,28 @@ export type SessionConfig = {
   mainKey?: string;
   sendPolicy?: SessionSendPolicyConfig;
   agentToAgent?: {
-    /** Max ping-pong turns between requester/target (0–5). Default: 5. */
+    /** Max ping-pong turns between requester/target (0–10). Default: 5. */
     maxPingPongTurns?: number;
+    /** Enable intent-based automatic early termination. Default: true. */
+    autoTerminate?: boolean;
+    /** A2A retry configuration. */
+    retry?: {
+      /** Enable retry on transient errors. Default: true. */
+      enabled?: boolean;
+      /** Max retry attempts per error. Default: 3. */
+      maxAttempts?: number;
+      /** Base backoff delay in ms. Default: 2000. */
+      baseBackoffMs?: number;
+      /** Max backoff delay cap in ms. Default: 60000. */
+      maxBackoffMs?: number;
+    };
+    /** A2A timeout configuration. */
+    timeout?: {
+      /** Max total wait time in ms. Default: 300000. */
+      maxWaitMs?: number;
+      /** Per-chunk poll interval in ms. Default: 30000. */
+      chunkMs?: number;
+    };
   };
   /** Automatic session store maintenance (pruning, capping, file rotation). */
   maintenance?: SessionMaintenanceConfig;

@@ -97,3 +97,29 @@ export function resolveThreadParentSessionKey(
   const parent = raw.slice(0, idx).trim();
   return parent ? parent : null;
 }
+
+export function isA2ASessionKey(sessionKey: string | undefined | null): boolean {
+  const parsed = parseAgentSessionKey(sessionKey);
+  if (!parsed) {
+    return false;
+  }
+  return /^a2a:[^:]+$/.test(parsed.rest);
+}
+
+/**
+ * Extract the agentId from an A2A session key.
+ * Returns null if the key is not a valid A2A session key.
+ */
+export function parseA2ASessionKey(
+  sessionKey: string | undefined | null,
+): { agentId: string; conversationId: string } | null {
+  const parsed = parseAgentSessionKey(sessionKey);
+  if (!parsed) {
+    return null;
+  }
+  const match = parsed.rest.match(/^a2a:([^:]+)$/);
+  if (!match) {
+    return null;
+  }
+  return { agentId: parsed.agentId, conversationId: match[1] };
+}
