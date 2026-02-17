@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const LOCK_TIMEOUT_MS = 30_000; // 30 seconds max lock hold time
+const _LOCK_TIMEOUT_MS = 30_000; // 30 seconds max lock hold time
 const LOCK_STALE_MS = 60_000; // Consider lock stale after 60 seconds
 
 /**

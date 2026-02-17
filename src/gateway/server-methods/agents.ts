@@ -536,7 +536,9 @@ export const agentsHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const agentIdParam =
       params && typeof params === "object" && "agentId" in params
-        ? String((params).agentId ?? "")
+        ? typeof params.agentId === "string"
+          ? params.agentId
+          : ""
         : "";
 
     if (agentIdParam) {

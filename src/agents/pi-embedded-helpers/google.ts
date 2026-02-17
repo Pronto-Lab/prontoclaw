@@ -21,19 +21,29 @@ export function isAntigravityClaude(params: {
 
 export { sanitizeGoogleTurnOrdering };
 
-export function sanitizeToolUseInput(messages: any[]): any[] {
+export function sanitizeToolUseInput(messages: unknown[]): unknown[] {
   return messages.map((msg) => {
-    if (!msg || typeof msg !== "object") return msg;
-    if (msg.role !== "assistant" && msg.role !== "toolUse") return msg;
-    if (!Array.isArray(msg.content)) return msg;
+    if (!msg || typeof msg !== "object") {
+      return msg;
+    }
+    const message = msg as { role?: string; content?: unknown } & Record<string, unknown>;
+    if (message.role !== "assistant" && message.role !== "toolUse") {
+      return msg;
+    }
+    if (!Array.isArray(message.content)) {
+      return msg;
+    }
 
     return {
-      ...msg,
-      content: msg.content.map((block: any) => {
-        if (!block || typeof block !== "object") return block;
-        if (block.type === "toolUse" || block.type === "toolCall") {
-          if (!("input" in block) || block.input === undefined) {
-            return { ...block, input: {} };
+      ...message,
+      content: message.content.map((block: unknown) => {
+        if (!block || typeof block !== "object") {
+          return block;
+        }
+        const blockData = block as { type?: string; input?: unknown } & Record<string, unknown>;
+        if (blockData.type === "toolUse" || blockData.type === "toolCall") {
+          if (!("input" in blockData) || blockData.input === undefined) {
+            return { ...blockData, input: {} };
           }
         }
         return block;

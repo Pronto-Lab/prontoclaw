@@ -5,12 +5,18 @@ import { jsonResult, readStringParam } from "./common.js";
 const TASK_HUB_URL = process.env.TASK_HUB_URL || "http://localhost:3102";
 
 async function hubFetch(path: string, options?: RequestInit) {
+  const optionHeaders =
+    options?.headers instanceof Headers
+      ? Object.fromEntries(options.headers.entries())
+      : Array.isArray(options?.headers)
+        ? Object.fromEntries(options.headers)
+        : options?.headers;
   const res = await fetch(`${TASK_HUB_URL}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
       Cookie: "task-hub-session=authenticated",
-      ...options?.headers,
+      ...optionHeaders,
     },
   });
   return res.json();

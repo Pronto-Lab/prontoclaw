@@ -380,7 +380,8 @@ export class DiscordVoiceStateListener extends VoiceStateUpdateListener {
       // Forward raw event to @discordjs/voice adapter (Carbon does not do this)
       const adapter = this.context.voicePlugin.adapters.get(guildId);
       if (adapter) {
-        adapter.onVoiceStateUpdate(data as any);
+        const voiceStateData = data as Parameters<typeof adapter.onVoiceStateUpdate>[0];
+        adapter.onVoiceStateUpdate(voiceStateData);
       }
 
       handleVoiceStateUpdate({
@@ -422,14 +423,15 @@ export class DiscordVoiceServerListener extends VoiceServerUpdateListener {
   }
 
   async handle(data: Parameters<VoiceServerUpdateListener["handle"]>[0], _client: Client) {
-    const guildId = (data as any).guild_id;
+    const guildId = data.guild_id;
     if (!guildId) {
       return;
     }
 
     const adapter = this.voicePlugin.adapters.get(guildId);
     if (adapter) {
-      adapter.onVoiceServerUpdate(data as any);
+      const voiceServerData = data as Parameters<typeof adapter.onVoiceServerUpdate>[0];
+      adapter.onVoiceServerUpdate(voiceServerData);
     }
   }
 }

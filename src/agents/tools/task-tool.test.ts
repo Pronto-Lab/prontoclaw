@@ -1030,15 +1030,7 @@ Auto blocked task
 });
 
 // Import backlog tools
-import {
-  createTaskBacklogAddTool,
-  createTaskPickBacklogTool,
-  findBacklogTasks,
-  findAllBacklogTasks,
-  findPickableBacklogTask,
-  checkDependenciesMet,
-  readTask,
-} from "./task-tool.js";
+import { createTaskBacklogAddTool, createTaskPickBacklogTool } from "./task-tool.js";
 
 describe("backlog functionality", () => {
   describe("createTaskBacklogAddTool", () => {

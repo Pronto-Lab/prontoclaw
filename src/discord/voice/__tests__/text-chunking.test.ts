@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // Mock all transitive dependencies of VoiceBridge.
 vi.mock("../../../auto-reply/dispatch.js", () => ({
@@ -34,7 +34,9 @@ function splitSentences(text: string): { sentences: string[]; remainder: string 
   while ((match = re.exec(text)) !== null) {
     lastIndex = re.lastIndex;
     const sentence = match[1].trim();
-    if (sentence) sentences.push(sentence);
+    if (sentence) {
+      sentences.push(sentence);
+    }
   }
 
   const remainder = text.slice(lastIndex).trim();

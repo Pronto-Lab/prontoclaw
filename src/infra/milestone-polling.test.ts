@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 
 // Re-implement simpleHash from scripts/task-monitor-server.ts
 function simpleHash(str: string): string {

@@ -47,7 +47,10 @@ function formatEmbed(event: CoordinationEvent) {
       if (value !== undefined && value !== null) {
         fields.push({
           name: key,
-          value: String(value).slice(0, 256),
+          value: (typeof value === "object"
+            ? JSON.stringify(value)
+            : String(value as string | number | boolean)
+          ).slice(0, 256),
           inline: true,
         });
       }

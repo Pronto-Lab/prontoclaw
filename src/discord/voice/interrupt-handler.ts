@@ -70,7 +70,9 @@ export class InterruptHandler extends EventEmitter<InterruptHandlerEvents> {
    * Wires up event listeners on the voice session.
    */
   start(): void {
-    if (this.started) return;
+    if (this.started) {
+      return;
+    }
     this.started = true;
 
     this.voiceSession.on("audioData", this.boundOnAudioData);
@@ -81,7 +83,9 @@ export class InterruptHandler extends EventEmitter<InterruptHandlerEvents> {
    * Stop listening and clean up all timers and listeners.
    */
   stop(): void {
-    if (!this.started) return;
+    if (!this.started) {
+      return;
+    }
     this.started = false;
 
     this.voiceSession.removeListener("audioData", this.boundOnAudioData);
@@ -115,13 +119,19 @@ export class InterruptHandler extends EventEmitter<InterruptHandlerEvents> {
    */
   private handlePotentialInterrupt(): void {
     // Guard: must be in speaking state
-    if (this.voiceSession.getState() !== "speaking") return;
+    if (this.voiceSession.getState() !== "speaking") {
+      return;
+    }
 
     // Guard: cooldown active
-    if (this.inCooldown) return;
+    if (this.inCooldown) {
+      return;
+    }
 
     // Guard: already waiting for threshold
-    if (this.debounceTimer !== null) return;
+    if (this.debounceTimer !== null) {
+      return;
+    }
 
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
@@ -140,7 +150,9 @@ export class InterruptHandler extends EventEmitter<InterruptHandlerEvents> {
    */
   private executeInterrupt(): void {
     // Final guard: state may have changed during the debounce window
-    if (this.voiceSession.getState() !== "speaking") return;
+    if (this.voiceSession.getState() !== "speaking") {
+      return;
+    }
 
     // 1. Capture what was actually played before we stop
     const playedText = this.tts.getPlayedText();

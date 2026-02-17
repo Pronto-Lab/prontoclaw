@@ -75,7 +75,6 @@ import { agentCommand } from "../commands/agent.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { startTaskContinuationRunner, __resetAgentStates } from "./task-continuation-runner.js";
-import { acquireTaskLock } from "./task-lock.js";
 
 // ============================================================================
 // Test: Zombie Task Abandonment
@@ -114,12 +113,12 @@ describe("zombie task abandonment", () => {
     };
 
     // readdir returns a task file
-    vi.mocked(fs.readdir).mockResolvedValue(["task_zombie1.md"] as any);
+    vi.mocked(fs.readdir).mockResolvedValue(["task_zombie1.md"] as string[]);
 
     // readTask returns the zombie task (called twice: once for initial check, once for fresh read inside lock)
     vi.mocked(readTask)
-      .mockResolvedValueOnce(zombieTask as any)
-      .mockResolvedValueOnce({ ...zombieTask } as any);
+      .mockResolvedValueOnce(zombieTask as never)
+      .mockResolvedValueOnce({ ...zombieTask } as never);
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -144,7 +143,7 @@ describe("zombie task abandonment", () => {
     );
 
     // Verify progress was appended
-    const writtenTask = vi.mocked(writeTask).mock.calls[0]?.[1] as any;
+    const writtenTask = vi.mocked(writeTask).mock.calls[0]?.[1] as { progress?: string[] };
     expect(writtenTask.progress).toContainEqual(
       expect.stringContaining("Auto-recovered to backlog after zombie detection"),
     );
@@ -163,8 +162,8 @@ describe("zombie task abandonment", () => {
       progress: ["Working"],
     };
 
-    vi.mocked(fs.readdir).mockResolvedValue(["task_fresh1.md"] as any);
-    vi.mocked(readTask).mockResolvedValue(freshTask as any);
+    vi.mocked(fs.readdir).mockResolvedValue(["task_fresh1.md"] as string[]);
+    vi.mocked(readTask).mockResolvedValue(freshTask as never);
 
     const runner = startTaskContinuationRunner({
       cfg: {
@@ -181,7 +180,7 @@ describe("zombie task abandonment", () => {
     // writeTask should NOT have been called with abandoned
     const abandonCalls = vi
       .mocked(writeTask)
-      .mock.calls.filter(([, task]: any) => task.status === "abandoned");
+      .mock.calls.filter(([, task]) => (task as { status?: string }).status === "abandoned");
     expect(abandonCalls).toHaveLength(0);
 
     runner.stop();
@@ -198,8 +197,8 @@ describe("zombie task abandonment", () => {
       progress: ["Blocked"],
     };
 
-    vi.mocked(fs.readdir).mockResolvedValue(["task_blocked1.md"] as any);
-    vi.mocked(readTask).mockResolvedValue(blockedTask as any);
+    vi.mocked(fs.readdir).mockResolvedValue(["task_blocked1.md"] as string[]);
+    vi.mocked(readTask).mockResolvedValue(blockedTask as never);
 
     const runner = startTaskContinuationRunner({
       cfg: { agents: { defaults: {} } } as OpenClawConfig,
@@ -209,7 +208,7 @@ describe("zombie task abandonment", () => {
 
     const abandonCalls = vi
       .mocked(writeTask)
-      .mock.calls.filter(([, task]: any) => task.status === "abandoned");
+      .mock.calls.filter(([, task]) => (task as { status?: string }).status === "abandoned");
     expect(abandonCalls).toHaveLength(0);
 
     runner.stop();
@@ -252,7 +251,7 @@ describe("channel config propagation", () => {
       progress: ["Working"],
     };
 
-    vi.mocked(findActiveTask).mockResolvedValue(activeTask as any);
+    vi.mocked(findActiveTask).mockResolvedValue(activeTask as never);
 
     const cfg = {
       agents: {
@@ -289,7 +288,7 @@ describe("channel config propagation", () => {
       progress: ["Working"],
     };
 
-    vi.mocked(findActiveTask).mockResolvedValue(activeTask as any);
+    vi.mocked(findActiveTask).mockResolvedValue(activeTask as never);
 
     const cfg = {
       agents: {

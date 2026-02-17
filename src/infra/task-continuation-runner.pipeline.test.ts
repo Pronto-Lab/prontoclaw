@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─── Mocks ───
 
@@ -109,6 +109,7 @@ vi.mock("../logging/subsystem.js", () => ({
   })),
 }));
 
+import type { OpenClawConfig } from "../config/config.js";
 import { startTaskContinuationRunner, __resetAgentStates } from "./task-continuation-runner.js";
 
 const testConfig = {
@@ -124,7 +125,7 @@ const testConfig = {
     },
     list: [{ id: "main" }],
   },
-} as any;
+} as OpenClawConfig;
 
 function makeIdleTask(overrides: Record<string, unknown> = {}) {
   const oldDate = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // 10 min ago

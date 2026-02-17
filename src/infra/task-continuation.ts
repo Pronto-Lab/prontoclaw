@@ -10,7 +10,7 @@ import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { buildAgentMainSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 
-const CURRENT_TASK_FILENAME = "CURRENT_TASK.md";
+const _CURRENT_TASK_FILENAME = "CURRENT_TASK.md";
 const RESUME_TRACKER_FILENAME = "task-continuation-last.json";
 const RESUME_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -52,7 +52,7 @@ async function saveResumeTracker(): Promise<void> {
   await fs.writeFile(filePath, JSON.stringify(tracker, null, 2), "utf-8");
 }
 
-function parseCurrentTaskMd(content: string): PendingTask | null {
+function _parseCurrentTaskMd(content: string): PendingTask | null {
   const currentMatch = content.match(/##\s*Current\s*\n([\s\S]*?)(?=\n---|\n##|$)/i);
   if (!currentMatch) {
     return null;

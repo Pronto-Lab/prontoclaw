@@ -73,7 +73,7 @@ describe("task-continuation", () => {
     it("returns empty when tasks dir has no task files", async () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
-      vi.mocked(fs.readdir).mockResolvedValue([] as any);
+      vi.mocked(fs.readdir).mockResolvedValue([] as string[]);
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
 
       const tasks = await loadPendingTasks({} as never);
@@ -94,7 +94,11 @@ describe("task-continuation", () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
-      vi.mocked(fs.readdir).mockResolvedValue(["task_abc.md", "README.md", "task_def.md"] as any);
+      vi.mocked(fs.readdir).mockResolvedValue([
+        "task_abc.md",
+        "README.md",
+        "task_def.md",
+      ] as string[]);
       vi.mocked(fs.readFile)
         .mockResolvedValueOnce(
           makeTaskMd({ id: "task_abc", status: "completed", description: "Done task" }),
@@ -112,7 +116,7 @@ describe("task-continuation", () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
-      vi.mocked(fs.readdir).mockResolvedValue(["task_abc.md"] as any);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc.md"] as string[]);
       vi.mocked(fs.readFile).mockResolvedValueOnce(
         makeTaskMd({
           id: "task_abc",
@@ -139,7 +143,7 @@ describe("task-continuation", () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
       vi.mocked(listAgentIds).mockReturnValue(["eden"]);
-      vi.mocked(fs.readdir).mockResolvedValue(["task_blocked1.md"] as any);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_blocked1.md"] as string[]);
       vi.mocked(fs.readFile).mockResolvedValueOnce(
         makeTaskMd({ id: "task_blocked1", status: "blocked", description: "Blocked task" }),
       );
@@ -154,7 +158,7 @@ describe("task-continuation", () => {
       const { loadPendingTasks } = await import("./task-continuation.js");
 
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
-      vi.mocked(fs.readdir).mockResolvedValue(["task_legacy.md"] as any);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_legacy.md"] as string[]);
       vi.mocked(fs.readFile).mockResolvedValueOnce(
         [
           "# Task: task_legacy",
@@ -183,8 +187,8 @@ describe("task-continuation", () => {
 
       vi.mocked(listAgentIds).mockReturnValue(["main", "eden"]);
       vi.mocked(fs.readdir)
-        .mockResolvedValueOnce(["task_1.md"] as any)
-        .mockResolvedValueOnce(["task_2.md"] as any);
+        .mockResolvedValueOnce(["task_1.md"] as string[])
+        .mockResolvedValueOnce(["task_2.md"] as string[]);
       vi.mocked(fs.readFile)
         .mockResolvedValueOnce(
           makeTaskMd({ id: "task_1", status: "in_progress", description: "Main task" }),
@@ -204,9 +208,9 @@ describe("task-continuation", () => {
 
       vi.mocked(listAgentIds).mockReturnValue(["main", "eden", "seum"]);
       vi.mocked(fs.readdir)
-        .mockResolvedValueOnce(["task_1.md"] as any)
+        .mockResolvedValueOnce(["task_1.md"] as string[])
         .mockRejectedValueOnce(new Error("ENOENT"))
-        .mockResolvedValueOnce(["task_3.md"] as any);
+        .mockResolvedValueOnce(["task_3.md"] as string[]);
       vi.mocked(fs.readFile)
         .mockResolvedValueOnce(
           makeTaskMd({ id: "task_1", status: "in_progress", description: "Main task" }),
@@ -229,7 +233,7 @@ describe("task-continuation", () => {
         .mockResolvedValueOnce(
           makeTaskMd({ id: "task_resume1", status: "in_progress", description: "Test task" }),
         );
-      vi.mocked(fs.readdir).mockResolvedValue(["task_resume1.md"] as any);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_resume1.md"] as string[]);
 
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
 
@@ -251,7 +255,7 @@ describe("task-continuation", () => {
         .mockResolvedValueOnce(
           makeTaskMd({ id: "task_fail1", status: "in_progress", description: "Test task" }),
         );
-      vi.mocked(fs.readdir).mockResolvedValue(["task_fail1.md"] as any);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_fail1.md"] as string[]);
 
       vi.mocked(listAgentIds).mockReturnValue(["main"]);
       vi.mocked(agentCommand).mockRejectedValueOnce(new Error("Failed"));

@@ -3,6 +3,7 @@ import {
   VoiceConnectionStatus,
   entersState,
   type VoiceConnection,
+  type VoiceConnectionState,
   type DiscordGatewayAdapterCreator,
 } from "@discordjs/voice";
 import { EventEmitter } from "node:events";
@@ -113,7 +114,7 @@ export class VoiceSessionManager extends EventEmitter {
       this.connection = conn;
 
       // Debug: log all state transitions
-      conn.on("stateChange", (oldState: any, newState: any) => {
+      conn.on("stateChange", (oldState: VoiceConnectionState, newState: VoiceConnectionState) => {
         console.log("[VoiceConn] state:", oldState.status, "->", newState.status);
       });
       conn.on("error", (err: Error) => {

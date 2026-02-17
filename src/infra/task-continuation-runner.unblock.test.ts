@@ -40,7 +40,7 @@ vi.mock("../agents/tools/sessions-helpers.js", () => ({
   createAgentToAgentPolicy: vi.fn((cfg: OpenClawConfig) => {
     const policy = cfg.agents?.defaults?.agentToAgent?.policy ?? "allow-all";
     return {
-      isAllowed: (from: string, to: string) => {
+      isAllowed: (_from: string, _to: string) => {
         if (policy === "deny-all") {
           return false;
         }

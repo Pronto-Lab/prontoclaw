@@ -69,7 +69,7 @@ vi.mock("../../logging/subsystem.js", () => ({
 describe("C3 - reassignCount roundtrip", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (fs.readdir as any).mockResolvedValue([]);
+    vi.mocked(fs.readdir).mockResolvedValue([]);
   });
 
   function makeBacklogTaskMd(
@@ -115,7 +115,7 @@ describe("C3 - reassignCount roundtrip", () => {
 
   it("readTask returns reassignCount when set", async () => {
     const { readTask } = await import("./task-tool.js");
-    (fs.readFile as any).mockResolvedValue(makeBacklogTaskMd("task_rc1", { reassignCount: 2 }));
+    vi.mocked(fs.readFile).mockResolvedValue(makeBacklogTaskMd("task_rc1", { reassignCount: 2 }));
     const task = await readTask("/workspace/main", "task_rc1");
     expect(task).not.toBeNull();
     expect(task!.reassignCount).toBe(2);
@@ -142,7 +142,7 @@ describe("C3 - reassignCount roundtrip", () => {
       "---",
       "*Managed by task tools*",
     ].join("\n");
-    (fs.readFile as any).mockResolvedValue(md);
+    vi.mocked(fs.readFile).mockResolvedValue(md);
     const task = await readTask("/workspace/main", "task_rc2");
     expect(task).not.toBeNull();
     expect(task!.reassignCount).toBeUndefined();
@@ -150,7 +150,7 @@ describe("C3 - reassignCount roundtrip", () => {
 
   it("reassignCount=0 is preserved (not treated as falsy)", async () => {
     const { readTask } = await import("./task-tool.js");
-    (fs.readFile as any).mockResolvedValue(makeBacklogTaskMd("task_rc3", { reassignCount: 0 }));
+    vi.mocked(fs.readFile).mockResolvedValue(makeBacklogTaskMd("task_rc3", { reassignCount: 0 }));
     const task = await readTask("/workspace/main", "task_rc3");
     expect(task).not.toBeNull();
     expect(task!.reassignCount).toBe(0);
@@ -158,7 +158,7 @@ describe("C3 - reassignCount roundtrip", () => {
 
   it("milestoneId and milestoneItemId roundtrip", async () => {
     const { readTask } = await import("./task-tool.js");
-    (fs.readFile as any).mockResolvedValue(
+    vi.mocked(fs.readFile).mockResolvedValue(
       makeBacklogTaskMd("task_rc4", {
         milestoneId: "ms_abc123",
         milestoneItemId: "item_xyz789",
@@ -199,7 +199,7 @@ describe("C3 - reassignCount roundtrip", () => {
       "---",
       "*Managed by task tools*",
     ].join("\n");
-    (fs.readFile as any).mockResolvedValue(md);
+    vi.mocked(fs.readFile).mockResolvedValue(md);
     const task = await readTask("/workspace/main", "task_rc5");
     expect(task).not.toBeNull();
     expect(task!.outcome).toEqual({ kind: "completed", summary: "All good" });
@@ -211,37 +211,37 @@ describe("C3 - reassignCount roundtrip", () => {
 describe("C2 - priority preservation in backlog_add", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (fs.readdir as any).mockResolvedValue([]);
+    vi.mocked(fs.readdir).mockResolvedValue([]);
   });
 
   it("backlog_add with priority=high creates high-priority task", async () => {
     const { createTaskBacklogAddTool } = await import("./task-tool.js");
-    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as any });
+    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as never });
     await tool!.execute("call-1", { description: "High prio task", priority: "high" });
-    const writeCall = (fs.writeFile as any).mock.calls[0];
+    const writeCall = vi.mocked(fs.writeFile).mock.calls[0];
     expect(writeCall).toBeDefined();
     expect(writeCall[1]).toContain("**Priority:** high");
   });
 
   it("backlog_add with priority=urgent creates urgent task", async () => {
     const { createTaskBacklogAddTool } = await import("./task-tool.js");
-    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as any });
+    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as never });
     await tool!.execute("call-2", { description: "Urgent task", priority: "urgent" });
-    expect((fs.writeFile as any).mock.calls[0][1]).toContain("**Priority:** urgent");
+    expect(vi.mocked(fs.writeFile).mock.calls[0][1]).toContain("**Priority:** urgent");
   });
 
   it("backlog_add defaults to medium when no priority given", async () => {
     const { createTaskBacklogAddTool } = await import("./task-tool.js");
-    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as any });
+    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as never });
     await tool!.execute("call-3", { description: "Default prio" });
-    expect((fs.writeFile as any).mock.calls[0][1]).toContain("**Priority:** medium");
+    expect(vi.mocked(fs.writeFile).mock.calls[0][1]).toContain("**Priority:** medium");
   });
 
   it("backlog_add with invalid priority defaults to medium", async () => {
     const { createTaskBacklogAddTool } = await import("./task-tool.js");
-    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as any });
+    const tool = createTaskBacklogAddTool({ config: { agents: { list: [] } } as never });
     await tool!.execute("call-4", { description: "Bad prio", priority: "super_duper" });
-    expect((fs.writeFile as any).mock.calls[0][1]).toContain("**Priority:** medium");
+    expect(vi.mocked(fs.writeFile).mock.calls[0][1]).toContain("**Priority:** medium");
   });
 });
 
@@ -250,7 +250,7 @@ describe("C2 - priority preservation in backlog_add", () => {
 describe("C1 - milestone retry + MILESTONE_SYNC_FAILED", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    (fs.readdir as any).mockResolvedValue([]);
+    vi.mocked(fs.readdir).mockResolvedValue([]);
   });
 
   function makeInProgressMd(taskId: string, milestoneId?: string, milestoneItemId?: string) {
@@ -287,9 +287,9 @@ describe("C1 - milestone retry + MILESTONE_SYNC_FAILED", () => {
 
   it("task_complete calls retryAsync for milestone sync", async () => {
     const { createTaskCompleteTool } = await import("./task-tool.js");
-    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as any });
-    (fs.readFile as any).mockResolvedValue(makeInProgressMd("task_ms1", "ms-1", "item-1"));
-    (fs.readdir as any).mockResolvedValue(["task_ms1.md"]);
+    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as never });
+    vi.mocked(fs.readFile).mockResolvedValue(makeInProgressMd("task_ms1", "ms-1", "item-1"));
+    vi.mocked(fs.readdir).mockResolvedValue(["task_ms1.md"]);
     mockRetryAsync.mockResolvedValue(undefined);
     await tool!.execute("call-ms1", { task_id: "task_ms1", summary: "done" });
     expect(mockRetryAsync).toHaveBeenCalled();
@@ -297,22 +297,22 @@ describe("C1 - milestone retry + MILESTONE_SYNC_FAILED", () => {
 
   it("task_complete emits MILESTONE_SYNC_FAILED on failure", async () => {
     const { createTaskCompleteTool } = await import("./task-tool.js");
-    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as any });
-    (fs.readFile as any).mockResolvedValue(makeInProgressMd("task_ms2", "ms-2", "item-2"));
-    (fs.readdir as any).mockResolvedValue(["task_ms2.md"]);
+    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as never });
+    vi.mocked(fs.readFile).mockResolvedValue(makeInProgressMd("task_ms2", "ms-2", "item-2"));
+    vi.mocked(fs.readdir).mockResolvedValue(["task_ms2.md"]);
     mockRetryAsync.mockRejectedValue(new Error("sync failed"));
     await tool!.execute("call-ms2", { task_id: "task_ms2" });
     const found = mockEmit.mock.calls.find(
-      (c: unknown[]) => (c[0] as any).type === "milestone.sync_failed",
+      (c: unknown[]) => (c[0] as Record<string, unknown>).type === "milestone.sync_failed",
     );
     expect(found).toBeDefined();
   });
 
   it("task_complete succeeds even when milestone sync fails", async () => {
     const { createTaskCompleteTool } = await import("./task-tool.js");
-    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as any });
-    (fs.readFile as any).mockResolvedValue(makeInProgressMd("task_ms3", "ms-3", "item-3"));
-    (fs.readdir as any).mockResolvedValue(["task_ms3.md"]);
+    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as never });
+    vi.mocked(fs.readFile).mockResolvedValue(makeInProgressMd("task_ms3", "ms-3", "item-3"));
+    vi.mocked(fs.readdir).mockResolvedValue(["task_ms3.md"]);
     mockRetryAsync.mockRejectedValue(new Error("fail"));
     const result = await tool!.execute("call-ms3", { task_id: "task_ms3" });
     expect(JSON.parse(result.content[0].text).success).toBe(true);
@@ -320,9 +320,9 @@ describe("C1 - milestone retry + MILESTONE_SYNC_FAILED", () => {
 
   it("task_complete does not sync when no milestoneId", async () => {
     const { createTaskCompleteTool } = await import("./task-tool.js");
-    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as any });
-    (fs.readFile as any).mockResolvedValue(makeInProgressMd("task_ms4"));
-    (fs.readdir as any).mockResolvedValue(["task_ms4.md"]);
+    const tool = createTaskCompleteTool({ config: { agents: { list: [] } } as never });
+    vi.mocked(fs.readFile).mockResolvedValue(makeInProgressMd("task_ms4"));
+    vi.mocked(fs.readdir).mockResolvedValue(["task_ms4.md"]);
     await tool!.execute("call-ms4", { task_id: "task_ms4" });
     expect(mockRetryAsync).not.toHaveBeenCalled();
   });
@@ -359,8 +359,8 @@ describe("M7 - scope=all aggregation", () => {
 
   it("task_list scope=all aggregates from all agents", async () => {
     const { createTaskListTool } = await import("./task-tool.js");
-    const tool = createTaskListTool({ config: { agents: { list: [{ id: "agent1" }] } } as any });
-    (fs.readdir as any).mockImplementation(async (dir: string) => {
+    const tool = createTaskListTool({ config: { agents: { list: [{ id: "agent1" }] } } as never });
+    vi.mocked(fs.readdir).mockImplementation(async (dir: string) => {
       if (String(dir).includes("main")) {
         return ["task_a1.md"];
       }
@@ -369,7 +369,7 @@ describe("M7 - scope=all aggregation", () => {
       }
       return [];
     });
-    (fs.readFile as any).mockImplementation(async (fp: string) => {
+    vi.mocked(fs.readFile).mockImplementation(async (fp: string) => {
       if (String(fp).includes("task_a1")) {
         return makeSimpleMd("task_a1", "in_progress", "high", "Main");
       }
@@ -386,14 +386,14 @@ describe("M7 - scope=all aggregation", () => {
 
   it("task_list scope=all includes agentId per task", async () => {
     const { createTaskListTool } = await import("./task-tool.js");
-    const tool = createTaskListTool({ config: { agents: { list: [{ id: "agent1" }] } } as any });
-    (fs.readdir as any).mockImplementation(async (dir: string) => {
+    const tool = createTaskListTool({ config: { agents: { list: [{ id: "agent1" }] } } as never });
+    vi.mocked(fs.readdir).mockImplementation(async (dir: string) => {
       if (String(dir).includes("main")) {
         return ["task_x1.md"];
       }
       return [];
     });
-    (fs.readFile as any).mockResolvedValue(makeSimpleMd("task_x1", "in_progress", "medium", "X"));
+    vi.mocked(fs.readFile).mockResolvedValue(makeSimpleMd("task_x1", "in_progress", "medium", "X"));
     const result = await tool!.execute("call-2", { scope: "all" });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.tasks.length).toBeGreaterThan(0);
@@ -402,14 +402,14 @@ describe("M7 - scope=all aggregation", () => {
 
   it("task_list scope=all with status filter", async () => {
     const { createTaskListTool } = await import("./task-tool.js");
-    const tool = createTaskListTool({ config: { agents: { list: [{ id: "agent1" }] } } as any });
-    (fs.readdir as any).mockImplementation(async (dir: string) => {
+    const tool = createTaskListTool({ config: { agents: { list: [{ id: "agent1" }] } } as never });
+    vi.mocked(fs.readdir).mockImplementation(async (dir: string) => {
       if (String(dir).includes("main")) {
         return ["task_f1.md", "task_f2.md"];
       }
       return [];
     });
-    (fs.readFile as any).mockImplementation(async (fp: string) => {
+    vi.mocked(fs.readFile).mockImplementation(async (fp: string) => {
       if (String(fp).includes("task_f1")) {
         return makeSimpleMd("task_f1", "in_progress", "high", "Active");
       }
@@ -420,6 +420,6 @@ describe("M7 - scope=all aggregation", () => {
     });
     const result = await tool!.execute("call-3", { scope: "all", status: "in_progress" });
     const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.tasks.every((t: any) => t.status === "in_progress")).toBe(true);
+    expect(parsed.tasks.every((t: { status?: string }) => t.status === "in_progress")).toBe(true);
   });
 });

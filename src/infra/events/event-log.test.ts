@@ -168,7 +168,7 @@ describe("event log", () => {
     it("size cap rotation creates archive when exceeding 10MB", async () => {
       startEventLog(tmpDir);
 
-      const logFile = path.join(tmpDir, "coordination-events.ndjson");
+      // logFile not needed - scanning tmpDir directly
 
       // Create a large event payload to trigger rotation
       const largePayload = "x".repeat(10 * 1024 * 1024 + 100);

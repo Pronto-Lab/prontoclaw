@@ -609,6 +609,8 @@ describe("buildAgentSystemPrompt - Quality Contract", () => {
     expect(prompt).toContain("After 2 consecutive failures");
     expect(prompt).toContain("After 3 consecutive failures");
     expect(prompt).toContain("ask for guidance");
+  });
+});
 
 describe("buildSubagentSystemPrompt", () => {
   it("includes sub-agent spawning guidance for depth-1 orchestrator when maxSpawnDepth >= 2", () => {

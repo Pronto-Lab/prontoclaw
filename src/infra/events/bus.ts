@@ -46,8 +46,8 @@ export function subscribe(type: string, fn: EventListener): () => void {
   }
   set.add(fn);
   return () => {
-    set!.delete(fn);
-    if (set!.size === 0) {
+    set.delete(fn);
+    if (set.size === 0) {
       listeners.delete(type);
     }
   };
