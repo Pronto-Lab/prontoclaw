@@ -15,9 +15,11 @@ import {
 import { normalizeDeliveryContext } from "../../utils/delivery-context.js";
 import { resolveAgentConfig, resolveAgentWorkspaceDir } from "../agent-scope.js";
 import { AGENT_LANE_SUBAGENT } from "../lanes.js";
+import { resolveDefaultModelForAgent } from "../model-selection.js";
 import { optionalStringEnum } from "../schema/typebox.js";
 import { buildSubagentSystemPrompt } from "../subagent-announce.js";
-import { registerSubagentRun } from "../subagent-registry.js";
+import { getSubagentDepthFromSessionStore } from "../subagent-depth.js";
+import * as subagentRegistry from "../subagent-registry.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
   resolveDisplaySessionKey,
@@ -198,12 +200,8 @@ export function createSessionsSpawnTool(opts?: {
       const cfg = loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const requesterSessionKey = opts?.agentSessionKey;
-      if (typeof requesterSessionKey === "string" && isSubagentSessionKey(requesterSessionKey)) {
-        return jsonResult({
-          status: "forbidden",
-          error: "sessions_spawn is not allowed from sub-agent sessions",
-        });
-      }
+      const isRequesterSubagentSession =
+        typeof requesterSessionKey === "string" && isSubagentSessionKey(requesterSessionKey);
       const requesterInternalKey = requesterSessionKey
         ? resolveInternalSessionKey({
             key: requesterSessionKey,
@@ -216,6 +214,32 @@ export function createSessionsSpawnTool(opts?: {
         alias,
         mainKey,
       });
+
+      const callerDepth = getSubagentDepthFromSessionStore(requesterInternalKey, { cfg });
+      const maxSpawnDepth = cfg.agents?.defaults?.subagents?.maxSpawnDepth ?? 1;
+      if (callerDepth >= maxSpawnDepth) {
+        return jsonResult({
+          status: "forbidden",
+          error: `sessions_spawn is not allowed at this depth (current depth: ${callerDepth}, max: ${maxSpawnDepth})`,
+        });
+      }
+
+      const maxChildren = cfg.agents?.defaults?.subagents?.maxChildrenPerAgent ?? 5;
+      let activeChildren = 0;
+      try {
+        activeChildren =
+          (subagentRegistry as {
+            countActiveRunsForSession?: (sessionKey: string) => number;
+          }).countActiveRunsForSession?.(requesterInternalKey) ?? 0;
+      } catch {
+        activeChildren = 0;
+      }
+      if (activeChildren >= maxChildren) {
+        return jsonResult({
+          status: "forbidden",
+          error: `sessions_spawn has reached max active children for this session (${activeChildren}/${maxChildren})`,
+        });
+      }
 
       const requesterAgentId = normalizeAgentId(
         opts?.requesterAgentIdOverride ?? parseAgentSessionKey(requesterInternalKey)?.agentId,
@@ -244,7 +268,8 @@ export function createSessionsSpawnTool(opts?: {
           });
         }
       }
-      const childSessionKey = "agent:" + targetAgentId + ":subagent:" + crypto.randomUUID();
+      const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`;
+      const childDepth = callerDepth + 1;
       const spawnedByKey = requesterInternalKey;
       const { workSessionId, taskId } = await resolveSpawnWorkSessionContext({
         cfg,
@@ -253,7 +278,7 @@ export function createSessionsSpawnTool(opts?: {
         explicitWorkSessionId,
       });
       const conversationId = parentConversationId ?? crypto.randomUUID();
-      const depthValue = depth ?? 0;
+      const depthValue = depth ?? (isRequesterSubagentSession ? callerDepth : 0);
       const hopValue = hop ?? 0;
       const spawnRequestPreview = task.slice(0, 200);
       emit({
@@ -294,10 +319,23 @@ export function createSessionsSpawnTool(opts?: {
         },
       });
       const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
+      let runtimeDefaultModel: { provider?: string; model?: string } = {};
+      try {
+        runtimeDefaultModel = resolveDefaultModelForAgent({
+          cfg,
+          agentId: targetAgentId,
+        });
+      } catch {
+        runtimeDefaultModel = {};
+      }
       const resolvedModel =
         normalizeModelSelection(modelOverride) ??
         normalizeModelSelection(targetAgentConfig?.subagents?.model) ??
-        normalizeModelSelection(cfg.agents?.defaults?.subagents?.model);
+        normalizeModelSelection(cfg.agents?.defaults?.subagents?.model) ??
+        normalizeModelSelection(cfg.agents?.defaults?.model?.primary) ??
+        (runtimeDefaultModel.provider && runtimeDefaultModel.model
+          ? normalizeModelSelection(`${runtimeDefaultModel.provider}/${runtimeDefaultModel.model}`)
+          : undefined);
 
       const resolvedThinkingDefaultRaw =
         readStringParam(targetAgentConfig?.subagents ?? {}, "thinking") ??
@@ -317,6 +355,47 @@ export function createSessionsSpawnTool(opts?: {
         }
         thinkingOverride = normalized;
       }
+      if (isRequesterSubagentSession || callerDepth > 0) {
+        try {
+          await callGateway({
+            method: "sessions.patch",
+            params: { key: childSessionKey, spawnDepth: childDepth },
+            timeoutMs: 10_000,
+          });
+        } catch (err) {
+          const messageText =
+            err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+          emit({
+            type: EVENT_TYPES.A2A_SPAWN_RESULT,
+            agentId: requesterAgentId,
+            ts: Date.now(),
+            data: {
+              fromAgent: requesterAgentId,
+              toAgent: targetAgentId,
+              targetSessionKey: childSessionKey,
+              conversationId,
+              parentConversationId,
+              taskId,
+              workSessionId,
+              depth: depthValue,
+              hop: hopValue,
+              status: "error",
+              error: messageText,
+              replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+            },
+          });
+          return jsonResult({
+            status: "error",
+            error: messageText,
+            replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+            childSessionKey,
+            workSessionId,
+            taskId,
+            conversationId,
+          });
+        }
+      }
+
       if (resolvedModel) {
         try {
           await callGateway({
@@ -412,6 +491,8 @@ export function createSessionsSpawnTool(opts?: {
         childSessionKey,
         label: label || undefined,
         task,
+        childDepth,
+        maxSpawnDepth,
       });
 
       const childIdem = crypto.randomUUID();
@@ -432,7 +513,7 @@ export function createSessionsSpawnTool(opts?: {
             lane: AGENT_LANE_SUBAGENT,
             extraSystemPrompt: childSystemPrompt,
             thinking: thinkingOverride,
-            timeout: runTimeoutSeconds > 0 ? runTimeoutSeconds : undefined,
+            timeout: runTimeoutSeconds,
             label: label || undefined,
             spawnedBy: spawnedByKey,
             groupId: opts?.agentGroupId ?? undefined,
@@ -479,7 +560,7 @@ export function createSessionsSpawnTool(opts?: {
         });
       }
 
-      registerSubagentRun({
+      subagentRegistry.registerSubagentRun({
         runId: childRunId,
         childSessionKey,
         requesterSessionKey: requesterInternalKey,
@@ -496,6 +577,7 @@ export function createSessionsSpawnTool(opts?: {
         hop: hopValue,
         requesterAgentId,
         targetAgentId,
+        model: resolvedModel,
         runTimeoutSeconds,
       });
 

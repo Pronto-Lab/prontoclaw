@@ -647,6 +647,7 @@ export async function preflightDiscordMessage(
     groupPolicy: params.groupPolicy,
     data: params.data,
     client: params.client,
+    messageChannelId: message.channel_id,
     message,
     author,
     sender,
