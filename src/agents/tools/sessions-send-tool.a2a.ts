@@ -6,6 +6,7 @@ import { emit } from "../../infra/events/bus.js";
 import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
+import { classifyA2AError, calculateBackoffMs } from "./a2a-error-classification.js";
 import { readLatestAssistantReply, runAgentStep } from "./agent-step.js";
 import { resolveAnnounceTarget } from "./sessions-announce-target.js";
 import {
@@ -154,14 +155,16 @@ export async function runSessionsSendA2AFlow(params: {
     let waitError: string | undefined;
     let maxWaitExceeded = false;
     if (!primaryReply && params.waitRunId) {
-      // Retry-based wait: instead of a single timeout that silently gives up,
-      // poll agent.wait in 30s chunks.  agent.wait returns immediately when the
-      // run completes, so this is NOT busy-polling — each chunk is event-driven
-      // on the gateway side.  We only loop to survive transient timeouts.
+      // Retry-aware wait: poll agent.wait in chunks, classify errors, apply backoff.
       const CHUNK_MS = 30_000;
       const MAX_WAIT_MS = 300_000; // 5 min absolute ceiling
+      const MAX_RETRIES = 3; // Max retries for transient/unknown errors
       let elapsed = 0;
+      let retryCount = 0;
+
       while (elapsed < MAX_WAIT_MS) {
+        let errorInfo: ReturnType<typeof classifyA2AError> | undefined;
+
         try {
           const wait = await callGateway<{ status?: string; error?: string }>({
             method: "agent.wait",
@@ -173,6 +176,7 @@ export async function runSessionsSendA2AFlow(params: {
           });
           waitStatus = typeof wait?.status === "string" ? wait.status : undefined;
           waitError = typeof wait?.error === "string" ? wait.error : undefined;
+
           if (wait?.status === "ok") {
             primaryReply = await readLatestAssistantReply({
               sessionKey: params.targetSessionKey,
@@ -180,26 +184,86 @@ export async function runSessionsSendA2AFlow(params: {
             latestReply = primaryReply;
             break;
           }
-          // "not_found" / "error" -> run is gone, stop waiting
-          if (wait?.status === "not_found" || wait?.status === "error") {
-            log.warn("agent.wait returned non-retriable status", {
+
+          // Classify non-ok wait responses
+          errorInfo = classifyA2AError(wait ?? { status: "error", error: "null response" });
+        } catch (err) {
+          // Gateway connection failure — classify it
+          errorInfo = classifyA2AError(err instanceof Error ? err : new Error(String(err)));
+          log.debug("agent.wait gateway hiccup", {
+            runId: params.waitRunId,
+            error: errorInfo.reason,
+          });
+        }
+
+        // Error handling with classification
+        if (errorInfo) {
+          if (!errorInfo.retriable) {
+            log.warn("a2a.wait: non-retriable error, stopping", {
+              category: errorInfo.category,
+              code: errorInfo.code,
+              reason: errorInfo.reason,
               runId: params.waitRunId,
-              status: wait?.status,
-              error: waitError,
             });
             break;
           }
-        } catch {
-          // Gateway connection hiccup -> retry
+
+          retryCount++;
+          if (retryCount > MAX_RETRIES) {
+            log.warn("a2a.wait: max retries exceeded", {
+              retryCount,
+              category: errorInfo.category,
+              code: errorInfo.code,
+              runId: params.waitRunId,
+            });
+            break;
+          }
+
+          const backoffMs = calculateBackoffMs(retryCount - 1);
+
+          // Emit retry event for monitoring
+          emit({
+            type: EVENT_TYPES.A2A_RETRY,
+            agentId: toAgent,
+            ts: Date.now(),
+            data: {
+              fromAgent,
+              toAgent,
+              runId: params.waitRunId,
+              attempt: retryCount,
+              maxAttempts: MAX_RETRIES,
+              errorCategory: errorInfo.category,
+              errorCode: errorInfo.code,
+              reason: errorInfo.reason,
+              backoffMs,
+              elapsedMs: elapsed,
+              conversationId,
+              ...sharedContext,
+            },
+          });
+
+          log.info("a2a.wait: retrying after backoff", {
+            attempt: retryCount,
+            backoffMs,
+            category: errorInfo.category,
+            code: errorInfo.code,
+            elapsed,
+          });
+
+          await new Promise((r) => setTimeout(r, backoffMs));
+          elapsed += backoffMs;
         }
+
         elapsed += CHUNK_MS;
       }
+
       if (elapsed >= MAX_WAIT_MS) {
         waitStatus = waitStatus || "timeout";
         maxWaitExceeded = true;
         log.warn("agent.wait exhausted max wait ceiling", {
           runId: params.waitRunId,
           maxWaitMs: MAX_WAIT_MS,
+          retryCount,
         });
       }
     }

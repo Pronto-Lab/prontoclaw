@@ -646,6 +646,7 @@ export function createSessionsSendTool(opts?: {
       }
 
       if (waitStatus === "timeout") {
+        startA2AFlow(undefined, runId);
         return jsonResult({
           runId,
           status: "timeout",
@@ -654,6 +655,7 @@ export function createSessionsSendTool(opts?: {
         });
       }
       if (waitStatus === "error") {
+        startA2AFlow(undefined, runId);
         return jsonResult({
           runId,
           status: "error",

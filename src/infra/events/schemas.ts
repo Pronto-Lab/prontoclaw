@@ -24,6 +24,7 @@ export const EVENT_TYPES = {
   A2A_AUTO_ROUTE: "a2a.auto_route",
   A2A_SPAWN: "a2a.spawn",
   A2A_SPAWN_RESULT: "a2a.spawn_result",
+  A2A_RETRY: "a2a.retry",
   MILESTONE_SYNC_FAILED: "milestone.sync_failed",
 } as const;
 
