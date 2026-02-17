@@ -72,6 +72,19 @@ function baseParams(overrides: Record<string, unknown> = {}) {
   };
 }
 
+type EmittedEvent = {
+  type?: string;
+  data?: Record<string, unknown>;
+};
+
+function eventFromCall(call: unknown[]): EmittedEvent {
+  const first = call[0];
+  if (!first || typeof first !== "object") {
+    return {};
+  }
+  return first as EmittedEvent;
+}
+
 describe("M1 - skipPingPong in A2A flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -138,31 +151,35 @@ describe("M1 - skipPingPong in A2A flow", () => {
   it("emits A2A_SEND event at start", async () => {
     await runSessionsSendA2AFlow(baseParams({ skipPingPong: true }));
 
-    const sendEvent = mockEmit.mock.calls.find((c: unknown[]) => (c[0] as any).type === "a2a.send");
+    const sendEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.send");
     expect(sendEvent).toBeDefined();
-    expect(sendEvent![0].data.fromAgent).toBe("requester");
-    expect(sendEvent![0].data.toAgent).toBe("target");
-    expect(sendEvent![0].data.conversationId).toBeDefined();
+    expect(sendEvent?.data?.fromAgent).toBe("requester");
+    expect(sendEvent?.data?.toAgent).toBe("target");
+    expect(sendEvent?.data?.conversationId).toBeDefined();
   });
 
   it("keeps full outbound message in A2A_SEND event (not clipped to 200 chars)", async () => {
     const longMessage = "M".repeat(260);
     await runSessionsSendA2AFlow(baseParams({ skipPingPong: true, message: longMessage }));
 
-    const sendEvent = mockEmit.mock.calls.find((c: unknown[]) => (c[0] as any).type === "a2a.send");
+    const sendEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.send");
     expect(sendEvent).toBeDefined();
-    expect(sendEvent?.[0]?.data?.message).toBe(longMessage);
+    expect(sendEvent?.data?.message).toBe(longMessage);
   });
 
   it("emits A2A_COMPLETE event at end", async () => {
     await runSessionsSendA2AFlow(baseParams({ skipPingPong: true }));
 
-    const completeEvent = mockEmit.mock.calls.find(
-      (c: unknown[]) => (c[0] as any).type === "a2a.complete",
-    );
+    const completeEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.complete");
     expect(completeEvent).toBeDefined();
-    expect(completeEvent![0].data.fromAgent).toBe("requester");
-    expect(completeEvent![0].data.toAgent).toBe("target");
+    expect(completeEvent?.data?.fromAgent).toBe("requester");
+    expect(completeEvent?.data?.toAgent).toBe("target");
   });
 
   it("[NO_REPLY_NEEDED] in message overrides even when skipPingPong not set", async () => {
@@ -178,12 +195,12 @@ describe("M1 - skipPingPong in A2A flow", () => {
   it("emits initial A2A_RESPONSE even when ping-pong is skipped", async () => {
     await runSessionsSendA2AFlow(baseParams({ skipPingPong: true }));
 
-    const responseEvents = mockEmit.mock.calls.filter(
-      (c: unknown[]) => (c[0] as any).type === "a2a.response",
-    );
+    const responseEvents = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .filter((event) => event.type === "a2a.response");
     expect(responseEvents).toHaveLength(1);
-    expect(responseEvents[0]?.[0]?.data?.fromAgent).toBe("target");
-    expect(responseEvents[0]?.[0]?.data?.toAgent).toBe("requester");
+    expect(responseEvents[0]?.data?.fromAgent).toBe("target");
+    expect(responseEvents[0]?.data?.toAgent).toBe("requester");
   });
 
   it("sanitizes directive tokens from initial response message", async () => {
@@ -194,12 +211,12 @@ describe("M1 - skipPingPong in A2A flow", () => {
       }),
     );
 
-    const responseEvent = mockEmit.mock.calls.find(
-      (c: unknown[]) => (c[0] as any).type === "a2a.response",
-    );
+    const responseEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.response");
     expect(responseEvent).toBeDefined();
-    expect(responseEvent?.[0]?.data?.message).toBe("코드 구현 상태 공유");
-    expect(responseEvent?.[0]?.data?.replyPreview).toBe("코드 구현 상태 공유");
+    expect(responseEvent?.data?.message).toBe("코드 구현 상태 공유");
+    expect(responseEvent?.data?.replyPreview).toBe("코드 구현 상태 공유");
   });
 
   it("keeps full response text in message while clipping preview", async () => {
@@ -215,9 +232,9 @@ describe("M1 - skipPingPong in A2A flow", () => {
     );
 
     const responseEvents = mockEmit.mock.calls
-      .filter((c: unknown[]) => (c[0] as any).type === "a2a.response")
-      .map((c: unknown[]) => c[0]);
-    const pingPongResponse = responseEvents.find((event: any) => event.data?.turn === 1);
+      .map((c: unknown[]) => eventFromCall(c))
+      .filter((event) => event.type === "a2a.response");
+    const pingPongResponse = responseEvents.find((event) => event.data?.turn === 1);
 
     expect(pingPongResponse).toBeDefined();
     expect(pingPongResponse?.data?.message).toBe(longReply);

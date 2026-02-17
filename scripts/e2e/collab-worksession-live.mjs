@@ -167,7 +167,7 @@ async function waitForConversationChain(conversationId, timeoutMs = 210_000) {
     await sleep(3_000);
   }
   const seen = Array.from(new Set(last.map((evt) => evt?.type)))
-    .toSorted()
+    .toSorted((a, b) => String(a ?? "").localeCompare(String(b ?? "")))
     .join(", ");
   throw new Error(
     `Timeout waiting conversation chain for ${conversationId}. Seen: ${seen || "none"}`,
@@ -340,7 +340,9 @@ function groupEvents(events) {
     if (conversationId) {
       threadId = conversationId;
     } else {
-      const pairKey = [fromAgent, toAgent].toSorted().join("_");
+      const pairKey = [fromAgent, toAgent]
+        .toSorted((a, b) => String(a).localeCompare(String(b)))
+        .join("_");
       let foundId = "";
       for (const [id, thread] of threadMap.entries()) {
         if (id.startsWith(pairKey) && Math.abs(timestamp - thread.lastTime) < TEMPORAL_THRESHOLD) {

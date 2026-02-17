@@ -756,7 +756,7 @@ function buildTaskHubCookieHeader(req?: http.IncomingMessage): string | null {
   return null;
 }
 
-async function readLastCoordinationEvent(): Promise<any | null> {
+async function readLastCoordinationEvent(): Promise<Record<string, unknown> | null> {
   const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
   try {
     const raw = await fs.readFile(eventLogPath, "utf-8");
@@ -764,7 +764,12 @@ async function readLastCoordinationEvent(): Promise<any | null> {
     if (lines.length === 0) {
       return null;
     }
-    return JSON.parse(lines[lines.length - 1]);
+    const lastLine = lines[lines.length - 1] ?? "";
+    const parsed = parseJsonSafe(lastLine);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -1821,7 +1826,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       // Look in both workspace-level and global plans directories
       const workspacePlansDir = path.join(workspaceDir, ".openclaw", "plans");
       const globalPlansDir = path.join(OPENCLAW_DIR, "plans");
-      const plans: unknown[] = [];
+      const plans: Array<Record<string, unknown>> = [];
 
       // Read from workspace plans
       try {
@@ -1832,7 +1837,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           }
           try {
             const raw = await fs.readFile(path.join(workspacePlansDir, file), "utf-8");
-            plans.push(JSON.parse(raw));
+            const parsed = parseJsonSafe(raw);
+            if (parsed && typeof parsed === "object") {
+              plans.push(parsed as Record<string, unknown>);
+            }
           } catch {
             /* skip invalid */
           }
@@ -1850,8 +1858,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
           }
           try {
             const raw = await fs.readFile(path.join(globalPlansDir, file), "utf-8");
-            const plan = JSON.parse(raw);
-            if (plan.agentId === agentId || file.startsWith(agentId + "_")) {
+            const parsed = parseJsonSafe(raw);
+            if (!parsed || typeof parsed !== "object") {
+              continue;
+            }
+            const plan = parsed as Record<string, unknown>;
+            const planAgentId = typeof plan.agentId === "string" ? plan.agentId : "";
+            if (planAgentId === agentId || file.startsWith(agentId + "_")) {
               plans.push(plan);
             }
           } catch {
@@ -1863,9 +1876,17 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       }
 
       // Sort by updatedAt/createdAt descending
-      plans.sort((a: any, b: any) => {
-        const ta = new Date(a.updatedAt || a.createdAt || a.submittedAt || 0).getTime();
-        const tb = new Date(b.updatedAt || b.createdAt || b.submittedAt || 0).getTime();
+      const resolvePlanTimestamp = (plan: Record<string, unknown>): number => {
+        const candidate =
+          (typeof plan.updatedAt === "string" && plan.updatedAt) ||
+          (typeof plan.createdAt === "string" && plan.createdAt) ||
+          (typeof plan.submittedAt === "string" && plan.submittedAt) ||
+          0;
+        return new Date(candidate).getTime();
+      };
+      plans.sort((a, b) => {
+        const ta = resolvePlanTimestamp(a);
+        const tb = resolvePlanTimestamp(b);
         return tb - ta;
       });
       jsonResponse(res, { agentId, plans, count: plans.length });
@@ -2186,7 +2207,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       });
       const body = await resp.text();
       jsonResponse(res, parseJsonSafe(body), resp.status);
-    } catch (err) {
+    } catch {
       errorResponse(res, "Failed to proxy milestone request", 502);
     }
     return;
@@ -2298,7 +2319,7 @@ function setupWebSocket(server: http.Server): WebSocketServer {
       if (isEventLog) {
         void (async () => {
           const lastEvent = await readLastCoordinationEvent();
-          const eventType = String(lastEvent?.type || "");
+          const eventType = typeof lastEvent?.type === "string" ? lastEvent.type : "";
           if (!eventType.startsWith("continuation.")) {
             return;
           }

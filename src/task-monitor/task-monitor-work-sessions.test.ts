@@ -38,10 +38,11 @@ describe("task-monitor work session aggregation", () => {
 
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.threads).toHaveLength(2);
-    expect(sessions[0]?.threads.map((thread) => thread.conversationId).toSorted()).toEqual([
-      "conv-a",
-      "conv-b",
-    ]);
+    expect(
+      sessions[0]?.threads
+        .map((thread) => thread.conversationId)
+        .toSorted((a, b) => String(a ?? "").localeCompare(String(b ?? ""))),
+    ).toEqual(["conv-a", "conv-b"]);
   });
 
   it("classifies session as QUIET when latest event is complete and ARCHIVED after 24h", () => {
