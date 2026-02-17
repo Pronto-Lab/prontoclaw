@@ -10,6 +10,7 @@ Included:
 - OPERATIONS-RUNBOOK.md
 - REFERENCES.md
 - SISYPHUS-DESIGN.md
+- SYSTEM-ARCHITECTURE.md — 시스템 아키텍처 & 데이터 플로우 (Mermaid 다이어그램 포함)
 - TASK-STEPS-DESIGN.md
 - WORKSESSION-COLLAB-DESIGN.md
 - deferred-fallback-discord-default-bot.md
