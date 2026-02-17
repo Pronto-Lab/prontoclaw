@@ -1717,6 +1717,315 @@ async function readWorkSessionCategoryOverrides(): Promise<WorkSessionCategoryOv
 }
 
 // ============================================================================
+
+// ============================================================================
+// MongoDB Persistence Layer (Design #2 Phase 2)
+// ============================================================================
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let mongoDb: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let mongoClient: any = null;
+
+const MONGODB_URI = process.env.MONGODB_URI || "";
+const MONGO_DB_NAME = "task_monitor";
+
+async function connectMongo(): Promise<boolean> {
+  if (!MONGODB_URI) {
+    console.log("[MongoDB] No MONGODB_URI configured, skipping persistence layer");
+    return false;
+  }
+  try {
+    const { MongoClient } = await import("mongodb");
+    mongoClient = new MongoClient(MONGODB_URI, {
+      connectTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 5000,
+    });
+    await mongoClient.connect();
+    mongoDb = mongoClient.db(MONGO_DB_NAME);
+
+    // Create indexes
+    const eventsCol = mongoDb.collection("coordination_events");
+    await eventsCol.createIndex({ ts: -1 });
+    await eventsCol.createIndex({ type: 1, ts: -1 });
+    await eventsCol.createIndex({ agentId: 1, ts: -1 });
+    await eventsCol.createIndex({ "data.conversationId": 1, ts: 1 });
+    await eventsCol.createIndex({ "data.workSessionId": 1, ts: 1 });
+    await eventsCol.createIndex({ eventRole: 1, ts: -1 });
+    await eventsCol.createIndex({ collabCategory: 1, ts: -1 });
+    await eventsCol.createIndex({ eventHash: 1 }, { unique: true });
+    await eventsCol.createIndex({ createdAt: 1 }, { expireAfterSeconds: 7_776_000 }); // 90 days
+
+    const sessionsCol = mongoDb.collection("work_sessions");
+    await sessionsCol.createIndex({ status: 1, lastTime: -1 });
+    await sessionsCol.createIndex({ collabCategory: 1, lastTime: -1 });
+    await sessionsCol.createIndex({ "threads.conversationId": 1 });
+    await sessionsCol.createIndex({ updatedAt: -1 });
+
+    console.log("[MongoDB] Connected to", MONGODB_URI, "db:", MONGO_DB_NAME);
+    return true;
+  } catch (err) {
+    console.error("[MongoDB] Connection failed:", (err as Error).message);
+    mongoDb = null;
+    mongoClient = null;
+    return false;
+  }
+}
+
+function computeEventHash(event: EnrichedCoordinationEvent): string {
+  const type = event.type || "";
+  const agentId = asString(event.agentId) || "";
+  const ts = String(coordinationEventTimestampMs(event));
+  const dataStr = JSON.stringify(event.data || {});
+  // Simple hash — Bun supports crypto
+  const raw = `${type}|${agentId}|${ts}|${dataStr}`;
+  if (typeof Bun !== "undefined") {
+    const hasher = new Bun.CryptoHasher("sha256");
+    hasher.update(raw);
+    return hasher.digest("hex");
+  }
+  // Fallback for non-Bun
+  const crypto = require("node:crypto");
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * Sync new events from EventCache to MongoDB.
+ * Called after each incremental file read.
+ */
+async function syncEventsToMongo(newEvents: EnrichedCoordinationEvent[]): Promise<void> {
+  if (!mongoDb || newEvents.length === 0) {
+    return;
+  }
+
+  const eventsCol = mongoDb.collection("coordination_events");
+  const sessionsCol = mongoDb.collection("work_sessions");
+
+  // 1. Upsert events (idempotent via eventHash)
+  const eventDocs = newEvents.map((event) => {
+    return {
+      type: event.type,
+      agentId: asString(event.agentId) || "unknown",
+      ts: coordinationEventTimestampMs(event),
+      createdAt: new Date(coordinationEventTimestampMs(event)),
+      data: event.data,
+      eventRole: event.eventRole,
+      collabCategory: event.collabCategory,
+      collabSubTags: event.collabSubTags,
+      categoryConfidence: event.categoryConfidence,
+      categorySource: event.categorySource,
+      fromSessionType: event.fromSessionType,
+      toSessionType: event.toSessionType,
+      eventHash: computeEventHash(event),
+    };
+  });
+
+  for (const doc of eventDocs) {
+    try {
+      await eventsCol.updateOne(
+        { eventHash: doc.eventHash },
+        { $setOnInsert: doc },
+        { upsert: true },
+      );
+    } catch (err) {
+      // Duplicate key is expected and safe to ignore
+      if ((err as { code?: number }).code !== 11000) {
+        console.error("[MongoDB] Event upsert error:", (err as Error).message);
+      }
+    }
+  }
+
+  // 2. Incrementally update work_sessions for affected workSessionIds
+  const affectedWorkSessionIds = new Set<string>();
+  for (const event of newEvents) {
+    const wsId = asString(asRecord(event.data).workSessionId);
+    if (wsId) {
+      affectedWorkSessionIds.add(wsId);
+    }
+  }
+
+  if (affectedWorkSessionIds.size > 0) {
+    // Re-build work sessions from cache for affected IDs and upsert
+    try {
+      const allSessions = await eventCache.getWorkSessions();
+      for (const wsId of affectedWorkSessionIds) {
+        const session = allSessions.find((s) => s.workSessionId === wsId);
+        if (!session) {
+          continue;
+        }
+
+        await sessionsCol.updateOne(
+          { _id: wsId as unknown as import("mongodb").ObjectId },
+          {
+            $set: {
+              workSessionId: session.workSessionId,
+              status: session.status,
+              startTime: session.startTime,
+              lastTime: session.lastTime,
+              durationMs: session.durationMs,
+              threadCount: session.threadCount,
+              eventCount: session.eventCount,
+              collabCategory: session.collabCategory,
+              collabSubTags: session.collabSubTags,
+              categorySource: session.categorySource,
+              threads: session.threads.map((t) => ({
+                id: t.id,
+                conversationId: t.conversationId,
+                fromAgent: t.fromAgent,
+                toAgent: t.toAgent,
+                startTime: t.startTime,
+                lastTime: t.lastTime,
+                eventCount: t.eventCount,
+                collabCategory: t.collabCategory,
+              })),
+              updatedAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+      }
+    } catch (err) {
+      console.error("[MongoDB] Work session sync error:", (err as Error).message);
+    }
+  }
+}
+
+/**
+ * Full sync from EventCache to MongoDB (on startup).
+ */
+async function fullSyncToMongo(): Promise<void> {
+  if (!mongoDb) {
+    return;
+  }
+
+  const eventsCol = mongoDb.collection("coordination_events");
+  const existingCount = await eventsCol.countDocuments();
+  const cacheEvents = eventCache.getEvents();
+
+  if (existingCount >= cacheEvents.length) {
+    console.log(
+      "[MongoDB] DB has",
+      existingCount,
+      "events, cache has",
+      cacheEvents.length,
+      "— skipping full sync",
+    );
+    return;
+  }
+
+  console.log("[MongoDB] Full sync:", cacheEvents.length, "events (DB has", existingCount, ")");
+
+  // Batch upsert in chunks of 500
+  const BATCH_SIZE = 500;
+  let synced = 0;
+  for (let i = 0; i < cacheEvents.length; i += BATCH_SIZE) {
+    const batch = cacheEvents.slice(i, i + BATCH_SIZE);
+    await syncEventsToMongo(batch);
+    synced += batch.length;
+  }
+  console.log("[MongoDB] Full sync complete:", synced, "events processed");
+}
+
+// MongoDB search API handler
+async function handleMongoSearch(url: URL, res: import("http").ServerResponse): Promise<boolean> {
+  if (!mongoDb) {
+    return false;
+  }
+
+  const searchQuery = url.searchParams.get("q");
+  if (!searchQuery) {
+    return false;
+  }
+
+  const limit = Number(url.searchParams.get("limit")) || 50;
+  const offset = Number(url.searchParams.get("offset")) || 0;
+  const roleFilter = asString(url.searchParams.get("role")) || undefined;
+  const category = asString(url.searchParams.get("viewCategory")) || undefined;
+
+  try {
+    const eventsCol = mongoDb.collection("coordination_events");
+    const query: Record<string, unknown> = {
+      $or: [
+        { "data.message": { $regex: searchQuery, $options: "i" } },
+        { "data.replyPreview": { $regex: searchQuery, $options: "i" } },
+        { "data.fromAgent": { $regex: searchQuery, $options: "i" } },
+        { "data.toAgent": { $regex: searchQuery, $options: "i" } },
+        { type: { $regex: searchQuery, $options: "i" } },
+      ],
+    };
+
+    if (roleFilter) {
+      query.eventRole = roleFilter;
+    }
+    if (category && category !== "all") {
+      query.collabCategory = category;
+    }
+
+    const [events, total] = await Promise.all([
+      eventsCol.find(query).toSorted({ ts: -1 }).skip(offset).limit(limit).toArray(),
+      eventsCol.countDocuments(query),
+    ]);
+
+    jsonResponse(res, {
+      events,
+      count: events.length,
+      total,
+      offset,
+      limit,
+      query: searchQuery,
+    });
+    return true;
+  } catch (err) {
+    console.error("[MongoDB] Search error:", (err as Error).message);
+    return false;
+  }
+}
+
+// MongoDB work sessions search
+async function handleMongoWorkSessionSearch(
+  url: URL,
+  res: import("http").ServerResponse,
+): Promise<boolean> {
+  if (!mongoDb) {
+    return false;
+  }
+
+  const searchQuery = url.searchParams.get("q");
+  if (!searchQuery) {
+    return false;
+  }
+
+  const limit = Number(url.searchParams.get("limit")) || 50;
+
+  try {
+    const sessionsCol = mongoDb.collection("work_sessions");
+    const query = {
+      $or: [
+        { "threads.fromAgent": { $regex: searchQuery, $options: "i" } },
+        { "threads.toAgent": { $regex: searchQuery, $options: "i" } },
+        { collabCategory: { $regex: searchQuery, $options: "i" } },
+        { workSessionId: { $regex: searchQuery, $options: "i" } },
+      ],
+    };
+
+    const sessions = await sessionsCol
+      .find(query)
+      .toSorted({ lastTime: -1 })
+      .limit(limit)
+      .toArray();
+
+    jsonResponse(res, {
+      sessions,
+      count: sessions.length,
+      query: searchQuery,
+    });
+    return true;
+  } catch (err) {
+    console.error("[MongoDB] Work session search error:", (err as Error).message);
+    return false;
+  }
+}
+
 // EventCache — In-memory incremental event cache (Design #2 Phase 1)
 // ============================================================================
 
@@ -2087,6 +2396,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   // Plans endpoint moved into agent action handler above
 
   // Events endpoint: /api/events?limit=100&since=<ISO>&role=<role>&viewCategory=<category>
+  // MongoDB-backed search endpoint (Design #2 Phase 2)
+  if (pathname === "/api/events/search") {
+    const handled = await handleMongoSearch(url, res);
+    if (!handled) {
+      jsonResponse(res, { events: [], count: 0, total: 0, error: "MongoDB not available" });
+    }
+    return;
+  }
+
+  if (pathname === "/api/work-sessions/search") {
+    const handled = await handleMongoWorkSessionSearch(url, res);
+    if (!handled) {
+      jsonResponse(res, { sessions: [], count: 0, error: "MongoDB not available" });
+    }
+    return;
+  }
+
   if (pathname === "/api/events") {
     const limit = Number(url.searchParams.get("limit")) || 100;
     const since = url.searchParams.get("since");
@@ -2508,6 +2834,13 @@ function setupWebSocket(server: http.Server): WebSocketServer {
           // Incremental cache update (Design #2 Phase 1)
           const newEvents = await eventCache.onFileChange();
 
+          // Phase 2: Sync new events to MongoDB
+          if (newEvents.length > 0) {
+            syncEventsToMongo(newEvents).catch((err) =>
+              console.error("[MongoDB] Sync error:", (err as Error).message),
+            );
+          }
+
           // Push actual event data via WebSocket
           if (newEvents.length > 0) {
             const affectedWorkSessionIds = new Set<string>();
@@ -2675,6 +3008,12 @@ async function main(): Promise<void> {
   // Initialize event cache (Design #2 Phase 1)
   await eventCache.initialize();
 
+  // Initialize MongoDB persistence (Design #2 Phase 2)
+  const mongoConnected = await connectMongo();
+  if (mongoConnected) {
+    await fullSyncToMongo();
+  }
+
   // Setup WebSocket
   setupWebSocket(server);
 
@@ -2710,8 +3049,16 @@ async function main(): Promise<void> {
 `);
 
   // Graceful shutdown
-  process.on("SIGINT", () => {
+  process.on("SIGINT", async () => {
     console.log("\n[shutdown] Stopping server...");
+    if (mongoClient) {
+      try {
+        await mongoClient.close();
+        console.log("[shutdown] MongoDB connection closed");
+      } catch {
+        /* ignore */
+      }
+    }
     server.close(() => {
       console.log("[shutdown] Server stopped");
       process.exit(0);
