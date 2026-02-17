@@ -84,6 +84,8 @@ interface TaskFile {
   source?: string;
   created: string;
   lastActivity: string;
+  workSessionId?: string;
+  previousWorkSessionId?: string;
   progress: string[];
   // Blocked task fields
   blockedReason?: string;
@@ -181,6 +183,8 @@ export function parseTaskFileMd(content: string, filename: string): TaskFile | n
   let description = "";
   let context: string | undefined;
   let source: string | undefined;
+  let workSessionId: string | undefined;
+  let previousWorkSessionId: string | undefined;
   let created = "";
   let lastActivity = "";
   const progress: string[] = [];
@@ -241,6 +245,16 @@ export function parseTaskFileMd(content: string, filename: string): TaskFile | n
       const sourceMatch = trimmed.match(/^-?\s*\*\*Source:\*\*\s*(.+)$/);
       if (sourceMatch) {
         source = sourceMatch[1];
+      }
+      const workSessionMatch = trimmed.match(/^-?\s*\*\*Work Session:\*\*\s*(.+)$/);
+      if (workSessionMatch) {
+        workSessionId = workSessionMatch[1].trim() || undefined;
+      }
+      const previousWorkSessionMatch = trimmed.match(
+        /^-?\s*\*\*Previous Work Session:\*\*\s*(.+)$/,
+      );
+      if (previousWorkSessionMatch) {
+        previousWorkSessionId = previousWorkSessionMatch[1].trim() || undefined;
       }
       // Blocked task field parsers
       const blockedReasonMatch = trimmed.match(/^-?\s*\*\*Blocked Reason:\*\*\s*(.+)$/);
@@ -387,6 +401,8 @@ export function parseTaskFileMd(content: string, filename: string): TaskFile | n
     description: description || "(no description)",
     context,
     source,
+    workSessionId,
+    previousWorkSessionId,
     created: created || new Date().toISOString(),
     lastActivity: lastActivity || created || new Date().toISOString(),
     progress,
@@ -707,7 +723,8 @@ function normalizeTeamState(rawState: unknown): {
   agents: Record<string, unknown>;
   lastUpdatedMs: number;
 } {
-  const state = rawState && typeof rawState === "object" ? (rawState as Record<string, unknown>) : {};
+  const state =
+    rawState && typeof rawState === "object" ? (rawState as Record<string, unknown>) : {};
   const lastUpdatedMsRaw = state.lastUpdatedMs;
   const updatedAtRaw = state.updatedAt;
   const lastUpdatedMs =
@@ -718,7 +735,8 @@ function normalizeTeamState(rawState: unknown): {
         : 0;
 
   return {
-    version: typeof state.version === "number" && Number.isFinite(state.version) ? state.version : 1,
+    version:
+      typeof state.version === "number" && Number.isFinite(state.version) ? state.version : 1,
     agents:
       state.agents && typeof state.agents === "object"
         ? (state.agents as Record<string, unknown>)
@@ -750,6 +768,563 @@ async function readLastCoordinationEvent(): Promise<any | null> {
   } catch {
     return null;
   }
+}
+
+// ============================================================================
+// Event Classification (Role + Category)
+// ============================================================================
+
+export type EventRole =
+  | "conversation.main"
+  | "delegation.subagent"
+  | "orchestration.task"
+  | "system.observability";
+
+export type SessionType = "main" | "subagent" | "unknown";
+
+export type CollaborationCategory =
+  | "engineering_build"
+  | "infra_ops"
+  | "qa_validation"
+  | "planning_decision"
+  | "research_analysis"
+  | "docs_knowledge"
+  | "growth_marketing"
+  | "customer_community"
+  | "legal_compliance"
+  | "biz_strategy";
+
+export const COLLABORATION_CATEGORIES: CollaborationCategory[] = [
+  "engineering_build",
+  "infra_ops",
+  "qa_validation",
+  "planning_decision",
+  "research_analysis",
+  "docs_knowledge",
+  "growth_marketing",
+  "customer_community",
+  "legal_compliance",
+  "biz_strategy",
+];
+
+type EnrichedCoordinationEvent = Record<string, unknown> & {
+  type: string;
+  data: Record<string, unknown>;
+  eventRole: EventRole;
+  fromSessionType: SessionType;
+  toSessionType: SessionType;
+  collabCategory: CollaborationCategory;
+  collabSubTags: string[];
+  categoryConfidence: number;
+  categorySource: "manual" | "rule" | "heuristic" | "fallback";
+};
+
+let mainAgentCache: { mtimeMs: number; ids: Set<string> } | null = null;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeAgentId(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized || undefined;
+}
+
+export function resolveMainAgentIdsFromConfig(parsed: unknown): Set<string> {
+  const record = asRecord(parsed);
+  const agents = asRecord(record.agents);
+  const ids = new Set<string>();
+
+  // Preferred schema: agents.list: [{ id: "..." }]
+  const list = Array.isArray(agents.list) ? agents.list : [];
+  for (const entry of list) {
+    const id = normalizeAgentId(asString(asRecord(entry).id));
+    if (id) {
+      ids.add(id);
+    }
+  }
+
+  // Backward compatibility for map-like agents objects.
+  for (const [key, value] of Object.entries(agents)) {
+    if (key === "list" || key === "defaults") {
+      continue;
+    }
+    const valueRecord = asRecord(value);
+    const explicitId = normalizeAgentId(asString(valueRecord.id));
+    if (explicitId) {
+      ids.add(explicitId);
+      continue;
+    }
+    if (Object.keys(valueRecord).length > 0) {
+      const keyAsId = normalizeAgentId(key);
+      if (keyAsId) {
+        ids.add(keyAsId);
+      }
+    }
+  }
+
+  ids.add("main");
+  ids.add("ruda");
+  return ids;
+}
+
+function resolveMainAgentIds(): Set<string> {
+  const configPath = path.join(OPENCLAW_DIR, "openclaw.json");
+  try {
+    const stat = fsSync.statSync(configPath);
+    if (mainAgentCache && mainAgentCache.mtimeMs === stat.mtimeMs) {
+      return mainAgentCache.ids;
+    }
+    const raw = fsSync.readFileSync(configPath, "utf-8");
+    const ids = resolveMainAgentIdsFromConfig(parseJsonSafe(raw));
+    mainAgentCache = { mtimeMs: stat.mtimeMs, ids };
+    return ids;
+  } catch {
+    return new Set(["main", "ruda"]);
+  }
+}
+
+function isMainAgentId(agentId: string | undefined, mainAgents: Set<string>): boolean {
+  const normalized = normalizeAgentId(agentId);
+  return !!(normalized && mainAgents.has(normalized));
+}
+
+function sessionTypeFromSessionKey(sessionKey: string | undefined): SessionType {
+  if (!sessionKey) {
+    return "unknown";
+  }
+  if (sessionKey.includes(":subagent:")) {
+    return "subagent";
+  }
+  if (/^agent:[^:]+:main$/i.test(sessionKey)) {
+    return "main";
+  }
+  return "unknown";
+}
+
+function orchestrationType(type: string): boolean {
+  return (
+    type.startsWith("task.") ||
+    type.startsWith("continuation.") ||
+    type.startsWith("plan.") ||
+    type.startsWith("unblock.") ||
+    type.startsWith("zombie.") ||
+    type.startsWith("resume_reminder.") ||
+    type.startsWith("backlog.")
+  );
+}
+
+function deriveSessionTypes(params: {
+  eventType: string;
+  data: Record<string, unknown>;
+  fromAgent?: string;
+  toAgent?: string;
+  mainAgents: Set<string>;
+}): { fromSessionType: SessionType; toSessionType: SessionType } {
+  const explicitFrom = asString(params.data.fromSessionType);
+  const explicitTo = asString(params.data.toSessionType);
+
+  if (
+    (explicitFrom === "main" || explicitFrom === "subagent" || explicitFrom === "unknown") &&
+    (explicitTo === "main" || explicitTo === "subagent" || explicitTo === "unknown")
+  ) {
+    return {
+      fromSessionType: explicitFrom as SessionType,
+      toSessionType: explicitTo as SessionType,
+    };
+  }
+
+  const targetSessionKey = asString(params.data.targetSessionKey);
+  const sourceSessionKey =
+    asString(params.data.sourceSessionKey) ||
+    asString(params.data.requesterSessionKey) ||
+    asString(params.data.sessionKey);
+
+  let fromSessionType = sessionTypeFromSessionKey(sourceSessionKey);
+  let toSessionType = sessionTypeFromSessionKey(targetSessionKey);
+
+  if (params.eventType === "a2a.spawn" || params.eventType === "a2a.spawn_result") {
+    fromSessionType = "main";
+    toSessionType = "subagent";
+  }
+
+  const hasDelegationHint =
+    asString(params.data.parentConversationId) !== undefined ||
+    asNumber(params.data.depth) !== undefined ||
+    asNumber(params.data.hop) !== undefined;
+
+  if (fromSessionType === "unknown") {
+    if (isMainAgentId(params.fromAgent, params.mainAgents)) {
+      fromSessionType = "main";
+    } else if (hasDelegationHint && isMainAgentId(params.toAgent, params.mainAgents)) {
+      fromSessionType = "subagent";
+    }
+  }
+
+  if (toSessionType === "unknown") {
+    if (isMainAgentId(params.toAgent, params.mainAgents)) {
+      toSessionType = "main";
+    } else if (hasDelegationHint && isMainAgentId(params.fromAgent, params.mainAgents)) {
+      toSessionType = "subagent";
+    }
+  }
+
+  return { fromSessionType, toSessionType };
+}
+
+function deriveEventRole(params: {
+  eventType: string;
+  data: Record<string, unknown>;
+  fromAgent?: string;
+  toAgent?: string;
+  fromSessionType: SessionType;
+  toSessionType: SessionType;
+  mainAgents: Set<string>;
+}): EventRole {
+  const explicit = asString(params.data.eventRole);
+  if (
+    explicit === "conversation.main" ||
+    explicit === "delegation.subagent" ||
+    explicit === "orchestration.task" ||
+    explicit === "system.observability"
+  ) {
+    return explicit;
+  }
+
+  if (orchestrationType(params.eventType)) {
+    return "orchestration.task";
+  }
+
+  if (params.eventType === "milestone.sync_failed") {
+    return "system.observability";
+  }
+
+  if (params.eventType.startsWith("a2a.")) {
+    const delegationHint =
+      params.eventType === "a2a.spawn" ||
+      params.eventType === "a2a.spawn_result" ||
+      asString(params.data.parentConversationId) !== undefined ||
+      asNumber(params.data.depth) !== undefined ||
+      asNumber(params.data.hop) !== undefined ||
+      params.fromSessionType === "subagent" ||
+      params.toSessionType === "subagent";
+
+    if (delegationHint) {
+      return "delegation.subagent";
+    }
+
+    const bothMain = params.fromSessionType === "main" && params.toSessionType === "main";
+
+    return bothMain ? "conversation.main" : "delegation.subagent";
+  }
+
+  return "system.observability";
+}
+
+const CATEGORY_KEYWORDS: Record<CollaborationCategory, string[]> = {
+  engineering_build: [
+    "implement",
+    "implementation",
+    "build",
+    "feature",
+    "refactor",
+    "bugfix",
+    "fix",
+    "코드",
+    "구현",
+    "개발",
+    "리팩토링",
+    "버그",
+  ],
+  infra_ops: [
+    "deploy",
+    "deployment",
+    "infra",
+    "infrastructure",
+    "docker",
+    "k8s",
+    "ops",
+    "incident",
+    "운영",
+    "인프라",
+    "배포",
+    "장애",
+    "서버",
+  ],
+  qa_validation: [
+    "test",
+    "testing",
+    "qa",
+    "validation",
+    "verify",
+    "e2e",
+    "회귀",
+    "검증",
+    "테스트",
+    "품질",
+  ],
+  planning_decision: [
+    "plan",
+    "planning",
+    "decision",
+    "design",
+    "architecture",
+    "scope",
+    "우선순위",
+    "설계",
+    "기획",
+    "의사결정",
+    "정책",
+  ],
+  research_analysis: [
+    "research",
+    "analysis",
+    "investigate",
+    "compare",
+    "benchmark",
+    "root cause",
+    "분석",
+    "조사",
+    "리서치",
+    "원인",
+    "비교",
+  ],
+  docs_knowledge: [
+    "doc",
+    "docs",
+    "documentation",
+    "guide",
+    "readme",
+    "wiki",
+    "문서",
+    "가이드",
+    "정리",
+    "기록",
+  ],
+  growth_marketing: [
+    "campaign",
+    "marketing",
+    "growth",
+    "experiment",
+    "copy",
+    "funnel",
+    "마케팅",
+    "성장",
+    "캠페인",
+    "전환",
+  ],
+  customer_community: [
+    "customer",
+    "community",
+    "support",
+    "ticket",
+    "feedback",
+    "cs",
+    "고객",
+    "커뮤니티",
+    "문의",
+    "피드백",
+  ],
+  legal_compliance: [
+    "legal",
+    "compliance",
+    "policy",
+    "terms",
+    "regulation",
+    "contract",
+    "법무",
+    "컴플라이언스",
+    "약관",
+    "규정",
+    "계약",
+  ],
+  biz_strategy: [
+    "kpi",
+    "revenue",
+    "strategy",
+    "business",
+    "roadmap",
+    "roi",
+    "비즈니스",
+    "전략",
+    "지표",
+    "매출",
+  ],
+};
+
+function eventTextCandidates(eventType: string, data: Record<string, unknown>): string[] {
+  const candidates: string[] = [eventType];
+  const keys = [
+    "label",
+    "message",
+    "replyPreview",
+    "description",
+    "summary",
+    "reason",
+    "title",
+    "taskId",
+    "workSessionId",
+    "collabIntent",
+  ];
+  for (const key of keys) {
+    const value = asString(data[key]);
+    if (value) {
+      candidates.push(value);
+    }
+  }
+  return candidates;
+}
+
+function fallbackCategoryByRole(role: EventRole): CollaborationCategory {
+  if (role === "orchestration.task") {
+    return "planning_decision";
+  }
+  if (role === "system.observability") {
+    return "infra_ops";
+  }
+  return "engineering_build";
+}
+
+function classifyCollaborationCategory(params: {
+  role: EventRole;
+  eventType: string;
+  data: Record<string, unknown>;
+}): {
+  collabCategory: CollaborationCategory;
+  collabSubTags: string[];
+  categoryConfidence: number;
+  categorySource: "manual" | "rule" | "heuristic" | "fallback";
+  collabIntent?: string;
+} {
+  const explicit = asString(params.data.collabCategory);
+  if (explicit && COLLABORATION_CATEGORIES.includes(explicit as CollaborationCategory)) {
+    const explicitSubTags = Array.isArray(params.data.collabSubTags)
+      ? (params.data.collabSubTags as unknown[])
+          .map((value) => asString(value))
+          .filter((value): value is string => !!value)
+          .slice(0, 5)
+      : [];
+    return {
+      collabCategory: explicit as CollaborationCategory,
+      collabSubTags: explicitSubTags,
+      categoryConfidence: 1,
+      categorySource: "manual",
+      collabIntent: asString(params.data.collabIntent),
+    };
+  }
+
+  const haystack = eventTextCandidates(params.eventType, params.data).join("\n").toLowerCase();
+  const scores = new Map<CollaborationCategory, { score: number; hits: string[] }>();
+
+  for (const category of COLLABORATION_CATEGORIES) {
+    const hits: string[] = [];
+    let score = 0;
+    for (const keyword of CATEGORY_KEYWORDS[category]) {
+      if (haystack.includes(keyword.toLowerCase())) {
+        hits.push(keyword);
+        score += keyword.length > 4 ? 2 : 1;
+      }
+    }
+    scores.set(category, { score, hits });
+  }
+
+  const ranked = [...scores.entries()].toSorted((a, b) => b[1].score - a[1].score);
+  const [topCategory, topScoreEntry] = ranked[0];
+  const secondScore = ranked[1]?.[1]?.score ?? 0;
+
+  if (topScoreEntry.score > 0) {
+    const gap = Math.max(0, topScoreEntry.score - secondScore);
+    const confidence = Math.min(0.95, 0.5 + topScoreEntry.score * 0.08 + gap * 0.05);
+    return {
+      collabCategory: topCategory,
+      collabSubTags: topScoreEntry.hits.slice(0, 3),
+      categoryConfidence: Number(confidence.toFixed(2)),
+      categorySource: "rule",
+      collabIntent: asString(params.data.collabIntent),
+    };
+  }
+
+  return {
+    collabCategory: fallbackCategoryByRole(params.role),
+    collabSubTags: [],
+    categoryConfidence: 0.2,
+    categorySource: "fallback",
+    collabIntent: asString(params.data.collabIntent),
+  };
+}
+
+export function enrichCoordinationEvent(rawEvent: unknown): EnrichedCoordinationEvent | null {
+  const record = asRecord(rawEvent);
+  const type = asString(record.type);
+  if (!type) {
+    return null;
+  }
+
+  const data = asRecord(record.data);
+  const fromAgent =
+    asString(data.fromAgent) || asString(data.senderAgentId) || asString(record.agentId);
+  const toAgent = asString(data.toAgent) || asString(data.targetAgentId);
+  const mainAgents = resolveMainAgentIds();
+
+  const { fromSessionType, toSessionType } = deriveSessionTypes({
+    eventType: type,
+    data,
+    fromAgent,
+    toAgent,
+    mainAgents,
+  });
+
+  const eventRole = deriveEventRole({
+    eventType: type,
+    data,
+    fromAgent,
+    toAgent,
+    fromSessionType,
+    toSessionType,
+    mainAgents,
+  });
+
+  const category = classifyCollaborationCategory({ role: eventRole, eventType: type, data });
+
+  const enrichedData: Record<string, unknown> = {
+    ...data,
+    eventRole,
+    fromSessionType,
+    toSessionType,
+    collabCategory: category.collabCategory,
+    collabSubTags: category.collabSubTags,
+    collabIntent: category.collabIntent,
+    categoryConfidence: category.categoryConfidence,
+    categorySource: category.categorySource,
+    categoryVersion: asString(data.categoryVersion) || "v1",
+  };
+
+  return {
+    ...record,
+    type,
+    data: enrichedData,
+    eventRole,
+    fromSessionType,
+    toSessionType,
+    collabCategory: category.collabCategory,
+    collabSubTags: category.collabSubTags,
+    categoryConfidence: category.categoryConfidence,
+    categorySource: category.categorySource,
+  };
 }
 
 // ============================================================================
@@ -951,10 +1526,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
   // Plans endpoint moved into agent action handler above
 
-  // Events endpoint: /api/events?limit=100&since=<ISO>
+  // Events endpoint: /api/events?limit=100&since=<ISO>&role=<role>&viewCategory=<category>
   if (pathname === "/api/events") {
     const limit = Number(url.searchParams.get("limit")) || 100;
     const since = url.searchParams.get("since");
+    const roleFilter = asString(url.searchParams.get("role")) || undefined;
+    const viewCategory = asString(url.searchParams.get("viewCategory")) || undefined;
     const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
     try {
       const raw = await fs.readFile(eventLogPath, "utf-8");
@@ -962,24 +1539,59 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       let events = lines
         .map((line: string) => {
           try {
-            return JSON.parse(line);
+            return enrichCoordinationEvent(JSON.parse(line));
           } catch {
             return null;
           }
         })
-        .filter(Boolean);
+        .filter((event): event is EnrichedCoordinationEvent => !!event);
+
       if (since) {
         const sinceMs = new Date(since).getTime();
-        events = events.filter((e: any) => {
-          const ts = e.timestampMs || new Date(e.timestamp || 0).getTime();
+        events = events.filter((event) => {
+          const ts =
+            asNumber(event.timestampMs) ||
+            (asString(event.timestamp) ? new Date(asString(event.timestamp) || 0).getTime() : 0);
           return ts >= sinceMs;
         });
       }
-      // Return last N events
-      events = events.slice(-limit);
-      jsonResponse(res, { events, count: events.length, total: lines.length });
+
+      if (roleFilter) {
+        events = events.filter((event) => event.eventRole === roleFilter);
+      }
+
+      if (viewCategory && viewCategory !== "all") {
+        events = events.filter((event) => event.collabCategory === viewCategory);
+      }
+
+      const categoryCounts: Record<string, number> = {};
+      for (const event of events) {
+        const key = event.collabCategory;
+        categoryCounts[key] = (categoryCounts[key] || 0) + 1;
+      }
+
+      const totalMatched = events.length;
+      const limitedEvents = events.slice(-Math.max(1, limit));
+
+      jsonResponse(res, {
+        events: limitedEvents,
+        count: limitedEvents.length,
+        total: lines.length,
+        totalMatched,
+        role: roleFilter || null,
+        viewCategory: viewCategory || null,
+        categoryCounts,
+      });
     } catch {
-      jsonResponse(res, { events: [], count: 0, total: 0 });
+      jsonResponse(res, {
+        events: [],
+        count: 0,
+        total: 0,
+        totalMatched: 0,
+        role: roleFilter || null,
+        viewCategory: viewCategory || null,
+        categoryCounts: {},
+      });
     }
     return;
   }
@@ -1002,7 +1614,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents/:agentId/history?month=2026-02",
         "GET /api/agents/:agentId/plans",
         "GET /api/team-state",
-        "GET /api/events?limit=100&since=<ISO>",
+        "GET /api/events?limit=100&since=<ISO>&role=<conversation.main|delegation.subagent|orchestration.task|system.observability>&viewCategory=<category>",
         "POST /api/workspace-file",
         "WS /ws",
       ],

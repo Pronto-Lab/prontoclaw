@@ -128,8 +128,13 @@ export async function loadPendingTasks(cfg: ReturnType<typeof loadConfig>): Prom
             continue;
           }
 
-          const descMatch = content.match(/\*\*Description:\*\*\s*(.+)/);
-          const description = descMatch?.[1]?.trim() ?? file.replace(".md", "");
+          // Current task format writes description/context as dedicated sections.
+          // Keep legacy metadata key fallback for older task files.
+          const descSectionMatch = content.match(/##\s*Description\s*\n([\s\S]*?)(?=\n## |$)/i);
+          const descriptionFromSection = descSectionMatch?.[1]?.trim();
+          const descLegacyMatch = content.match(/\*\*Description:\*\*\s*(.+)/i);
+          const description =
+            descriptionFromSection || descLegacyMatch?.[1]?.trim() || file.replace(".md", "");
 
           const progressItems: string[] = [];
           const progressSection = content.match(/## Progress\n([\s\S]*?)(?=\n## |$)/);
@@ -142,12 +147,15 @@ export async function loadPendingTasks(cfg: ReturnType<typeof loadConfig>): Prom
             }
           }
 
-          const contextMatch = content.match(/\*\*Context:\*\*\s*(.+)/);
+          const contextSectionMatch = content.match(/##\s*Context\s*\n([\s\S]*?)(?=\n## |$)/i);
+          const contextFromSection = contextSectionMatch?.[1]?.trim();
+          const contextLegacyMatch = content.match(/\*\*Context:\*\*\s*(.+)/i);
+          const context = contextFromSection || contextLegacyMatch?.[1]?.trim() || "";
 
           tasks.push({
             agentId,
             task: description,
-            context: contextMatch?.[1]?.trim() ?? "",
+            context,
             next: "",
             progress: progressItems,
           });

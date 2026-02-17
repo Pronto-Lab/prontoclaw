@@ -51,17 +51,20 @@ function makeTaskMd(opts: {
     "## Metadata",
     `- **Status:** ${opts.status}`,
     `- **Priority:** high`,
-    `- **Description:** ${opts.description}`,
     `- **Created:** 2026-02-05T10:00:00Z`,
-    `- **Last Activity:** 2026-02-05T10:00:00Z`,
+    "",
+    "## Description",
+    opts.description,
+    "",
   ];
   if (opts.context) {
-    lines.push(`- **Context:** ${opts.context}`);
+    lines.push("## Context", opts.context, "");
   }
-  lines.push("", "## Progress");
+  lines.push("## Progress");
   for (const p of opts.progress ?? ["Task started"]) {
     lines.push(`- ${p}`);
   }
+  lines.push("", "## Last Activity", "2026-02-05T10:00:00Z", "", "---", "*Managed by task tools*");
   return lines.join("\n");
 }
 
@@ -145,6 +148,34 @@ describe("task-continuation", () => {
       expect(tasks).toHaveLength(1);
       expect(tasks[0].agentId).toBe("eden");
       expect(tasks[0].task).toBe("Blocked task");
+    });
+
+    it("supports legacy metadata description/context format for backward compatibility", async () => {
+      const { loadPendingTasks } = await import("./task-continuation.js");
+
+      vi.mocked(listAgentIds).mockReturnValue(["main"]);
+      vi.mocked(fs.readdir).mockResolvedValue(["task_legacy.md"] as any);
+      vi.mocked(fs.readFile).mockResolvedValueOnce(
+        [
+          "# Task: task_legacy",
+          "",
+          "## Metadata",
+          "- **Status:** in_progress",
+          "- **Priority:** high",
+          "- **Description:** Legacy description",
+          "- **Context:** Legacy context",
+          "",
+          "## Progress",
+          "- Legacy step",
+        ].join("\n"),
+      );
+
+      const tasks = await loadPendingTasks({} as never);
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]).toMatchObject({
+        task: "Legacy description",
+        context: "Legacy context",
+      });
     });
 
     it("returns tasks for multiple agents", async () => {
