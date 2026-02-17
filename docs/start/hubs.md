@@ -48,6 +48,7 @@ Use these hubs to discover every page, including deep dives and reference docs t
 - [Agent loop](/concepts/agent-loop)
 - [Streaming + chunking](/concepts/streaming)
 - [Multi-agent routing](/concepts/multi-agent)
+- [Collaboration event model](/concepts/collaboration-event-model)
 - [Compaction](/concepts/compaction)
 - [Sessions](/concepts/session)
 - [Sessions (alias)](/concepts/sessions)

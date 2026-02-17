@@ -35,4 +35,21 @@ describe("resolveConversationLabel", () => {
     };
     expect(resolveConversationLabel(ctx)).toBe("Family id:123@g.us");
   });
+
+  it("masks sensitive data in explicit labels", () => {
+    const ctx: MsgContext = {
+      ChatType: "group",
+      ConversationLabel: "owner qa_test@resona.co.kr",
+    };
+    expect(resolveConversationLabel(ctx)).toBe("owner [redacted-email]");
+  });
+
+  it("masks internal URLs in group labels", () => {
+    const ctx: MsgContext = {
+      ChatType: "group",
+      GroupSubject: "ops http://10.0.1.7:8080/debug",
+      From: "telegram:group:42",
+    };
+    expect(resolveConversationLabel(ctx)).toBe("ops [redacted-internal-url] id:42");
+  });
 });

@@ -1,7 +1,10 @@
 import { Type } from "@sinclair/typebox";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { AnyAgentTool } from "./common.js";
 import { loadConfig } from "../../config/config.js";
+import { resolveStateDir } from "../../config/paths.js";
 import { callGateway } from "../../gateway/call.js";
 import {
   isSubagentSessionKey,
@@ -34,6 +37,7 @@ const SessionsSendToolSchema = Type.Object({
   agentId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
   taskId: Type.Optional(Type.String()),
   workSessionId: Type.Optional(Type.String()),
+  conversationId: Type.Optional(Type.String()),
   parentConversationId: Type.Optional(Type.String()),
   depth: Type.Optional(Type.Number({ minimum: 0 })),
   hop: Type.Optional(Type.Number({ minimum: 0 })),
@@ -54,6 +58,165 @@ function normalizeNonNegativeInt(value: unknown): number | undefined {
     return undefined;
   }
   return Math.floor(value);
+}
+
+function normalizeRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+const A2A_CONVERSATION_EVENT_TYPES = new Set(["a2a.send", "a2a.response", "a2a.complete"]);
+const A2A_CONVERSATION_ROLE = "conversation.main";
+const A2A_EVENT_LOG_SCAN_LIMIT = 4000;
+const a2aConversationIdCache = new Map<string, string>();
+
+function buildConversationRouteKey(params: {
+  workSessionId?: string;
+  requesterAgentId: string;
+  targetAgentId: string;
+}): string | undefined {
+  const workSessionId = normalizeOptionalString(params.workSessionId);
+  if (!workSessionId) {
+    return undefined;
+  }
+  const pair = [normalizeAgentId(params.requesterAgentId), normalizeAgentId(params.targetAgentId)]
+    .toSorted()
+    .join("|");
+  return `${workSessionId}::${pair}`;
+}
+
+async function readLatestConversationIdFromEventLog(params: {
+  workSessionId: string;
+  requesterAgentId: string;
+  targetAgentId: string;
+}): Promise<string | undefined> {
+  try {
+    const stateDir = resolveStateDir();
+    const logPath = path.join(stateDir, "logs", "coordination-events.ndjson");
+    const raw = await fs.readFile(logPath, "utf-8");
+    const lines = raw.split("\n");
+    const targetPair = [
+      normalizeAgentId(params.requesterAgentId),
+      normalizeAgentId(params.targetAgentId),
+    ]
+      .toSorted()
+      .join("|");
+
+    let scanned = 0;
+    for (let i = lines.length - 1; i >= 0 && scanned < A2A_EVENT_LOG_SCAN_LIMIT; i -= 1) {
+      const line = lines[i]?.trim();
+      if (!line) {
+        continue;
+      }
+      scanned += 1;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const record = normalizeRecord(parsed);
+      if (!record) {
+        continue;
+      }
+
+      const type = normalizeOptionalString(record.type);
+      if (!type || !A2A_CONVERSATION_EVENT_TYPES.has(type)) {
+        continue;
+      }
+
+      const data = normalizeRecord(record.data);
+      if (!data) {
+        continue;
+      }
+
+      const eventRole =
+        normalizeOptionalString(data.eventRole) ?? normalizeOptionalString(record.eventRole);
+      if (eventRole !== A2A_CONVERSATION_ROLE) {
+        continue;
+      }
+
+      const eventWorkSessionId = normalizeOptionalString(data.workSessionId);
+      if (eventWorkSessionId !== params.workSessionId) {
+        continue;
+      }
+
+      const conversationId = normalizeOptionalString(data.conversationId);
+      if (!conversationId) {
+        continue;
+      }
+
+      const fromAgent = normalizeAgentId(
+        normalizeOptionalString(data.fromAgent) ??
+          normalizeOptionalString(data.senderAgentId) ??
+          normalizeOptionalString(record.agentId),
+      );
+      const toAgent = normalizeAgentId(
+        normalizeOptionalString(data.toAgent) ?? normalizeOptionalString(data.targetAgentId),
+      );
+      const pair = [fromAgent, toAgent].toSorted().join("|");
+      if (pair !== targetPair) {
+        continue;
+      }
+
+      return conversationId;
+    }
+  } catch {
+    // Best-effort continuity. If logs are unavailable, fallback to new conversation id.
+  }
+
+  return undefined;
+}
+
+async function resolveA2AConversationId(params: {
+  explicitConversationId?: string;
+  parentConversationId?: string;
+  workSessionId?: string;
+  requesterAgentId: string;
+  targetAgentId: string;
+}): Promise<string | undefined> {
+  const explicitConversationId = normalizeOptionalString(params.explicitConversationId);
+  const parentConversationId = normalizeOptionalString(params.parentConversationId);
+  const routeKey = buildConversationRouteKey({
+    workSessionId: params.workSessionId,
+    requesterAgentId: params.requesterAgentId,
+    targetAgentId: params.targetAgentId,
+  });
+
+  const cacheConversationId = (value: string | undefined): string | undefined => {
+    if (!value) {
+      return undefined;
+    }
+    if (routeKey) {
+      a2aConversationIdCache.set(routeKey, value);
+    }
+    return value;
+  };
+
+  if (explicitConversationId) {
+    return cacheConversationId(explicitConversationId);
+  }
+  if (parentConversationId) {
+    return cacheConversationId(parentConversationId);
+  }
+  if (!routeKey) {
+    return undefined;
+  }
+
+  const cached = a2aConversationIdCache.get(routeKey);
+  if (cached) {
+    return cached;
+  }
+
+  const fromLog = await readLatestConversationIdFromEventLog({
+    workSessionId: params.workSessionId!,
+    requesterAgentId: params.requesterAgentId,
+    targetAgentId: params.targetAgentId,
+  });
+  return cacheConversationId(fromLog);
 }
 
 async function resolveSendWorkSessionContext(params: {
@@ -120,6 +283,9 @@ export function createSessionsSendTool(opts?: {
       const taskIdParam = normalizeOptionalString(readStringParam(params, "taskId"));
       const explicitWorkSessionId = normalizeOptionalString(
         readStringParam(params, "workSessionId"),
+      );
+      const explicitConversationId = normalizeOptionalString(
+        readStringParam(params, "conversationId"),
       );
       const parentConversationId = normalizeOptionalString(
         readStringParam(params, "parentConversationId"),
@@ -333,6 +499,25 @@ export function createSessionsSendTool(opts?: {
         }
       }
 
+      const routeKey = buildConversationRouteKey({
+        workSessionId,
+        requesterAgentId,
+        targetAgentId,
+      });
+      let conversationId = await resolveA2AConversationId({
+        explicitConversationId,
+        parentConversationId,
+        workSessionId,
+        requesterAgentId,
+        targetAgentId,
+      });
+      if (!conversationId) {
+        conversationId = crypto.randomUUID();
+        if (routeKey) {
+          a2aConversationIdCache.set(routeKey, conversationId);
+        }
+      }
+
       const agentMessageContext = buildAgentToAgentMessageContext({
         requesterSessionKey: opts?.agentSessionKey,
         requesterChannel: opts?.agentChannel,
@@ -369,6 +554,7 @@ export function createSessionsSendTool(opts?: {
           requesterChannel,
           roundOneReply,
           waitRunId,
+          conversationId,
           taskId,
           workSessionId,
           parentConversationId,
@@ -394,6 +580,7 @@ export function createSessionsSendTool(opts?: {
             sessionKey: displayKey,
             taskId,
             workSessionId,
+            conversationId,
             delivery,
           });
         } catch (err) {
@@ -485,6 +672,7 @@ export function createSessionsSendTool(opts?: {
         sessionKey: displayKey,
         taskId,
         workSessionId,
+        conversationId,
         delivery,
       });
     },

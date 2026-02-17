@@ -240,4 +240,51 @@ describe("M1 - skipPingPong in A2A flow", () => {
     expect(pingPongResponse?.data?.message).toBe(longReply);
     expect(pingPongResponse?.data?.replyPreview).toBe(longReply.slice(0, 200));
   });
+
+  it("emits outcome A2A_RESPONSE when waitRunId path times out without reply", async () => {
+    mockCallGateway.mockResolvedValue({ status: "timeout" });
+    mockReadLatestAssistantReply.mockResolvedValue(undefined);
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        roundOneReply: undefined,
+        waitRunId: "run-timeout-1",
+        skipPingPong: true,
+      }),
+    );
+
+    const responseEvents = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .filter((event) => event.type === "a2a.response");
+    expect(responseEvents).toHaveLength(1);
+    const timeoutMessage = responseEvents[0]?.data?.message;
+    expect(typeof timeoutMessage).toBe("string");
+    expect(timeoutMessage).toContain("응답을 받지 못했습니다");
+
+    const completeEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.complete");
+    expect(completeEvent).toBeDefined();
+  });
+
+  it("emits outcome A2A_RESPONSE when waitRunId returns error status", async () => {
+    mockCallGateway.mockResolvedValue({ status: "error", error: "rate limit" });
+    mockReadLatestAssistantReply.mockResolvedValue(undefined);
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        roundOneReply: undefined,
+        waitRunId: "run-error-1",
+        skipPingPong: true,
+      }),
+    );
+
+    const responseEvents = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .filter((event) => event.type === "a2a.response");
+    expect(responseEvents).toHaveLength(1);
+    const errorMessage = responseEvents[0]?.data?.message;
+    expect(typeof errorMessage).toBe("string");
+    expect(errorMessage).toContain("rate limit");
+  });
 });

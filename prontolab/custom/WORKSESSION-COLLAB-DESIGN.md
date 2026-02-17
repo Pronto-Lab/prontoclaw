@@ -2,7 +2,7 @@
 
 > 작성일: 2026-02-16
 > 수정일: 2026-02-17
-> 상태: Design Ready (역할 계약 반영)
+> 상태: 인프라 구현 완료 (2026-02-17 검증) — UI Phase C·D 미적용
 > 대상: `prontolab-openclaw` + `task-hub`
 
 ## 0. 이벤트 역할 정의 (Role Contract)

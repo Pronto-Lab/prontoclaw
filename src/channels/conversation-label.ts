@@ -1,5 +1,6 @@
 import type { MsgContext } from "../auto-reply/templating.js";
 import { normalizeChatType } from "./chat-type.js";
+import { maskConversationTitleOrPreview } from "./sensitive-mask.js";
 
 function extractConversationId(from?: string): string | undefined {
   const trimmed = from?.trim();
@@ -20,27 +21,35 @@ function shouldAppendId(id: string): boolean {
   return false;
 }
 
+function maskLabel(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return maskConversationTitleOrPreview(trimmed);
+}
+
 export function resolveConversationLabel(ctx: MsgContext): string | undefined {
-  const explicit = ctx.ConversationLabel?.trim();
+  const explicit = maskLabel(ctx.ConversationLabel);
   if (explicit) {
     return explicit;
   }
 
-  const threadLabel = ctx.ThreadLabel?.trim();
+  const threadLabel = maskLabel(ctx.ThreadLabel);
   if (threadLabel) {
     return threadLabel;
   }
 
   const chatType = normalizeChatType(ctx.ChatType);
   if (chatType === "direct") {
-    return ctx.SenderName?.trim() || ctx.From?.trim() || undefined;
+    return maskLabel(ctx.SenderName) || maskLabel(ctx.From) || undefined;
   }
 
   const base =
-    ctx.GroupChannel?.trim() ||
-    ctx.GroupSubject?.trim() ||
-    ctx.GroupSpace?.trim() ||
-    ctx.From?.trim() ||
+    maskLabel(ctx.GroupChannel) ||
+    maskLabel(ctx.GroupSubject) ||
+    maskLabel(ctx.GroupSpace) ||
+    maskLabel(ctx.From) ||
     "";
   if (!base) {
     return undefined;
@@ -65,5 +74,5 @@ export function resolveConversationLabel(ctx: MsgContext): string | undefined {
   if (base.startsWith("#") || base.startsWith("@")) {
     return base;
   }
-  return `${base} id:${id}`;
+  return maskConversationTitleOrPreview(`${base} id:${id}`);
 }

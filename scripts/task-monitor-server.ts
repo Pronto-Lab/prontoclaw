@@ -1405,6 +1405,42 @@ function eventRoleFromValue(value: unknown): EventRole | null {
     : null;
 }
 
+function normalizeRoleFilters(value: Iterable<EventRole> | undefined): Set<EventRole> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const allowed = new Set<EventRole>();
+  for (const role of value) {
+    const normalized = eventRoleFromValue(role);
+    if (normalized) {
+      allowed.add(normalized);
+    }
+  }
+  return allowed.size > 0 ? allowed : undefined;
+}
+
+function normalizeEventTypeFilters(value: Iterable<string> | undefined): Set<string> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const allowed = new Set<string>();
+  for (const item of value) {
+    const normalized = asString(item);
+    if (normalized) {
+      allowed.add(normalized);
+    }
+  }
+  return allowed.size > 0 ? allowed : undefined;
+}
+
+function parseCsvQueryParam(url: URL, key: string): string[] {
+  return url.searchParams
+    .getAll(key)
+    .flatMap((entry) => entry.split(","))
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 function parseCoordinationEventsFromRaw(raw: string): {
   lines: string[];
   events: EnrichedCoordinationEvent[];
@@ -1487,6 +1523,8 @@ function isTerminalWorkSessionEvent(event: EnrichedCoordinationEvent): boolean {
 type BuildWorkSessionsOptions = {
   nowMs?: number;
   categoryOverrides?: WorkSessionCategoryOverrideMap;
+  roleFilters?: Iterable<EventRole>;
+  eventTypeFilters?: Iterable<string>;
 };
 
 export function buildWorkSessionsFromEvents(
@@ -1494,6 +1532,8 @@ export function buildWorkSessionsFromEvents(
   options: BuildWorkSessionsOptions = {},
 ): WorkSessionSummary[] {
   const nowMs = options.nowMs ?? Date.now();
+  const allowedRoles = normalizeRoleFilters(options.roleFilters);
+  const allowedEventTypes = normalizeEventTypeFilters(options.eventTypeFilters);
 
   const workSessions = new Map<
     string,
@@ -1515,7 +1555,14 @@ export function buildWorkSessionsFromEvents(
   );
 
   for (const event of sortedEvents) {
+    if (allowedEventTypes && !allowedEventTypes.has(event.type)) {
+      continue;
+    }
     const data = asRecord(event.data);
+    const role = eventRoleFromValue(event.eventRole) || eventRoleFromValue(data.eventRole);
+    if (allowedRoles && (!role || !allowedRoles.has(role))) {
+      continue;
+    }
     const workSessionId = asString(data.workSessionId);
     if (!workSessionId) {
       continue;
@@ -1573,7 +1620,6 @@ export function buildWorkSessionsFromEvents(
       aggregate.collabSubTags = [...eventSubTags];
     }
 
-    const role = eventRoleFromValue(event.eventRole) || eventRoleFromValue(data.eventRole);
     if (role) {
       aggregate.roleCounts[role] += 1;
     }
@@ -1918,6 +1964,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const since = url.searchParams.get("since");
     const roleFilter = asString(url.searchParams.get("role")) || undefined;
     const viewCategory = asString(url.searchParams.get("viewCategory")) || undefined;
+    const typeFilters = parseCsvQueryParam(url, "type");
+    const requestedTypes = normalizeEventTypeFilters(typeFilters);
     const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
     try {
       const raw = await fs.readFile(eventLogPath, "utf-8");
@@ -1931,6 +1979,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
 
       if (roleFilter) {
         events = events.filter((event) => event.eventRole === roleFilter);
+      }
+
+      if (requestedTypes) {
+        events = events.filter((event) => requestedTypes.has(event.type));
       }
 
       if (viewCategory && viewCategory !== "all") {
@@ -1952,6 +2004,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         total: lines.length,
         totalMatched,
         role: roleFilter || null,
+        type: typeFilters,
         viewCategory: viewCategory || null,
         categoryCounts,
       });
@@ -1962,6 +2015,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         total: 0,
         totalMatched: 0,
         role: roleFilter || null,
+        type: typeFilters,
         viewCategory: viewCategory || null,
         categoryCounts: {},
       });
@@ -2025,25 +2079,32 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
 
     const workSessionId = decodeURIComponent(workSessionDetailMatch[1]);
+    const roleFilter = asString(url.searchParams.get("role")) || undefined;
+    const role = roleFilter ? eventRoleFromValue(roleFilter) : null;
+    const typeFilters = parseCsvQueryParam(url, "type");
     const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
     try {
       const raw = await fs.readFile(eventLogPath, "utf-8");
       const { events } = parseCoordinationEventsFromRaw(raw);
       const overrides = await readWorkSessionCategoryOverrides();
-      const sessions = buildWorkSessionsFromEvents(events, { categoryOverrides: overrides });
+      const sessions = buildWorkSessionsFromEvents(events, {
+        categoryOverrides: overrides,
+        roleFilters: role ? [role] : undefined,
+        eventTypeFilters: typeFilters.length > 0 ? typeFilters : undefined,
+      });
       const session = sessions.find((entry) => entry.workSessionId === workSessionId);
       if (!session) {
         errorResponse(res, `Work session not found: ${workSessionId}`, 404);
         return;
       }
-      jsonResponse(res, { session });
+      jsonResponse(res, { session, role: role ?? null, type: typeFilters });
     } catch {
       errorResponse(res, "Failed to read work session", 500);
     }
     return;
   }
 
-  // Work session endpoint: /api/work-sessions?status=ACTIVE|QUIET|ARCHIVED&limit=...
+  // Work session endpoint: /api/work-sessions?status=ACTIVE|QUIET|ARCHIVED&role=...&limit=...
   if (pathname === "/api/work-sessions") {
     if (req.method !== "GET") {
       errorResponse(res, "Method not allowed", 405);
@@ -2053,11 +2114,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const limit = Number(url.searchParams.get("limit")) || 100;
     const viewCategory = asString(url.searchParams.get("viewCategory")) || undefined;
     const subTag = asString(url.searchParams.get("subTag")) || undefined;
-    const rawStatusFilters = url.searchParams
-      .getAll("status")
-      .flatMap((entry) => entry.split(","))
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+    const rawRoleFilters = parseCsvQueryParam(url, "role");
+    const roleFilters = rawRoleFilters
+      .map((value) => eventRoleFromValue(value))
+      .filter((value): value is EventRole => !!value);
+    const rawTypeFilters = parseCsvQueryParam(url, "type");
+    const typeFilters = normalizeEventTypeFilters(rawTypeFilters);
+    const rawStatusFilters = parseCsvQueryParam(url, "status");
 
     const statusFilters = rawStatusFilters.filter(
       (value): value is WorkSessionStatus =>
@@ -2071,7 +2134,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const raw = await fs.readFile(eventLogPath, "utf-8");
       const { events } = parseCoordinationEventsFromRaw(raw);
       const overrides = await readWorkSessionCategoryOverrides();
-      const sessions = buildWorkSessionsFromEvents(events, { categoryOverrides: overrides });
+      const sessions = buildWorkSessionsFromEvents(events, {
+        categoryOverrides: overrides,
+        roleFilters: roleFilters.length > 0 ? roleFilters : undefined,
+        eventTypeFilters: typeFilters,
+      });
 
       let filtered = sessions;
       if (requestedStatuses.size > 0) {
@@ -2099,6 +2166,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         count: limitedSessions.length,
         totalMatched: filtered.length,
         totalSessions: sessions.length,
+        role: roleFilters,
+        type: rawTypeFilters,
         status: statusFilters,
         viewCategory: viewCategory || null,
         subTag: subTag || null,
@@ -2110,6 +2179,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         count: 0,
         totalMatched: 0,
         totalSessions: 0,
+        role: roleFilters,
+        type: rawTypeFilters,
         status: statusFilters,
         viewCategory: viewCategory || null,
         subTag: subTag || null,
@@ -2137,9 +2208,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents/:agentId/history?month=2026-02",
         "GET /api/agents/:agentId/plans",
         "GET /api/team-state",
-        "GET /api/events?limit=100&since=<ISO>&role=<conversation.main|delegation.subagent|orchestration.task|system.observability>&viewCategory=<category>",
-        "GET /api/work-sessions?status=ACTIVE|QUIET|ARCHIVED&limit=100&viewCategory=<category>&subTag=<tag>",
-        "GET /api/work-sessions/:id",
+        "GET /api/events?limit=100&since=<ISO>&role=<conversation.main|delegation.subagent|orchestration.task|system.observability>&type=<a2a.response,...>&viewCategory=<category>",
+        "GET /api/work-sessions?status=ACTIVE|QUIET|ARCHIVED&limit=100&role=<conversation.main|delegation.subagent|orchestration.task|system.observability>&type=<a2a.response,...>&viewCategory=<category>&subTag=<tag>",
+        "GET /api/work-sessions/:id?role=<conversation.main|delegation.subagent|orchestration.task|system.observability>&type=<a2a.response,...>",
         "PATCH /api/work-sessions/:id/category",
         "POST /api/workspace-file",
         "WS /ws",

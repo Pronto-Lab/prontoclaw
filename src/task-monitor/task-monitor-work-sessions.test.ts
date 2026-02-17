@@ -147,4 +147,139 @@ describe("task-monitor work session aggregation", () => {
     expect(sessions[0]?.collabCategory).toBe("qa_validation");
     expect(sessions[0]?.categorySource).toBe("manual_override");
   });
+
+  it("filters aggregated work sessions by requested role", () => {
+    const now = Date.UTC(2026, 1, 17, 16, 0, 0);
+    const wsId = "ws_demo_05";
+    const events = [
+      enrichCoordinationEvent({
+        type: "a2a.send",
+        ts: now - 20_000,
+        data: {
+          workSessionId: wsId,
+          conversationId: "conv-main",
+          fromAgent: "ruda",
+          toAgent: "eden",
+          message: "main conversation",
+          eventRole: "conversation.main",
+        },
+      }),
+      enrichCoordinationEvent({
+        type: "a2a.spawn",
+        ts: now - 10_000,
+        data: {
+          workSessionId: wsId,
+          fromAgent: "ruda",
+          toAgent: "worker-quick",
+          eventRole: "delegation.subagent",
+        },
+      }),
+    ].filter((event): event is NonNullable<typeof event> => !!event);
+
+    const sessions = buildWorkSessionsFromEvents(events, {
+      nowMs: now,
+      roleFilters: ["conversation.main"],
+    });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.eventCount).toBe(1);
+    expect(sessions[0]?.threads).toHaveLength(1);
+    expect(sessions[0]?.threads[0]?.conversationId).toBe("conv-main");
+    expect(sessions[0]?.roleCounts["conversation.main"]).toBe(1);
+    expect(sessions[0]?.roleCounts["delegation.subagent"]).toBe(0);
+  });
+
+  it("filters aggregated work session events by requested event types", () => {
+    const now = Date.UTC(2026, 1, 17, 17, 0, 0);
+    const wsId = "ws_demo_06";
+    const events = [
+      enrichCoordinationEvent({
+        type: "a2a.send",
+        ts: now - 20_000,
+        data: {
+          workSessionId: wsId,
+          conversationId: "conv-typed",
+          fromAgent: "ruda",
+          toAgent: "eden",
+          message: "request",
+          eventRole: "conversation.main",
+        },
+      }),
+      enrichCoordinationEvent({
+        type: "a2a.response",
+        ts: now - 10_000,
+        data: {
+          workSessionId: wsId,
+          conversationId: "conv-typed",
+          fromAgent: "eden",
+          toAgent: "ruda",
+          message: "result payload",
+          eventRole: "conversation.main",
+        },
+      }),
+      enrichCoordinationEvent({
+        type: "a2a.complete",
+        ts: now - 2_000,
+        data: {
+          workSessionId: wsId,
+          conversationId: "conv-typed",
+          fromAgent: "ruda",
+          toAgent: "eden",
+          eventRole: "conversation.main",
+        },
+      }),
+    ].filter((event): event is NonNullable<typeof event> => !!event);
+
+    const sessions = buildWorkSessionsFromEvents(events, {
+      nowMs: now,
+      roleFilters: ["conversation.main"],
+      eventTypeFilters: ["a2a.response"],
+    });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.eventCount).toBe(1);
+    expect(sessions[0]?.threads).toHaveLength(1);
+    expect(sessions[0]?.threads[0]?.eventCount).toBe(1);
+    expect(sessions[0]?.threads[0]?.events.map((event) => event.type)).toEqual(["a2a.response"]);
+  });
+
+  it("ignores invalid event type filters and keeps valid ones", () => {
+    const now = Date.UTC(2026, 1, 17, 18, 0, 0);
+    const wsId = "ws_demo_07";
+    const events = [
+      enrichCoordinationEvent({
+        type: "a2a.send",
+        ts: now - 20_000,
+        data: {
+          workSessionId: wsId,
+          conversationId: "conv-invalid-filter",
+          fromAgent: "ruda",
+          toAgent: "eden",
+          message: "request",
+          eventRole: "conversation.main",
+        },
+      }),
+      enrichCoordinationEvent({
+        type: "a2a.response",
+        ts: now - 10_000,
+        data: {
+          workSessionId: wsId,
+          conversationId: "conv-invalid-filter",
+          fromAgent: "eden",
+          toAgent: "ruda",
+          message: "result",
+          eventRole: "conversation.main",
+        },
+      }),
+    ].filter((event): event is NonNullable<typeof event> => !!event);
+
+    const sessions = buildWorkSessionsFromEvents(events, {
+      nowMs: now,
+      eventTypeFilters: ["", "a2a.response", "unknown.event"],
+    });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.eventCount).toBe(1);
+    expect(sessions[0]?.threads[0]?.events.map((event) => event.type)).toEqual(["a2a.response"]);
+  });
 });

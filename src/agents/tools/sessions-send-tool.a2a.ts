@@ -64,6 +64,34 @@ function toA2ASendMessage(text: string): string {
   return sanitizeA2AConversationText(text).slice(0, 4000);
 }
 
+function buildNoReplyOutcomeMessage(params: {
+  waitStatus?: string;
+  waitError?: string;
+  maxWaitExceeded: boolean;
+  maxWaitMs: number;
+}): string {
+  const reasonFromError =
+    typeof params.waitError === "string" && params.waitError.trim() ? params.waitError.trim() : "";
+
+  if (reasonFromError) {
+    return `[outcome] blocked: 응답을 받지 못했습니다 (${reasonFromError})`;
+  }
+
+  if (params.waitStatus === "not_found") {
+    return "[outcome] blocked: 응답을 받지 못했습니다 (실행 상태를 찾을 수 없음)";
+  }
+
+  if (params.waitStatus === "error") {
+    return "[outcome] blocked: 응답을 받지 못했습니다 (실행 오류)";
+  }
+
+  if (params.maxWaitExceeded || params.waitStatus === "timeout") {
+    return `[outcome] blocked: 응답을 받지 못했습니다 (대기 시간 ${Math.floor(params.maxWaitMs / 1000)}초 초과)`;
+  }
+
+  return "[outcome] blocked: 응답을 받지 못했습니다";
+}
+
 export async function runSessionsSendA2AFlow(params: {
   targetSessionKey: string;
   displayKey: string;
@@ -122,6 +150,9 @@ export async function runSessionsSendA2AFlow(params: {
   try {
     let primaryReply = params.roundOneReply;
     let latestReply = params.roundOneReply;
+    let waitStatus: string | undefined;
+    let waitError: string | undefined;
+    let maxWaitExceeded = false;
     if (!primaryReply && params.waitRunId) {
       // Retry-based wait: instead of a single timeout that silently gives up,
       // poll agent.wait in 30s chunks.  agent.wait returns immediately when the
@@ -132,7 +163,7 @@ export async function runSessionsSendA2AFlow(params: {
       let elapsed = 0;
       while (elapsed < MAX_WAIT_MS) {
         try {
-          const wait = await callGateway<{ status: string }>({
+          const wait = await callGateway<{ status?: string; error?: string }>({
             method: "agent.wait",
             params: {
               runId: params.waitRunId,
@@ -140,6 +171,8 @@ export async function runSessionsSendA2AFlow(params: {
             },
             timeoutMs: CHUNK_MS + 5_000,
           });
+          waitStatus = typeof wait?.status === "string" ? wait.status : undefined;
+          waitError = typeof wait?.error === "string" ? wait.error : undefined;
           if (wait?.status === "ok") {
             primaryReply = await readLatestAssistantReply({
               sessionKey: params.targetSessionKey,
@@ -152,6 +185,7 @@ export async function runSessionsSendA2AFlow(params: {
             log.warn("agent.wait returned non-retriable status", {
               runId: params.waitRunId,
               status: wait?.status,
+              error: waitError,
             });
             break;
           }
@@ -161,6 +195,8 @@ export async function runSessionsSendA2AFlow(params: {
         elapsed += CHUNK_MS;
       }
       if (elapsed >= MAX_WAIT_MS) {
+        waitStatus = waitStatus || "timeout";
+        maxWaitExceeded = true;
         log.warn("agent.wait exhausted max wait ceiling", {
           runId: params.waitRunId,
           maxWaitMs: MAX_WAIT_MS,
@@ -169,6 +205,38 @@ export async function runSessionsSendA2AFlow(params: {
     }
 
     if (!latestReply) {
+      const noReplyFromSessionType = sessionTypeFromSessionKey(params.targetSessionKey);
+      const noReplyToSessionType = sessionTypeFromSessionKey(params.requesterSessionKey);
+      const noReplyEventRole = resolveA2AEventRole({
+        fromSessionType: noReplyFromSessionType,
+        toSessionType: noReplyToSessionType,
+      });
+      const noReplyMessage = buildNoReplyOutcomeMessage({
+        waitStatus,
+        waitError,
+        maxWaitExceeded,
+        maxWaitMs: 300_000,
+      });
+      emit({
+        type: EVENT_TYPES.A2A_RESPONSE,
+        agentId: toAgent,
+        ts: Date.now(),
+        data: {
+          fromAgent: toAgent,
+          toAgent: fromAgent,
+          message: noReplyMessage,
+          replyPreview: toA2AReplyPreview(noReplyMessage),
+          outcome: "blocked",
+          waitStatus,
+          waitError,
+          conversationId,
+          eventRole: noReplyEventRole,
+          fromSessionType: noReplyFromSessionType,
+          toSessionType: noReplyToSessionType,
+          ...sharedContext,
+        },
+      });
+
       emit({
         type: EVENT_TYPES.A2A_COMPLETE,
         agentId: fromAgent,
@@ -182,6 +250,8 @@ export async function runSessionsSendA2AFlow(params: {
           eventRole,
           fromSessionType,
           toSessionType,
+          waitStatus,
+          waitError,
           ...sharedContext,
         },
       });

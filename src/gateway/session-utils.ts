@@ -13,6 +13,7 @@ import {
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
 } from "../agents/model-selection.js";
+import { maskConversationTitleOrPreview } from "../channels/sensitive-mask.js";
 import { type OpenClawConfig, loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
@@ -57,6 +58,8 @@ export type {
 } from "./session-utils.types.js";
 
 const DERIVED_TITLE_MAX_LEN = 60;
+const SESSION_TITLE_FALLBACK = "새 대화";
+const SESSION_PREVIEW_FALLBACK = "안전 텍스트";
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
 const AVATAR_DATA_RE = /^data:/i;
@@ -180,6 +183,44 @@ export function deriveSessionTitle(
   }
 
   return undefined;
+}
+
+function normalizeSafeText(value?: string | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return maskConversationTitleOrPreview(normalized);
+}
+
+export function deriveDeterministicSessionTitle(
+  entry: SessionEntry | undefined,
+  firstUserMessage?: string | null,
+): string {
+  return normalizeSafeText(deriveSessionTitle(entry, firstUserMessage)) ?? SESSION_TITLE_FALLBACK;
+}
+
+export function deriveDeterministicSessionPreview(params: {
+  entry?: SessionEntry;
+  firstUserMessage?: string | null;
+  lastMessagePreview?: string | null;
+  fallbackTitle?: string;
+}): string {
+  const titleCandidate =
+    params.fallbackTitle && params.fallbackTitle !== SESSION_TITLE_FALLBACK
+      ? params.fallbackTitle
+      : undefined;
+  return (
+    normalizeSafeText(params.lastMessagePreview) ||
+    normalizeSafeText(params.firstUserMessage) ||
+    normalizeSafeText(params.entry?.subject) ||
+    normalizeSafeText(params.entry?.displayName) ||
+    normalizeSafeText(titleCandidate) ||
+    SESSION_PREVIEW_FALLBACK
+  );
 }
 
 export function loadSessionEntry(sessionKey: string) {
@@ -814,23 +855,29 @@ export function listSessionsFromStore(params: {
     const { entry, ...rest } = s;
     let derivedTitle: string | undefined;
     let lastMessagePreview: string | undefined;
-    if (entry?.sessionId) {
-      if (includeDerivedTitles || includeLastMessage) {
-        const parsed = parseAgentSessionKey(s.key);
-        const agentId =
-          parsed && parsed.agentId ? normalizeAgentId(parsed.agentId) : resolveDefaultAgentId(cfg);
-        const fields = readSessionTitleFieldsFromTranscript(
-          entry.sessionId,
-          storePath,
-          entry.sessionFile,
-          agentId,
-        );
-        if (includeDerivedTitles) {
-          derivedTitle = deriveSessionTitle(entry, fields.firstUserMessage);
-        }
-        if (includeLastMessage && fields.lastMessagePreview) {
-          lastMessagePreview = fields.lastMessagePreview;
-        }
+    if (includeDerivedTitles || includeLastMessage) {
+      const parsed = parseAgentSessionKey(s.key);
+      const agentId =
+        parsed && parsed.agentId ? normalizeAgentId(parsed.agentId) : resolveDefaultAgentId(cfg);
+      const fields = entry?.sessionId
+        ? readSessionTitleFieldsFromTranscript(
+            entry.sessionId,
+            storePath,
+            entry.sessionFile,
+            agentId,
+          )
+        : { firstUserMessage: null, lastMessagePreview: null };
+      const fallbackTitle = deriveDeterministicSessionTitle(entry, fields.firstUserMessage);
+      if (includeDerivedTitles) {
+        derivedTitle = fallbackTitle;
+      }
+      if (includeLastMessage) {
+        lastMessagePreview = deriveDeterministicSessionPreview({
+          entry,
+          firstUserMessage: fields.firstUserMessage,
+          lastMessagePreview: fields.lastMessagePreview,
+          fallbackTitle,
+        });
       }
     }
     return { ...rest, derivedTitle, lastMessagePreview } satisfies GatewaySessionRow;

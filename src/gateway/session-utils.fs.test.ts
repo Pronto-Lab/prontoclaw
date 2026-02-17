@@ -177,6 +177,18 @@ describe("readFirstUserMessageFromTranscript", () => {
     const result = readFirstUserMessageFromTranscript(sessionId, storePath);
     expect(result).toBe("Second message");
   });
+
+  test("masks sensitive data in first user message", () => {
+    const sessionId = "test-session-mask-first";
+    const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+    const lines = [
+      JSON.stringify({ message: { role: "user", content: "email qa_test@resona.co.kr" } }),
+    ];
+    fs.writeFileSync(transcriptPath, lines.join("\n"), "utf-8");
+
+    const result = readFirstUserMessageFromTranscript(sessionId, storePath);
+    expect(result).toBe("email [redacted-email]");
+  });
 });
 
 describe("readLastMessagePreviewFromTranscript", () => {
@@ -365,6 +377,18 @@ describe("readLastMessagePreviewFromTranscript", () => {
 
     const result = readLastMessagePreviewFromTranscript(sessionId, storePath);
     expect(result).toBe("Valid UTF-8: 你好世界 🌍");
+  });
+
+  test("masks sensitive data in last message preview", () => {
+    const sessionId = "test-last-mask";
+    const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+    const lines = [
+      JSON.stringify({ message: { role: "assistant", content: "token sk-live_ABCDef123456789" } }),
+    ];
+    fs.writeFileSync(transcriptPath, lines.join("\n"), "utf-8");
+
+    const result = readLastMessagePreviewFromTranscript(sessionId, storePath);
+    expect(result).toBe("token [redacted-token]");
   });
 });
 
@@ -604,6 +628,32 @@ describe("readSessionPreviewItemsFromTranscript", () => {
     expect(result[1]?.text).toContain("read");
     // Preview text may not list every tool name; it should at least hint there were multiple calls.
     expect(result[1]?.text).toMatch(/\+\d+/);
+  });
+
+  test("masks sensitive data in preview items", () => {
+    const sessionId = "preview-mask";
+    const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+    const lines = [
+      JSON.stringify({
+        message: {
+          role: "assistant",
+          content: "contact qa_test@resona.co.kr and http://10.0.1.7:8080",
+        },
+      }),
+    ];
+    fs.writeFileSync(transcriptPath, lines.join("\n"), "utf-8");
+
+    const result = readSessionPreviewItemsFromTranscript(
+      sessionId,
+      storePath,
+      undefined,
+      undefined,
+      1,
+      200,
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.text).toBe("contact [redacted-email] and [redacted-internal-url]");
   });
 
   test("truncates preview text to max chars", () => {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { SessionPreviewItem } from "./session-utils.types.js";
+import { maskConversationTitleOrPreview } from "../channels/sensitive-mask.js";
 import {
   resolveSessionFilePath,
   resolveSessionTranscriptPath,
@@ -291,7 +292,7 @@ export function readSessionTitleFieldsFromTranscript(
             }
             const text = extractTextFromContent(msg.content);
             if (text) {
-              firstUserMessage = text;
+              firstUserMessage = maskConversationTitleOrPreview(text);
               break;
             }
           } catch {
@@ -325,7 +326,7 @@ export function readSessionTitleFieldsFromTranscript(
           }
           const text = extractTextFromContent(msg.content);
           if (text) {
-            lastMessagePreview = text;
+            lastMessagePreview = maskConversationTitleOrPreview(text);
             break;
           }
         } catch {
@@ -410,7 +411,7 @@ export function readFirstUserMessageFromTranscript(
           }
           const text = extractTextFromContent(msg.content);
           if (text) {
-            return text;
+            return maskConversationTitleOrPreview(text);
           }
         }
       } catch {
@@ -468,7 +469,7 @@ export function readLastMessagePreviewFromTranscript(
         if (msg?.role === "user" || msg?.role === "assistant") {
           const text = extractTextFromContent(msg.content);
           if (text) {
-            return text;
+            return maskConversationTitleOrPreview(text);
           }
         }
       } catch {
@@ -606,6 +607,7 @@ function buildPreviewItems(
     if (role === "user") {
       trimmed = stripEnvelope(trimmed);
     }
+    trimmed = maskConversationTitleOrPreview(trimmed);
     trimmed = truncatePreviewText(trimmed, maxChars);
     items.push({ role, text: trimmed });
   }
