@@ -12,7 +12,7 @@ import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 const ANNOUNCE_SKIP_TOKEN = "ANNOUNCE_SKIP";
 const REPLY_SKIP_TOKEN = "REPLY_SKIP";
 const DEFAULT_PING_PONG_TURNS = 5;
-const MAX_PING_PONG_TURNS = 5;
+const MAX_PING_PONG_TURNS = 10;
 
 export type AnnounceTarget = {
   channel: string;
@@ -210,13 +210,27 @@ export function buildAgentToAgentReplyContext(params: {
   currentRole: "requester" | "target";
   turn: number;
   maxTurns: number;
+  originalMessage?: string;
+  messageIntent?: string;
+  previousTurnSummary?: string;
 }) {
   const currentLabel =
     params.currentRole === "requester" ? "Agent 1 (requester)" : "Agent 2 (target)";
+  const remainingTurns = params.maxTurns - params.turn + 1;
   const lines = [
-    "Agent-to-agent reply step:",
-    `Current agent: ${currentLabel}.`,
-    `Turn ${params.turn} of ${params.maxTurns}.`,
+    "## Agent-to-agent reply step",
+    "",
+    `**Your role**: ${currentLabel}`,
+    `**Turn**: ${params.turn} of ${params.maxTurns} (${remainingTurns} remaining)`,
+    params.messageIntent ? `**Conversation purpose**: ${params.messageIntent}` : undefined,
+    "",
+    params.originalMessage
+      ? `### Original request\n${params.originalMessage.slice(0, 500)}`
+      : undefined,
+    params.previousTurnSummary
+      ? `### Previous discussion\n${params.previousTurnSummary}`
+      : undefined,
+    "",
     params.requesterSessionKey
       ? `Agent 1 (requester) session: ${params.requesterSessionKey}.`
       : undefined,
@@ -225,7 +239,13 @@ export function buildAgentToAgentReplyContext(params: {
       : undefined,
     `Agent 2 (target) session: ${params.targetSessionKey}.`,
     params.targetChannel ? `Agent 2 (target) channel: ${params.targetChannel}.` : undefined,
-    `If you want to stop the ping-pong, reply exactly "${REPLY_SKIP_TOKEN}".`,
+    "",
+    "### Guidelines",
+    "- Be concise and focused on the topic",
+    "- If you have nothing substantive to add, reply exactly: REPLY_SKIP",
+    "- Do NOT repeat what has already been said",
+    "",
+    `To end the conversation, reply exactly "${REPLY_SKIP_TOKEN}".`,
   ].filter(Boolean);
   return lines.join("\n");
 }

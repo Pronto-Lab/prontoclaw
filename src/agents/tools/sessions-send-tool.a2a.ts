@@ -7,6 +7,12 @@ import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import { classifyA2AError, calculateBackoffMs } from "./a2a-error-classification.js";
+import {
+  classifyMessageIntent,
+  resolveEffectivePingPongTurns,
+  shouldTerminatePingPong,
+  shouldRunAnnounce,
+} from "./a2a-intent-classifier.js";
 import { readLatestAssistantReply, runAgentStep } from "./agent-step.js";
 import { resolveAnnounceTarget } from "./sessions-announce-target.js";
 import {
@@ -352,21 +358,34 @@ export async function runSessionsSendA2AFlow(params: {
     });
     const targetChannel = announceTarget?.channel ?? "unknown";
 
-    const shouldSkipPingPong =
-      params.skipPingPong || /\[NO_REPLY_NEEDED\]|\[NOTIFICATION\]/i.test(params.message);
+    // Intent-based ping-pong optimization (Design #4)
+    const intentResult = classifyMessageIntent(params.message);
+    const effectiveTurns = resolveEffectivePingPongTurns({
+      configMaxTurns: params.maxPingPongTurns,
+      classifiedIntent: intentResult,
+      explicitSkipPingPong: params.skipPingPong ?? false,
+    });
+
+    let actualTurns = 0;
+    let earlyTermination = false;
+    let terminationReason = "";
+    const previousReplies: string[] = [];
 
     if (
-      !shouldSkipPingPong &&
-      params.maxPingPongTurns > 0 &&
+      effectiveTurns > 0 &&
       params.requesterSessionKey &&
       params.requesterSessionKey !== params.targetSessionKey
     ) {
       let currentSessionKey = params.requesterSessionKey;
       let nextSessionKey = params.targetSessionKey;
       let incomingMessage = latestReply;
-      for (let turn = 1; turn <= params.maxPingPongTurns; turn += 1) {
+      for (let turn = 1; turn <= effectiveTurns; turn += 1) {
         const currentRole =
           currentSessionKey === params.requesterSessionKey ? "requester" : "target";
+        const previousTurnSummary =
+          previousReplies.length > 0
+            ? previousReplies.map((r, i) => `Turn ${i + 1}: ${r.slice(0, 200)}`).join("\n")
+            : undefined;
         const replyPrompt = buildAgentToAgentReplyContext({
           requesterSessionKey: params.requesterSessionKey,
           requesterChannel: params.requesterChannel,
@@ -374,7 +393,10 @@ export async function runSessionsSendA2AFlow(params: {
           targetChannel,
           currentRole,
           turn,
-          maxTurns: params.maxPingPongTurns,
+          maxTurns: effectiveTurns,
+          originalMessage: params.message,
+          messageIntent: intentResult.intent,
+          previousTurnSummary,
         });
         const replyText = await runAgentStep({
           sessionKey: currentSessionKey,
@@ -387,9 +409,32 @@ export async function runSessionsSendA2AFlow(params: {
             nextSessionKey === params.requesterSessionKey ? params.requesterChannel : targetChannel,
           sourceTool: "sessions_send",
         });
+
         if (!replyText || isReplySkip(replyText)) {
+          earlyTermination = true;
+          terminationReason = "explicit_skip";
           break;
         }
+
+        // System-level early termination (Design #4)
+        const termination = shouldTerminatePingPong({
+          replyText,
+          turn,
+          maxTurns: effectiveTurns,
+          previousReplies,
+        });
+        if (termination.terminate) {
+          earlyTermination = true;
+          terminationReason = termination.reason;
+          log.debug("ping-pong early termination", {
+            turn,
+            reason: termination.reason,
+            conversationId,
+          });
+          // Still emit the final response before breaking
+        }
+
+        actualTurns = turn;
 
         // Emit a2a.response event
         const responseFromSessionType = sessionTypeFromSessionKey(currentSessionKey);
@@ -406,17 +451,24 @@ export async function runSessionsSendA2AFlow(params: {
             fromAgent: extractAgentId(currentSessionKey),
             toAgent: extractAgentId(nextSessionKey),
             turn,
-            maxTurns: params.maxPingPongTurns,
+            maxTurns: effectiveTurns,
             message: sanitizeA2AConversationText(replyText),
             replyPreview: toA2AReplyPreview(replyText),
             conversationId,
             eventRole: responseEventRole,
             fromSessionType: responseFromSessionType,
             toSessionType: responseToSessionType,
+            messageIntent: intentResult.intent,
+            terminationReason: termination.terminate ? termination.reason : undefined,
             ...sharedContext,
           },
         });
 
+        if (termination.terminate) {
+          break;
+        }
+
+        previousReplies.push(replyText);
         latestReply = replyText;
         incomingMessage = replyText;
         const swap = currentSessionKey;
@@ -425,52 +477,55 @@ export async function runSessionsSendA2AFlow(params: {
       }
     }
 
-    const announcePrompt = buildAgentToAgentAnnounceContext({
-      requesterSessionKey: params.requesterSessionKey,
-      requesterChannel: params.requesterChannel,
-      targetSessionKey: params.displayKey,
-      targetChannel,
-      originalMessage: params.message,
-      roundOneReply: primaryReply,
-      latestReply,
-    });
-    const announceReply = await runAgentStep({
-      sessionKey: params.targetSessionKey,
-      message: "Agent-to-agent announce step.",
-      extraSystemPrompt: announcePrompt,
-      timeoutMs: params.announceTimeoutMs,
-      lane: AGENT_LANE_NESTED,
-      sourceSessionKey: params.requesterSessionKey,
-      sourceChannel: params.requesterChannel,
-      sourceTool: "sessions_send",
-    });
-
+    // Conditional announce (Design #4) — skip if no target or no reply
     let announced = false;
-    if (announceTarget && announceReply && announceReply.trim() && !isAnnounceSkip(announceReply)) {
-      try {
-        await callGateway({
-          method: "send",
-          params: {
-            to: announceTarget.to,
-            message: announceReply.trim(),
+    if (announceTarget && shouldRunAnnounce({ announceTarget, latestReply })) {
+      const announcePrompt = buildAgentToAgentAnnounceContext({
+        requesterSessionKey: params.requesterSessionKey,
+        requesterChannel: params.requesterChannel,
+        targetSessionKey: params.displayKey,
+        targetChannel,
+        originalMessage: params.message,
+        roundOneReply: primaryReply,
+        latestReply,
+      });
+      const announceReply = await runAgentStep({
+        sessionKey: params.targetSessionKey,
+        message: "Agent-to-agent announce step.",
+        extraSystemPrompt: announcePrompt,
+        timeoutMs: params.announceTimeoutMs,
+        lane: AGENT_LANE_NESTED,
+        sourceSessionKey: params.requesterSessionKey,
+        sourceChannel: params.requesterChannel,
+        sourceTool: "sessions_send",
+      });
+
+      if (announceReply && announceReply.trim() && !isAnnounceSkip(announceReply)) {
+        try {
+          await callGateway({
+            method: "send",
+            params: {
+              to: announceTarget.to,
+              message: announceReply.trim(),
+              channel: announceTarget.channel,
+              accountId: announceTarget.accountId,
+              idempotencyKey: crypto.randomUUID(),
+            },
+            timeoutMs: 10_000,
+          });
+          announced = true;
+        } catch (err) {
+          log.warn("sessions_send announce delivery failed", {
+            runId: runContextId,
             channel: announceTarget.channel,
-            accountId: announceTarget.accountId,
-            idempotencyKey: crypto.randomUUID(),
-          },
-          timeoutMs: 10_000,
-        });
-        announced = true;
-      } catch (err) {
-        log.warn("sessions_send announce delivery failed", {
-          runId: runContextId,
-          channel: announceTarget.channel,
-          to: announceTarget.to,
-          error: formatErrorMessage(err),
-        });
+            to: announceTarget.to,
+            error: formatErrorMessage(err),
+          });
+        }
       }
     }
 
-    // Emit a2a.complete event
+    // Emit a2a.complete event with optimization metadata
     emit({
       type: EVENT_TYPES.A2A_COMPLETE,
       agentId: fromAgent,
@@ -484,6 +539,13 @@ export async function runSessionsSendA2AFlow(params: {
         eventRole,
         fromSessionType,
         toSessionType,
+        messageIntent: intentResult.intent,
+        configuredMaxTurns: params.maxPingPongTurns,
+        effectiveTurns,
+        actualTurns,
+        earlyTermination,
+        terminationReason: terminationReason || undefined,
+        announceSkipped: !shouldRunAnnounce({ announceTarget, latestReply }),
         ...sharedContext,
       },
     });
