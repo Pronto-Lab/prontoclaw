@@ -18,3 +18,13 @@ export function resolveSubagentMaxConcurrent(cfg?: OpenClawConfig): number {
   }
   return DEFAULT_SUBAGENT_MAX_CONCURRENT;
 }
+
+export const DEFAULT_NESTED_MAX_CONCURRENT = 8;
+
+export function resolveNestedMaxConcurrent(cfg?: OpenClawConfig): number {
+  const raw = cfg?.agents?.defaults?.nested?.maxConcurrent;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.max(1, Math.floor(raw));
+  }
+  return DEFAULT_NESTED_MAX_CONCURRENT;
+}

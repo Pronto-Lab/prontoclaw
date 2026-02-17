@@ -255,6 +255,11 @@ export type AgentDefaultsConfig = {
     /** Timeout (ms) for sub-agent announce delivery to the requester. Default: 60000. */
     announceDeliveryTimeoutMs?: number;
   };
+  /** Nested (A2A) lane defaults. */
+  nested?: {
+    /** Max concurrent nested (A2A) runs. Default: 8. */
+    maxConcurrent?: number;
+  };
   /** Optional sandbox settings for non-main sessions. */
   sandbox?: {
     /** Enable sandboxing for sessions. */

@@ -518,6 +518,12 @@ export function createSessionsSendTool(opts?: {
         }
       }
 
+      // Use conversation-scoped session key for cross-agent A2A messages
+      // so each A2A conversation gets its own session lane (parallel execution).
+      const effectiveTargetKey = isCrossAgent
+        ? `agent:${targetAgentId}:a2a:${conversationId}`
+        : resolvedKey;
+
       const agentMessageContext = buildAgentToAgentMessageContext({
         requesterSessionKey: opts?.agentSessionKey,
         requesterChannel: opts?.agentChannel,
@@ -526,7 +532,7 @@ export function createSessionsSendTool(opts?: {
       });
       const sendParams = {
         message,
-        sessionKey: resolvedKey,
+        sessionKey: effectiveTargetKey,
         idempotencyKey,
         deliver: false,
         channel: INTERNAL_MESSAGE_CHANNEL,
@@ -545,7 +551,7 @@ export function createSessionsSendTool(opts?: {
       const delivery = { status: "pending", mode: "announce" as const };
       const startA2AFlow = (roundOneReply?: string, waitRunId?: string) => {
         void runSessionsSendA2AFlow({
-          targetSessionKey: resolvedKey,
+          targetSessionKey: effectiveTargetKey,
           displayKey,
           message,
           announceTimeoutMs,
