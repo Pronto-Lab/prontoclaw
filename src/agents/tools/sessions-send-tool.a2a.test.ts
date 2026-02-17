@@ -89,7 +89,7 @@ describe("M1 - skipPingPong in A2A flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: announce step returns some text
-    mockRunAgentStep.mockResolvedValue("announce result");
+    mockRunAgentStep.mockResolvedValue({ reply: "announce result", ok: true });
     // Default: callGateway for announce delivery succeeds
     mockCallGateway.mockResolvedValue(undefined);
   });
@@ -120,17 +120,25 @@ describe("M1 - skipPingPong in A2A flow", () => {
   });
 
   it("normal flow runs ping-pong when no skip signal", async () => {
-    // First call: ping-pong reply from requester
-    // Second call: ping-pong reply from target (isReplySkip returns false by default)
-    // After maxPingPongTurns iterations, announce step
+    // Use a collaboration-intent message to trigger full ping-pong turns
+    // "같이 검토" triggers collaboration intent → suggestedTurns = -1 → uses config max (3)
     mockRunAgentStep
-      .mockResolvedValueOnce("reply-turn-1") // ping-pong turn 1
-      .mockResolvedValueOnce("reply-turn-2") // ping-pong turn 2
-      .mockResolvedValueOnce("reply-turn-3") // ping-pong turn 3
-      .mockResolvedValue("announce result"); // announce step
+      .mockResolvedValueOnce({
+        reply: "reply-turn-1: let me check the implementation details carefully",
+        ok: true,
+      }) // ping-pong turn 1
+      .mockResolvedValueOnce({
+        reply: "reply-turn-2: here are the issues I found in the code review",
+        ok: true,
+      }) // ping-pong turn 2
+      .mockResolvedValueOnce({
+        reply: "reply-turn-3: final review comments and suggestions below",
+        ok: true,
+      }) // ping-pong turn 3
+      .mockResolvedValue({ reply: "announce result", ok: true }); // announce step
 
     await runSessionsSendA2AFlow(
-      baseParams({ skipPingPong: false, message: "normal conversation" }),
+      baseParams({ skipPingPong: false, message: "같이 이 코드 검토해줄래? 피드백 부탁해" }),
     );
 
     // 3 ping-pong turns + 1 announce = 4 calls
@@ -138,7 +146,7 @@ describe("M1 - skipPingPong in A2A flow", () => {
   });
 
   it("announce always runs even with skipPingPong", async () => {
-    mockRunAgentStep.mockResolvedValue("announcement text");
+    mockRunAgentStep.mockResolvedValue({ reply: "announcement text", ok: true });
 
     await runSessionsSendA2AFlow(baseParams({ skipPingPong: true }));
 
@@ -221,7 +229,9 @@ describe("M1 - skipPingPong in A2A flow", () => {
 
   it("keeps full response text in message while clipping preview", async () => {
     const longReply = "L".repeat(260);
-    mockRunAgentStep.mockResolvedValueOnce(longReply).mockResolvedValueOnce("announce result");
+    mockRunAgentStep
+      .mockResolvedValueOnce({ reply: longReply, ok: true })
+      .mockResolvedValueOnce({ reply: "announce result", ok: true });
 
     await runSessionsSendA2AFlow(
       baseParams({
