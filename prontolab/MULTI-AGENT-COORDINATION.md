@@ -4,6 +4,46 @@
 
 This document describes the multi-agent coordination enhancements to the prontolab-openclaw task system. These changes improve reliability, observability, and agent-to-agent communication while preserving the existing Discord integration and task tools.
 
+## Event Role Taxonomy (2026-02-17)
+
+To align Task-Hub behavior with intended UX, coordination events are consumed by role:
+
+| Role                   | Definition                                                      | Typical Event Types                                             | Primary Consumer           |
+| ---------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------- |
+| `conversation.main`    | Main-agent to main-agent collaboration chat                     | `a2a.send`, `a2a.response`, `a2a.complete` (main-main only)     | Conversations              |
+| `delegation.subagent`  | Delegation lifecycle between main and subagent, including spawn | `a2a.spawn`, `a2a.spawn_result`, any `a2a.*` involving subagent | Events, Tasks              |
+| `orchestration.task`   | Task state transitions and continuation/plan control signals    | `task.*`, `continuation.*`, `plan.*`, `unblock.*`, `zombie.*`   | Tasks, Work Session status |
+| `system.observability` | Operational and health/sync signals                             | `milestone.sync_failed`, infra diagnostics                      | Operations dashboards      |
+
+### Contract for Conversations
+
+`Conversations` is explicitly scoped to `conversation.main`.
+
+- Spawn/subagent events must not be rendered in Conversations.
+- If role metadata is absent, fallback classification should be conservative: non-main or unknown traffic is treated as non-conversation.
+- `workSessionId` remains the grouping root across all roles, but role determines the view.
+
+### Collaboration Category Taxonomy
+
+Within `conversation.main`, collaboration conversations are also labeled with business-facing categories:
+
+- `engineering_build` (개발/구현)
+- `infra_ops` (인프라/운영)
+- `qa_validation` (QA/검증)
+- `planning_decision` (기획/의사결정)
+- `research_analysis` (조사/분석)
+- `docs_knowledge` (문서/지식화)
+- `growth_marketing` (성장/마케팅)
+- `customer_community` (고객/커뮤니티)
+- `legal_compliance` (법무/컴플라이언스)
+- `biz_strategy` (비즈니스/전략)
+
+Design rule:
+
+- Keep top-level categories stable (8~10).
+- Use `subTags` for fine-grained expansion.
+- Support manual override with provenance (`categorySource=manual`).
+
 ## Architecture
 
 ### Existing Infrastructure (Preserved)
@@ -283,18 +323,22 @@ pnpm vitest run --config vitest.unit.config.ts \
 ### 구현 요약
 
 1. Spawn 이벤트 계층화
+
 - `a2a.spawn`, `a2a.spawn_result` 이벤트 타입 추가
 - spawn 시점에 `conversationId`를 생성하고 후속 이벤트에 전달
 
 2. Announce 단계 대화화
+
 - subagent announce 결과에서 `a2a.response`, `a2a.complete` 발행
 - `replyPreview`, `runId`, `announced`를 함께 기록
 
 3. Continuation 가시성
+
 - monitor server가 `coordination-events.ndjson` 변경 시 `continuation_event`를 브로드캐스트
 - task 파일 변경 시 step 진행률(`task_step_update`)을 즉시 전송
 
 4. Task-Hub Conversations 개선 (연동 레포)
+
 - 제목: 고정 `Work Session` → 작업 요약 한 줄
 - 요약 소스: `label` 우선, `[Goal]` 파싱, 본문/preview fallback
 - 부제: 참여 에이전트 + 시각 + 상대시간
@@ -322,4 +366,3 @@ Task-Hub:
   - `src/agents/tools/sessions-spawn-tool.events.test.ts`
   - `src/task-monitor/task-monitor-parser-integration.test.ts`
 - 실서버 로그에서 동일 `conversationId` 체인 확인
-

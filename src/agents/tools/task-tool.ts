@@ -64,6 +64,8 @@ export interface TaskFile {
   source?: string;
   created: string;
   lastActivity: string;
+  workSessionId?: string;
+  previousWorkSessionId?: string;
   progress: string[];
   // Blocked task fields for unblock request automation
   blockedReason?: string;
@@ -170,6 +172,29 @@ function generateTaskId(): string {
   return `task_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
 }
 
+function generateWorkSessionId(): string {
+  return `ws_${crypto.randomUUID()}`;
+}
+
+function normalizeWorkSessionId(value: string | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function ensureTaskWorkSessionId(task: TaskFile): string {
+  const existing = normalizeWorkSessionId(task.workSessionId);
+  if (existing) {
+    task.workSessionId = existing;
+    return existing;
+  }
+  const generated = generateWorkSessionId();
+  task.workSessionId = generated;
+  return generated;
+}
+
 const VALID_STATUSES = new Set<string>([
   "in_progress",
   "completed",
@@ -203,6 +228,12 @@ function formatTaskFileMd(task: TaskFile): string {
 
   if (task.source) {
     lines.push(`- **Source:** ${task.source}`);
+  }
+  if (task.workSessionId) {
+    lines.push(`- **Work Session:** ${task.workSessionId}`);
+  }
+  if (task.previousWorkSessionId) {
+    lines.push(`- **Previous Work Session:** ${task.previousWorkSessionId}`);
   }
 
   lines.push("", "## Description", task.description, "");
@@ -297,6 +328,8 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
   let description = "";
   let context: string | undefined;
   let source: string | undefined;
+  let workSessionId: string | undefined;
+  let previousWorkSessionId: string | undefined;
   let created = "";
   let lastActivity = "";
   const progress: string[] = [];
@@ -366,6 +399,16 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
       const sourceMatch = trimmed.match(/^-?\s*\*\*Source:\*\*\s*(.+)$/);
       if (sourceMatch) {
         source = sourceMatch[1];
+      }
+      const workSessionMatch = trimmed.match(/^-?\s*\*\*Work Session:\*\*\s*(.+)$/);
+      if (workSessionMatch) {
+        workSessionId = normalizeWorkSessionId(workSessionMatch[1]);
+      }
+      const previousWorkSessionMatch = trimmed.match(
+        /^-?\s*\*\*Previous Work Session:\*\*\s*(.+)$/,
+      );
+      if (previousWorkSessionMatch) {
+        previousWorkSessionId = normalizeWorkSessionId(previousWorkSessionMatch[1]);
       }
     } else if (currentSection === "description") {
       description = description ? `${description}\n${trimmed}` : trimmed;
@@ -456,6 +499,8 @@ function parseTaskFileMd(content: string, filename: string): TaskFile | null {
     description,
     context,
     source,
+    workSessionId,
+    previousWorkSessionId,
     created,
     lastActivity: lastActivity || created,
     progress,
@@ -507,6 +552,7 @@ export async function readTask(workspaceDir: string, taskId: string): Promise<Ta
 let writeCounter = 0;
 
 export async function writeTask(workspaceDir: string, task: TaskFile): Promise<void> {
+  ensureTaskWorkSessionId(task);
   const tasksDir = await getTasksDir(workspaceDir);
   const filePath = path.join(tasksDir, `${task.id}.md`);
   const tempPath = `${filePath}.tmp.${process.pid}.${Date.now()}.${++writeCounter}`;
@@ -807,6 +853,20 @@ async function updateCurrentTaskPointer(
   await fs.writeFile(filePath, content, "utf-8");
 }
 
+export async function readCurrentTaskId(workspaceDir: string): Promise<string | null> {
+  const filePath = path.join(workspaceDir, CURRENT_TASK_FILENAME);
+  try {
+    const content = await fs.readFile(filePath, "utf-8");
+    const match = content.match(/^\*\*Focus:\*\*\s+(task_[a-z0-9_]+)\s*$/im);
+    if (!match) {
+      return null;
+    }
+    return match[1];
+  } catch {
+    return null;
+  }
+}
+
 async function hasActiveTasks(workspaceDir: string): Promise<boolean> {
   const tasks = await listTasks(workspaceDir);
   return tasks.some(
@@ -861,6 +921,7 @@ export function createTaskStartTool(options: {
       const initialProgress = requiresApproval
         ? "Task created - awaiting approval"
         : "Task started";
+      const workSessionId = generateWorkSessionId();
 
       const newTask: TaskFile = {
         id: taskId,
@@ -871,6 +932,7 @@ export function createTaskStartTool(options: {
         source: "user",
         created: now,
         lastActivity: now,
+        workSessionId,
         progress: [initialProgress],
       };
 
@@ -879,7 +941,7 @@ export function createTaskStartTool(options: {
         type: EVENT_TYPES.TASK_STARTED,
         agentId,
         ts: Date.now(),
-        data: { taskId, priority, requiresApproval },
+        data: { taskId, priority, requiresApproval, workSessionId },
       });
       await updateCurrentTaskPointer(workspaceDir, taskId);
 
@@ -897,6 +959,7 @@ export function createTaskStartTool(options: {
         started: requiresApproval ? null : now,
         createdAt: now,
         priority,
+        workSessionId,
         totalActiveTasks: allTasks.length,
       });
     },
@@ -1131,7 +1194,11 @@ export function createTaskUpdateTool(options: {
           type: EVENT_TYPES.TASK_UPDATED,
           agentId,
           ts: Date.now(),
-          data: { taskId: freshTask.id, progressCount: freshTask.progress.length },
+          data: {
+            taskId: freshTask.id,
+            progressCount: freshTask.progress.length,
+            workSessionId: freshTask.workSessionId,
+          },
         });
         await updateCurrentTaskPointer(workspaceDir, freshTask.id);
 
@@ -1150,6 +1217,7 @@ export function createTaskUpdateTool(options: {
           taskId: freshTask.id,
           updated: now,
           progressCount: freshTask.progress.length,
+          workSessionId: freshTask.workSessionId,
           steps: stepsInfo,
         });
       } finally {
@@ -1272,7 +1340,7 @@ export function createTaskCompleteTool(options: {
           type: EVENT_TYPES.TASK_COMPLETED,
           agentId,
           ts: Date.now(),
-          data: { taskId: freshTask.id },
+          data: { taskId: freshTask.id, workSessionId: freshTask.workSessionId },
         });
 
         const archivedTo = await appendToHistory(workspaceDir, historyEntry);
@@ -1320,7 +1388,11 @@ export function createTaskCompleteTool(options: {
               type: EVENT_TYPES.MILESTONE_SYNC_FAILED,
               agentId,
               ts: Date.now(),
-              data: { taskId: freshTask.id, milestoneId: freshTask.milestoneId },
+              data: {
+                taskId: freshTask.id,
+                milestoneId: freshTask.milestoneId,
+                workSessionId: freshTask.workSessionId,
+              },
             });
           }
         }
@@ -1331,6 +1403,7 @@ export function createTaskCompleteTool(options: {
           archived: true,
           archivedTo,
           completedAt: new Date().toISOString(),
+          workSessionId: freshTask.workSessionId,
           remainingTasks: remainingTasks.length,
           nextTaskId: nextTask?.id || null,
         });
@@ -1400,6 +1473,7 @@ export function createTaskStatusTool(options: {
             context: task.context,
             created: task.created,
             lastActivity: task.lastActivity,
+            workSessionId: task.workSessionId,
             progressCount: task.progress.length,
             latestProgress: task.progress[task.progress.length - 1],
             ...(stepsInfo ? stepsInfo : {}),
@@ -1423,6 +1497,7 @@ export function createTaskStatusTool(options: {
               id: activeTask.id,
               description: activeTask.description,
               priority: activeTask.priority,
+              workSessionId: activeTask.workSessionId,
             }
           : null,
         tasks: allTasks.map((t) => ({
@@ -1430,6 +1505,7 @@ export function createTaskStatusTool(options: {
           status: t.status,
           priority: t.priority,
           description: t.description.slice(0, 50) + (t.description.length > 50 ? "..." : ""),
+          workSessionId: t.workSessionId,
         })),
       });
     },
@@ -1482,6 +1558,7 @@ export function createTaskListTool(options: {
           description: string;
           created: string;
           lastActivity: string;
+          workSessionId?: string;
           progressCount: number;
           stepsTotal?: number;
           stepsDone?: number;
@@ -1498,6 +1575,7 @@ export function createTaskListTool(options: {
               description: t.description,
               created: t.created,
               lastActivity: t.lastActivity,
+              workSessionId: t.workSessionId,
               progressCount: t.progress.length,
               ...(t.steps?.length
                 ? {
@@ -1528,6 +1606,7 @@ export function createTaskListTool(options: {
           description: t.description,
           created: t.created,
           lastActivity: t.lastActivity,
+          workSessionId: t.workSessionId,
           progressCount: t.progress.length,
           ...(t.steps?.length
             ? {
@@ -1592,7 +1671,7 @@ export function createTaskCancelTool(options: {
           type: EVENT_TYPES.TASK_CANCELLED,
           agentId,
           ts: Date.now(),
-          data: { taskId: task.id, reason },
+          data: { taskId: task.id, reason, workSessionId: task.workSessionId },
         });
 
         const historyEntry = formatTaskHistoryEntry(
@@ -1645,7 +1724,11 @@ export function createTaskCancelTool(options: {
               type: EVENT_TYPES.MILESTONE_SYNC_FAILED,
               agentId,
               ts: Date.now(),
-              data: { taskId: task.id, milestoneId: task.milestoneId },
+              data: {
+                taskId: task.id,
+                milestoneId: task.milestoneId,
+                workSessionId: task.workSessionId,
+              },
             });
           }
         }
@@ -1655,6 +1738,7 @@ export function createTaskCancelTool(options: {
           taskId: task.id,
           cancelled: true,
           reason: reason || null,
+          workSessionId: task.workSessionId,
           remainingTasks: remainingTasks.length,
         });
       } finally {
@@ -1709,7 +1793,12 @@ export function createTaskApproveTool(options: {
       task.progress.push("Task approved and started");
 
       await writeTask(workspaceDir, task);
-      emit({ type: EVENT_TYPES.TASK_APPROVED, agentId, ts: Date.now(), data: { taskId: task.id } });
+      emit({
+        type: EVENT_TYPES.TASK_APPROVED,
+        agentId,
+        ts: Date.now(),
+        data: { taskId: task.id, workSessionId: task.workSessionId },
+      });
       await updateCurrentTaskPointer(workspaceDir, task.id);
 
       enableAgentManagedMode(agentId);
@@ -1719,6 +1808,7 @@ export function createTaskApproveTool(options: {
         taskId: task.id,
         approved: true,
         startedAt: now,
+        workSessionId: task.workSessionId,
       });
     },
   };
@@ -1840,7 +1930,12 @@ export function createTaskBlockTool(options: {
           type: EVENT_TYPES.TASK_BLOCKED,
           agentId,
           ts: Date.now(),
-          data: { taskId: task.id, reason, unblockedBy: uniqueUnblockedBy },
+          data: {
+            taskId: task.id,
+            reason,
+            unblockedBy: uniqueUnblockedBy,
+            workSessionId: task.workSessionId,
+          },
         });
         await updateCurrentTaskPointer(workspaceDir, task.id);
 
@@ -1854,6 +1949,7 @@ export function createTaskBlockTool(options: {
           unblockedBy,
           unblockedAction: unblockedAction || null,
           unblockRequestCount: 0,
+          workSessionId: task.workSessionId,
           message: `Task blocked. Unblock requests will be sent to: ${unblockedBy.join(", ")}`,
         });
       } finally {
@@ -1940,7 +2036,7 @@ export function createTaskResumeTool(options: {
           type: EVENT_TYPES.TASK_RESUMED,
           agentId,
           ts: Date.now(),
-          data: { taskId: task.id },
+          data: { taskId: task.id, workSessionId: task.workSessionId },
         });
         await updateCurrentTaskPointer(workspaceDir, task.id);
 
@@ -1951,6 +2047,7 @@ export function createTaskResumeTool(options: {
           taskId: task.id,
           resumed: true,
           resumedAt: now,
+          workSessionId: task.workSessionId,
         });
       } finally {
         await lock.release();
@@ -2018,6 +2115,7 @@ export function createTaskBacklogAddTool(options: {
       const workspaceDir = resolveAgentWorkspaceDir(cfg, targetAgentId);
       const now = new Date().toISOString();
       const taskId = generateTaskId();
+      const workSessionId = generateWorkSessionId();
 
       const newTask: TaskFile = {
         id: taskId,
@@ -2028,6 +2126,7 @@ export function createTaskBacklogAddTool(options: {
         source: isCrossAgent ? `request:${currentAgentId}` : "self",
         created: now,
         lastActivity: now,
+        workSessionId,
         progress: [`Added to backlog${isCrossAgent ? ` by ${currentAgentId}` : ""}`],
         createdBy: currentAgentId,
         assignee: targetAgentId,
@@ -2044,7 +2143,7 @@ export function createTaskBacklogAddTool(options: {
         type: EVENT_TYPES.TASK_BACKLOG_ADDED,
         agentId: currentAgentId,
         ts: Date.now(),
-        data: { taskId, assignee: targetAgentId, isCrossAgent },
+        data: { taskId, assignee: targetAgentId, isCrossAgent, workSessionId },
       });
 
       const allBacklog = await findAllBacklogTasks(workspaceDir);
@@ -2056,6 +2155,7 @@ export function createTaskBacklogAddTool(options: {
         assignee: targetAgentId,
         isCrossAgent,
         priority,
+        workSessionId: newTask.workSessionId,
         estimatedEffort: estimatedEffort || null,
         startDate: startDateRaw || null,
         dueDate: dueDateRaw || null,
@@ -2170,7 +2270,7 @@ export function createTaskPickBacklogTool(options: {
           type: EVENT_TYPES.TASK_BACKLOG_PICKED,
           agentId,
           ts: Date.now(),
-          data: { taskId: freshTask.id },
+          data: { taskId: freshTask.id, workSessionId: freshTask.workSessionId },
         });
         await updateCurrentTaskPointer(workspaceDir, freshTask.id);
 
@@ -2184,6 +2284,7 @@ export function createTaskPickBacklogTool(options: {
           description: freshTask.description,
           priority: freshTask.priority,
           pickedFromBacklog: true,
+          workSessionId: freshTask.workSessionId,
           startedAt: now,
           remainingBacklogItems: remainingBacklog.length,
         });

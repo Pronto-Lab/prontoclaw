@@ -22,6 +22,48 @@ function extractAgentId(sessionKey: string): string {
   return parts.length >= 2 ? parts[1] : sessionKey;
 }
 
+function sessionTypeFromSessionKey(sessionKey?: string): "main" | "subagent" | "unknown" {
+  if (!sessionKey) {
+    return "unknown";
+  }
+  if (sessionKey.includes(":subagent:")) {
+    return "subagent";
+  }
+  if (/^agent:[^:]+:main$/i.test(sessionKey)) {
+    return "main";
+  }
+  return "unknown";
+}
+
+function resolveA2AEventRole(params: {
+  fromSessionType: "main" | "subagent" | "unknown";
+  toSessionType: "main" | "subagent" | "unknown";
+}): "conversation.main" | "delegation.subagent" {
+  return params.fromSessionType === "subagent" || params.toSessionType === "subagent"
+    ? "delegation.subagent"
+    : "conversation.main";
+}
+
+function sanitizeA2AConversationText(text: string): string {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  // Hide internal orchestration directives from user-facing conversation surfaces.
+  const stripped = normalized.replace(/^\s*\[\[[a-z0-9_:-]+\]\]\s*\n?/gim, "").trim();
+  return stripped || normalized;
+}
+
+function toA2AReplyPreview(text: string): string {
+  return sanitizeA2AConversationText(text).slice(0, 200);
+}
+
+function toA2ASendMessage(text: string): string {
+  // Keep enough context for UI thread rendering while still bounding log payload size.
+  return sanitizeA2AConversationText(text).slice(0, 4000);
+}
+
 export async function runSessionsSendA2AFlow(params: {
   targetSessionKey: string;
   displayKey: string;
@@ -33,10 +75,50 @@ export async function runSessionsSendA2AFlow(params: {
   roundOneReply?: string;
   waitRunId?: string;
   conversationId?: string;
+  taskId?: string;
+  workSessionId?: string;
+  parentConversationId?: string;
+  depth?: number;
+  hop?: number;
   skipPingPong?: boolean;
 }) {
   const conversationId = params.conversationId ?? crypto.randomUUID();
   const runContextId = params.waitRunId ?? "unknown";
+  const fromAgent = params.requesterSessionKey
+    ? extractAgentId(params.requesterSessionKey)
+    : "unknown";
+  const toAgent = extractAgentId(params.targetSessionKey);
+  const fromSessionType = sessionTypeFromSessionKey(params.requesterSessionKey);
+  const toSessionType = sessionTypeFromSessionKey(params.targetSessionKey);
+  const eventRole = resolveA2AEventRole({ fromSessionType, toSessionType });
+  const sharedContext = {
+    taskId: params.taskId,
+    workSessionId: params.workSessionId,
+    parentConversationId: params.parentConversationId,
+    depth: params.depth,
+    hop: params.hop,
+  };
+
+  // Emit a2a.send immediately so conversation streams can render outbound intent,
+  // even when downstream reply generation is delayed or skipped.
+  emit({
+    type: EVENT_TYPES.A2A_SEND,
+    agentId: fromAgent,
+    ts: Date.now(),
+    data: {
+      fromAgent,
+      toAgent,
+      targetSessionKey: params.targetSessionKey,
+      message: toA2ASendMessage(params.message),
+      runId: runContextId,
+      conversationId,
+      eventRole,
+      fromSessionType,
+      toSessionType,
+      ...sharedContext,
+    },
+  });
+
   try {
     let primaryReply = params.roundOneReply;
     let latestReply = params.roundOneReply;
@@ -65,7 +147,7 @@ export async function runSessionsSendA2AFlow(params: {
             latestReply = primaryReply;
             break;
           }
-          // "not_found" / "error" → run is gone, stop waiting
+          // "not_found" / "error" -> run is gone, stop waiting
           if (wait?.status === "not_found" || wait?.status === "error") {
             log.warn("agent.wait returned non-retriable status", {
               runId: params.waitRunId,
@@ -74,7 +156,7 @@ export async function runSessionsSendA2AFlow(params: {
             break;
           }
         } catch {
-          // Gateway connection hiccup — retry
+          // Gateway connection hiccup -> retry
         }
         elapsed += CHUNK_MS;
       }
@@ -85,26 +167,48 @@ export async function runSessionsSendA2AFlow(params: {
         });
       }
     }
+
     if (!latestReply) {
+      emit({
+        type: EVENT_TYPES.A2A_COMPLETE,
+        agentId: fromAgent,
+        ts: Date.now(),
+        data: {
+          fromAgent,
+          toAgent,
+          announced: false,
+          targetSessionKey: params.targetSessionKey,
+          conversationId,
+          eventRole,
+          fromSessionType,
+          toSessionType,
+          ...sharedContext,
+        },
+      });
       return;
     }
 
-    // Emit a2a.send event
-    const fromAgent = params.requesterSessionKey
-      ? extractAgentId(params.requesterSessionKey)
-      : "unknown";
-    const toAgent = extractAgentId(params.targetSessionKey);
+    // Emit initial target reply so main-agent conversations render bilateral exchange.
+    const initialResponseFromSessionType = sessionTypeFromSessionKey(params.targetSessionKey);
+    const initialResponseToSessionType = sessionTypeFromSessionKey(params.requesterSessionKey);
+    const initialResponseEventRole = resolveA2AEventRole({
+      fromSessionType: initialResponseFromSessionType,
+      toSessionType: initialResponseToSessionType,
+    });
     emit({
-      type: EVENT_TYPES.A2A_SEND,
-      agentId: fromAgent,
+      type: EVENT_TYPES.A2A_RESPONSE,
+      agentId: toAgent,
       ts: Date.now(),
       data: {
-        fromAgent,
-        toAgent,
-        targetSessionKey: params.targetSessionKey,
-        message: params.message.slice(0, 200),
-        runId: runContextId,
+        fromAgent: toAgent,
+        toAgent: fromAgent,
+        message: sanitizeA2AConversationText(latestReply),
+        replyPreview: toA2AReplyPreview(latestReply),
         conversationId,
+        eventRole: initialResponseEventRole,
+        fromSessionType: initialResponseFromSessionType,
+        toSessionType: initialResponseToSessionType,
+        ...sharedContext,
       },
     });
 
@@ -154,6 +258,12 @@ export async function runSessionsSendA2AFlow(params: {
         }
 
         // Emit a2a.response event
+        const responseFromSessionType = sessionTypeFromSessionKey(currentSessionKey);
+        const responseToSessionType = sessionTypeFromSessionKey(nextSessionKey);
+        const responseEventRole = resolveA2AEventRole({
+          fromSessionType: responseFromSessionType,
+          toSessionType: responseToSessionType,
+        });
         emit({
           type: EVENT_TYPES.A2A_RESPONSE,
           agentId: extractAgentId(currentSessionKey),
@@ -163,8 +273,13 @@ export async function runSessionsSendA2AFlow(params: {
             toAgent: extractAgentId(nextSessionKey),
             turn,
             maxTurns: params.maxPingPongTurns,
-            replyPreview: replyText.slice(0, 200),
+            message: sanitizeA2AConversationText(replyText),
+            replyPreview: toA2AReplyPreview(replyText),
             conversationId,
+            eventRole: responseEventRole,
+            fromSessionType: responseFromSessionType,
+            toSessionType: responseToSessionType,
+            ...sharedContext,
           },
         });
 
@@ -195,6 +310,8 @@ export async function runSessionsSendA2AFlow(params: {
       sourceChannel: params.requesterChannel,
       sourceTool: "sessions_send",
     });
+
+    let announced = false;
     if (announceTarget && announceReply && announceReply.trim() && !isAnnounceSkip(announceReply)) {
       try {
         await callGateway({
@@ -208,6 +325,7 @@ export async function runSessionsSendA2AFlow(params: {
           },
           timeoutMs: 10_000,
         });
+        announced = true;
       } catch (err) {
         log.warn("sessions_send announce delivery failed", {
           runId: runContextId,
@@ -217,6 +335,7 @@ export async function runSessionsSendA2AFlow(params: {
         });
       }
     }
+
     // Emit a2a.complete event
     emit({
       type: EVENT_TYPES.A2A_COMPLETE,
@@ -225,14 +344,13 @@ export async function runSessionsSendA2AFlow(params: {
       data: {
         fromAgent,
         toAgent,
-        announced: !!(
-          announceTarget &&
-          announceReply &&
-          announceReply.trim() &&
-          !isAnnounceSkip(announceReply)
-        ),
+        announced,
         targetSessionKey: params.targetSessionKey,
         conversationId,
+        eventRole,
+        fromSessionType,
+        toSessionType,
+        ...sharedContext,
       },
     });
   } catch (err) {

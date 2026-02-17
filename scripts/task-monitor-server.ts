@@ -819,6 +819,51 @@ type EnrichedCoordinationEvent = Record<string, unknown> & {
   categorySource: "manual" | "rule" | "heuristic" | "fallback";
 };
 
+export type WorkSessionStatus = "ACTIVE" | "QUIET" | "ARCHIVED";
+
+type WorkSessionCategoryOverride = {
+  collabCategory: CollaborationCategory;
+  updatedAt: string;
+  updatedBy?: string;
+};
+
+type WorkSessionCategoryOverrideMap = Record<string, WorkSessionCategoryOverride>;
+
+export type WorkSessionThreadSummary = {
+  id: string;
+  conversationId?: string;
+  fromAgent: string;
+  toAgent: string;
+  startTime: number;
+  lastTime: number;
+  eventCount: number;
+  collabCategory: CollaborationCategory;
+  collabSubTags: string[];
+  events: EnrichedCoordinationEvent[];
+};
+
+export type WorkSessionSummary = {
+  id: string;
+  workSessionId: string;
+  status: WorkSessionStatus;
+  startTime: number;
+  lastTime: number;
+  durationMs: number;
+  threadCount: number;
+  eventCount: number;
+  collabCategory: CollaborationCategory;
+  collabSubTags: string[];
+  categorySource: "manual_override" | "event";
+  roleCounts: Record<EventRole, number>;
+  threads: WorkSessionThreadSummary[];
+};
+
+const WORK_SESSION_ARCHIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const WORK_SESSION_CATEGORY_OVERRIDES_PATH = path.join(
+  OPENCLAW_DIR,
+  "work-session-category-overrides.json",
+);
+
 let mainAgentCache: { mtimeMs: number; ids: Set<string> } | null = null;
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -837,6 +882,16 @@ function asString(value: unknown): string | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asCollaborationCategory(value: unknown): CollaborationCategory | undefined {
+  const candidate = asString(value);
+  if (!candidate) {
+    return undefined;
+  }
+  return COLLABORATION_CATEGORIES.includes(candidate as CollaborationCategory)
+    ? (candidate as CollaborationCategory)
+    : undefined;
 }
 
 function normalizeAgentId(value: string | undefined): string | undefined {
@@ -1327,6 +1382,316 @@ export function enrichCoordinationEvent(rawEvent: unknown): EnrichedCoordination
   };
 }
 
+function coordinationEventTimestampMs(event: Record<string, unknown>): number {
+  const numericTs = asNumber(event.timestampMs) || asNumber(event.ts);
+  if (numericTs) {
+    return numericTs;
+  }
+  const isoTs = asString(event.timestamp);
+  return isoTs ? new Date(isoTs).getTime() || 0 : 0;
+}
+
+function eventRoleFromValue(value: unknown): EventRole | null {
+  return value === "conversation.main" ||
+    value === "delegation.subagent" ||
+    value === "orchestration.task" ||
+    value === "system.observability"
+    ? value
+    : null;
+}
+
+function parseCoordinationEventsFromRaw(raw: string): {
+  lines: string[];
+  events: EnrichedCoordinationEvent[];
+} {
+  const lines = raw
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const events = lines
+    .map((line) => {
+      try {
+        return enrichCoordinationEvent(JSON.parse(line));
+      } catch {
+        return null;
+      }
+    })
+    .filter((event): event is EnrichedCoordinationEvent => !!event);
+
+  return { lines, events };
+}
+
+function workSessionThreadKey(event: EnrichedCoordinationEvent, eventTs: number): string {
+  const data = asRecord(event.data);
+  const conversationId = asString(data.conversationId);
+  if (conversationId) {
+    return `conv:${conversationId}`;
+  }
+
+  const fromAgent =
+    asString(data.fromAgent) ||
+    asString(data.senderAgentId) ||
+    asString(event.agentId) ||
+    "unknown";
+  const toAgent = asString(data.toAgent) || asString(data.targetAgentId) || "unknown";
+  const pair = [fromAgent, toAgent].toSorted().join("_");
+  if (pair !== "unknown_unknown") {
+    return `pair:${pair}`;
+  }
+
+  // Fallback bucket for malformed legacy events that have neither pair nor conversationId.
+  return `event:${event.type}:${Math.floor(eventTs / (5 * 60 * 1000))}`;
+}
+
+function isTerminalWorkSessionEvent(event: EnrichedCoordinationEvent): boolean {
+  if (event.type === "a2a.complete") {
+    return true;
+  }
+
+  if (event.type === "a2a.spawn_result") {
+    const status = asString(asRecord(event.data).status);
+    if (status === "error") {
+      return true;
+    }
+  }
+
+  if (event.type === "continuation.complete" || event.type === "continuation.completed") {
+    return true;
+  }
+
+  if (event.type.startsWith("task.")) {
+    const status =
+      asString(asRecord(event.data).status) ||
+      asString(event.status) ||
+      asString(asRecord(event).status);
+    if (
+      status === "completed" ||
+      status === "cancelled" ||
+      status === "abandoned" ||
+      status === "failed"
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+type BuildWorkSessionsOptions = {
+  nowMs?: number;
+  categoryOverrides?: WorkSessionCategoryOverrideMap;
+};
+
+export function buildWorkSessionsFromEvents(
+  events: EnrichedCoordinationEvent[],
+  options: BuildWorkSessionsOptions = {},
+): WorkSessionSummary[] {
+  const nowMs = options.nowMs ?? Date.now();
+
+  const workSessions = new Map<
+    string,
+    {
+      workSessionId: string;
+      startTime: number;
+      lastTime: number;
+      eventCount: number;
+      collabCategory: CollaborationCategory;
+      collabSubTags: string[];
+      latestEvent: EnrichedCoordinationEvent | null;
+      roleCounts: Record<EventRole, number>;
+      threads: Map<string, WorkSessionThreadSummary>;
+    }
+  >();
+
+  const sortedEvents = [...events].toSorted(
+    (a, b) => coordinationEventTimestampMs(a) - coordinationEventTimestampMs(b),
+  );
+
+  for (const event of sortedEvents) {
+    const data = asRecord(event.data);
+    const workSessionId = asString(data.workSessionId);
+    if (!workSessionId) {
+      continue;
+    }
+
+    const eventTs = coordinationEventTimestampMs(event);
+    const eventCategory =
+      asCollaborationCategory(event.collabCategory) ||
+      asCollaborationCategory(data.collabCategory) ||
+      "engineering_build";
+    const eventSubTagsRaw =
+      (Array.isArray(event.collabSubTags) ? event.collabSubTags : undefined) ||
+      (Array.isArray(data.collabSubTags) ? data.collabSubTags : undefined) ||
+      [];
+    const eventSubTags = eventSubTagsRaw
+      .map((value) => asString(value))
+      .filter((value): value is string => !!value)
+      .slice(0, 5);
+
+    if (!workSessions.has(workSessionId)) {
+      workSessions.set(workSessionId, {
+        workSessionId,
+        startTime: eventTs,
+        lastTime: eventTs,
+        eventCount: 0,
+        collabCategory: eventCategory,
+        collabSubTags: [...eventSubTags],
+        latestEvent: event,
+        roleCounts: {
+          "conversation.main": 0,
+          "delegation.subagent": 0,
+          "orchestration.task": 0,
+          "system.observability": 0,
+        },
+        threads: new Map<string, WorkSessionThreadSummary>(),
+      });
+    }
+
+    const aggregate = workSessions.get(workSessionId)!;
+    aggregate.startTime = Math.min(aggregate.startTime, eventTs);
+    aggregate.lastTime = Math.max(aggregate.lastTime, eventTs);
+    aggregate.eventCount += 1;
+
+    if (
+      !aggregate.latestEvent ||
+      coordinationEventTimestampMs(aggregate.latestEvent) <= coordinationEventTimestampMs(event)
+    ) {
+      aggregate.latestEvent = event;
+    }
+
+    if (aggregate.collabCategory === "engineering_build" && eventCategory !== "engineering_build") {
+      aggregate.collabCategory = eventCategory;
+    }
+    if (aggregate.collabSubTags.length === 0 && eventSubTags.length > 0) {
+      aggregate.collabSubTags = [...eventSubTags];
+    }
+
+    const role = eventRoleFromValue(event.eventRole) || eventRoleFromValue(data.eventRole);
+    if (role) {
+      aggregate.roleCounts[role] += 1;
+    }
+
+    const threadId = workSessionThreadKey(event, eventTs);
+    if (!aggregate.threads.has(threadId)) {
+      const fromAgent =
+        asString(data.fromAgent) ||
+        asString(data.senderAgentId) ||
+        asString(event.agentId) ||
+        "unknown";
+      const toAgent = asString(data.toAgent) || asString(data.targetAgentId) || "unknown";
+      aggregate.threads.set(threadId, {
+        id: threadId,
+        conversationId: asString(data.conversationId),
+        fromAgent,
+        toAgent,
+        startTime: eventTs,
+        lastTime: eventTs,
+        eventCount: 0,
+        collabCategory: eventCategory,
+        collabSubTags: [...eventSubTags],
+        events: [],
+      });
+    }
+
+    const thread = aggregate.threads.get(threadId)!;
+    thread.startTime = Math.min(thread.startTime, eventTs);
+    thread.lastTime = Math.max(thread.lastTime, eventTs);
+    thread.eventCount += 1;
+    if (!thread.conversationId) {
+      thread.conversationId = asString(data.conversationId);
+    }
+    if (thread.collabCategory === "engineering_build" && eventCategory !== "engineering_build") {
+      thread.collabCategory = eventCategory;
+    }
+    if (thread.collabSubTags.length === 0 && eventSubTags.length > 0) {
+      thread.collabSubTags = [...eventSubTags];
+    }
+    thread.events.push(event);
+  }
+
+  const summaries: WorkSessionSummary[] = [];
+
+  for (const aggregate of workSessions.values()) {
+    const override = options.categoryOverrides?.[aggregate.workSessionId];
+    const inactiveMs = nowMs - aggregate.lastTime;
+
+    let status: WorkSessionStatus;
+    if (inactiveMs > WORK_SESSION_ARCHIVE_WINDOW_MS) {
+      status = "ARCHIVED";
+    } else if (aggregate.latestEvent && isTerminalWorkSessionEvent(aggregate.latestEvent)) {
+      status = "QUIET";
+    } else {
+      status = "ACTIVE";
+    }
+
+    const threads = [...aggregate.threads.values()]
+      .map((thread) => ({
+        ...thread,
+        events: [...thread.events].toSorted(
+          (a, b) => coordinationEventTimestampMs(a) - coordinationEventTimestampMs(b),
+        ),
+      }))
+      .toSorted((a, b) => b.lastTime - a.lastTime);
+
+    summaries.push({
+      id: `ws:${aggregate.workSessionId}`,
+      workSessionId: aggregate.workSessionId,
+      status,
+      startTime: aggregate.startTime,
+      lastTime: aggregate.lastTime,
+      durationMs: Math.max(0, aggregate.lastTime - aggregate.startTime),
+      threadCount: threads.length,
+      eventCount: aggregate.eventCount,
+      collabCategory: override?.collabCategory || aggregate.collabCategory,
+      collabSubTags: aggregate.collabSubTags,
+      categorySource: override ? "manual_override" : "event",
+      roleCounts: aggregate.roleCounts,
+      threads,
+    });
+  }
+
+  return summaries.toSorted((a, b) => b.lastTime - a.lastTime);
+}
+
+async function readWorkSessionCategoryOverrides(): Promise<WorkSessionCategoryOverrideMap> {
+  try {
+    const raw = await fs.readFile(WORK_SESSION_CATEGORY_OVERRIDES_PATH, "utf-8");
+    const parsed = parseJsonSafe(raw);
+    const record = asRecord(parsed);
+    const result: WorkSessionCategoryOverrideMap = {};
+
+    for (const [workSessionId, value] of Object.entries(record)) {
+      const entry = asRecord(value);
+      const collabCategory = asCollaborationCategory(entry.collabCategory);
+      if (!collabCategory) {
+        continue;
+      }
+      result[workSessionId] = {
+        collabCategory,
+        updatedAt: asString(entry.updatedAt) || new Date().toISOString(),
+        updatedBy: asString(entry.updatedBy),
+      };
+    }
+
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+async function writeWorkSessionCategoryOverrides(
+  overrides: WorkSessionCategoryOverrideMap,
+): Promise<void> {
+  await fs.mkdir(path.dirname(WORK_SESSION_CATEGORY_OVERRIDES_PATH), { recursive: true });
+  await fs.writeFile(
+    WORK_SESSION_CATEGORY_OVERRIDES_PATH,
+    `${JSON.stringify(overrides, null, 2)}\n`,
+    "utf-8",
+  );
+}
+
 // ============================================================================
 // HTTP Request Handlers
 // ============================================================================
@@ -1335,7 +1700,7 @@ function jsonResponse(res: http.ServerResponse, data: unknown, status = 200): vo
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Task-Monitor-Token, Cookie");
   res.end(JSON.stringify(data, null, 2));
 }
@@ -1351,14 +1716,14 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   // CORS preflight
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Task-Monitor-Token, Cookie");
     res.statusCode = 204;
     res.end();
     return;
   }
 
-  if (req.method !== "GET" && req.method !== "POST") {
+  if (req.method !== "GET" && req.method !== "POST" && req.method !== "PATCH") {
     errorResponse(res, "Method not allowed", 405);
     return;
   }
@@ -1535,25 +1900,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
     try {
       const raw = await fs.readFile(eventLogPath, "utf-8");
-      const lines = raw.trim().split("\n").filter(Boolean);
-      let events = lines
-        .map((line: string) => {
-          try {
-            return enrichCoordinationEvent(JSON.parse(line));
-          } catch {
-            return null;
-          }
-        })
-        .filter((event): event is EnrichedCoordinationEvent => !!event);
+      const { lines, events: parsedEvents } = parseCoordinationEventsFromRaw(raw);
+      let events = parsedEvents;
 
       if (since) {
         const sinceMs = new Date(since).getTime();
-        events = events.filter((event) => {
-          const ts =
-            asNumber(event.timestampMs) ||
-            (asString(event.timestamp) ? new Date(asString(event.timestamp) || 0).getTime() : 0);
-          return ts >= sinceMs;
-        });
+        events = events.filter((event) => coordinationEventTimestampMs(event) >= sinceMs);
       }
 
       if (roleFilter) {
@@ -1596,11 +1948,161 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  const workSessionCategoryPatchMatch = pathname.match(/^\/api\/work-sessions\/([^/]+)\/category$/);
+  if (workSessionCategoryPatchMatch) {
+    if (req.method !== "PATCH") {
+      errorResponse(res, "Method not allowed", 405);
+      return;
+    }
+
+    if (!isAuthorizedWriteRequest(req)) {
+      errorResponse(res, "Unauthorized", 401);
+      return;
+    }
+
+    const workSessionId = decodeURIComponent(workSessionCategoryPatchMatch[1]);
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const bodyStr = Buffer.concat(chunks).toString("utf-8");
+    let body: { collabCategory?: string; updatedBy?: string };
+    try {
+      body = JSON.parse(bodyStr);
+    } catch {
+      errorResponse(res, "Invalid JSON body", 400);
+      return;
+    }
+
+    const collabCategory = asCollaborationCategory(body.collabCategory);
+    if (!collabCategory) {
+      errorResponse(res, "collabCategory is required and must be a valid category", 400);
+      return;
+    }
+
+    const overrides = await readWorkSessionCategoryOverrides();
+    overrides[workSessionId] = {
+      collabCategory,
+      updatedAt: new Date().toISOString(),
+      updatedBy: asString(body.updatedBy),
+    };
+    await writeWorkSessionCategoryOverrides(overrides);
+
+    jsonResponse(res, {
+      ok: true,
+      workSessionId,
+      override: overrides[workSessionId],
+    });
+    return;
+  }
+
+  const workSessionDetailMatch = pathname.match(/^\/api\/work-sessions\/([^/]+)$/);
+  if (workSessionDetailMatch) {
+    if (req.method !== "GET") {
+      errorResponse(res, "Method not allowed", 405);
+      return;
+    }
+
+    const workSessionId = decodeURIComponent(workSessionDetailMatch[1]);
+    const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
+    try {
+      const raw = await fs.readFile(eventLogPath, "utf-8");
+      const { events } = parseCoordinationEventsFromRaw(raw);
+      const overrides = await readWorkSessionCategoryOverrides();
+      const sessions = buildWorkSessionsFromEvents(events, { categoryOverrides: overrides });
+      const session = sessions.find((entry) => entry.workSessionId === workSessionId);
+      if (!session) {
+        errorResponse(res, `Work session not found: ${workSessionId}`, 404);
+        return;
+      }
+      jsonResponse(res, { session });
+    } catch {
+      errorResponse(res, "Failed to read work session", 500);
+    }
+    return;
+  }
+
+  // Work session endpoint: /api/work-sessions?status=ACTIVE|QUIET|ARCHIVED&limit=...
+  if (pathname === "/api/work-sessions") {
+    if (req.method !== "GET") {
+      errorResponse(res, "Method not allowed", 405);
+      return;
+    }
+
+    const limit = Number(url.searchParams.get("limit")) || 100;
+    const viewCategory = asString(url.searchParams.get("viewCategory")) || undefined;
+    const subTag = asString(url.searchParams.get("subTag")) || undefined;
+    const rawStatusFilters = url.searchParams
+      .getAll("status")
+      .flatMap((entry) => entry.split(","))
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+    const statusFilters = rawStatusFilters.filter(
+      (value): value is WorkSessionStatus =>
+        value === "ACTIVE" || value === "QUIET" || value === "ARCHIVED",
+    );
+    const requestedStatuses = new Set(statusFilters);
+
+    const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
+
+    try {
+      const raw = await fs.readFile(eventLogPath, "utf-8");
+      const { events } = parseCoordinationEventsFromRaw(raw);
+      const overrides = await readWorkSessionCategoryOverrides();
+      const sessions = buildWorkSessionsFromEvents(events, { categoryOverrides: overrides });
+
+      let filtered = sessions;
+      if (requestedStatuses.size > 0) {
+        filtered = filtered.filter((session) => requestedStatuses.has(session.status));
+      }
+      if (viewCategory && viewCategory !== "all") {
+        filtered = filtered.filter((session) => session.collabCategory === viewCategory);
+      }
+      if (subTag) {
+        const needle = subTag.toLowerCase();
+        filtered = filtered.filter((session) =>
+          session.collabSubTags.some((tag) => tag.toLowerCase() === needle),
+        );
+      }
+
+      const categoryCounts: Record<string, number> = {};
+      for (const session of filtered) {
+        const key = session.collabCategory;
+        categoryCounts[key] = (categoryCounts[key] || 0) + 1;
+      }
+
+      const limitedSessions = filtered.slice(0, Math.max(1, limit));
+      jsonResponse(res, {
+        sessions: limitedSessions,
+        count: limitedSessions.length,
+        totalMatched: filtered.length,
+        totalSessions: sessions.length,
+        status: statusFilters,
+        viewCategory: viewCategory || null,
+        subTag: subTag || null,
+        categoryCounts,
+      });
+    } catch {
+      jsonResponse(res, {
+        sessions: [],
+        count: 0,
+        totalMatched: 0,
+        totalSessions: 0,
+        status: statusFilters,
+        viewCategory: viewCategory || null,
+        subTag: subTag || null,
+        categoryCounts: {},
+      });
+    }
+    return;
+  }
+
   // Root endpoint
   if (pathname === "/" || pathname === "/api") {
     jsonResponse(res, {
       name: "Task Monitor API",
-      version: "1.2.0",
+      version: "1.3.0",
       endpoints: [
         "GET /api/health",
         "GET /api/agents",
@@ -1615,6 +2117,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
         "GET /api/agents/:agentId/plans",
         "GET /api/team-state",
         "GET /api/events?limit=100&since=<ISO>&role=<conversation.main|delegation.subagent|orchestration.task|system.observability>&viewCategory=<category>",
+        "GET /api/work-sessions?status=ACTIVE|QUIET|ARCHIVED&limit=100&viewCategory=<category>&subTag=<tag>",
+        "GET /api/work-sessions/:id",
+        "PATCH /api/work-sessions/:id/category",
         "POST /api/workspace-file",
         "WS /ws",
       ],

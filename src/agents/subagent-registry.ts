@@ -20,6 +20,11 @@ export type SubagentRunRecord = {
   cleanup: "delete" | "keep";
   label?: string;
   conversationId?: string;
+  parentConversationId?: string;
+  taskId?: string;
+  workSessionId?: string;
+  depth?: number;
+  hop?: number;
   requesterAgentId?: string;
   targetAgentId?: string;
   createdAt: number;
@@ -81,6 +86,11 @@ function resumeSubagentRun(runId: string) {
       label: entry.label,
       outcome: entry.outcome,
       conversationId: entry.conversationId,
+      parentConversationId: entry.parentConversationId,
+      taskId: entry.taskId,
+      workSessionId: entry.workSessionId,
+      depth: entry.depth,
+      hop: entry.hop,
       requesterAgentId: entry.requesterAgentId,
       targetAgentId: entry.targetAgentId,
     }).then((didAnnounce) => {
@@ -247,6 +257,11 @@ function ensureListener() {
       label: entry.label,
       outcome: entry.outcome,
       conversationId: entry.conversationId,
+      parentConversationId: entry.parentConversationId,
+      taskId: entry.taskId,
+      workSessionId: entry.workSessionId,
+      depth: entry.depth,
+      hop: entry.hop,
       requesterAgentId: entry.requesterAgentId,
       targetAgentId: entry.targetAgentId,
     }).then((didAnnounce) => {
@@ -301,6 +316,11 @@ export function registerSubagentRun(params: {
   cleanup: "delete" | "keep";
   label?: string;
   conversationId?: string;
+  parentConversationId?: string;
+  taskId?: string;
+  workSessionId?: string;
+  depth?: number;
+  hop?: number;
   requesterAgentId?: string;
   targetAgentId?: string;
   runTimeoutSeconds?: number;
@@ -321,6 +341,11 @@ export function registerSubagentRun(params: {
     cleanup: params.cleanup,
     label: params.label,
     conversationId: params.conversationId,
+    parentConversationId: params.parentConversationId,
+    taskId: params.taskId,
+    workSessionId: params.workSessionId,
+    depth: params.depth,
+    hop: params.hop,
     requesterAgentId: params.requesterAgentId,
     targetAgentId: params.targetAgentId,
     createdAt: now,
@@ -404,6 +429,11 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
       label: entry.label,
       outcome: entry.outcome,
       conversationId: entry.conversationId,
+      parentConversationId: entry.parentConversationId,
+      taskId: entry.taskId,
+      workSessionId: entry.workSessionId,
+      depth: entry.depth,
+      hop: entry.hop,
       requesterAgentId: entry.requesterAgentId,
       targetAgentId: entry.targetAgentId,
     }).then((didAnnounce) => {

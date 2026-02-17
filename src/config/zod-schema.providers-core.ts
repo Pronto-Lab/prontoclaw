@@ -313,6 +313,14 @@ export const DiscordAccountSchema = z
       })
       .strict()
       .optional(),
+    taskApprovals: z
+      .object({
+        enabled: z.boolean().optional(),
+        approvers: z.array(z.union([z.string(), z.number()])).optional(),
+        taskHubUrl: z.string().url().optional(),
+      })
+      .strict()
+      .optional(),
     intents: z
       .object({
         presence: z.boolean().optional(),

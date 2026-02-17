@@ -13,6 +13,7 @@ import {
   type GatewayMessageChannel,
   INTERNAL_MESSAGE_CHANNEL,
 } from "../../utils/message-channel.js";
+import { resolveAgentWorkspaceDir } from "../agent-scope.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
@@ -25,14 +26,82 @@ import {
 } from "./sessions-helpers.js";
 import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
+import { readCurrentTaskId, readTask } from "./task-tool.js";
 
 const SessionsSendToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
   label: Type.Optional(Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH })),
   agentId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+  taskId: Type.Optional(Type.String()),
+  workSessionId: Type.Optional(Type.String()),
+  parentConversationId: Type.Optional(Type.String()),
+  depth: Type.Optional(Type.Number({ minimum: 0 })),
+  hop: Type.Optional(Type.Number({ minimum: 0 })),
   message: Type.String(),
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
 });
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizeNonNegativeInt(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+async function resolveSendWorkSessionContext(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  requesterAgentId: string;
+  requestedTaskId?: string;
+  explicitWorkSessionId?: string;
+}): Promise<{ workSessionId?: string; taskId?: string }> {
+  const explicitWorkSessionId = normalizeOptionalString(params.explicitWorkSessionId);
+  let taskId = normalizeOptionalString(params.requestedTaskId);
+  if (explicitWorkSessionId) {
+    return { workSessionId: explicitWorkSessionId, taskId };
+  }
+
+  const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.requesterAgentId);
+
+  const readTaskWorkSessionId = async (candidateTaskId?: string): Promise<string | undefined> => {
+    if (!candidateTaskId) {
+      return undefined;
+    }
+    try {
+      const linkedTask = await readTask(workspaceDir, candidateTaskId);
+      return normalizeOptionalString(linkedTask?.workSessionId);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const fromRequestedTask = await readTaskWorkSessionId(taskId);
+  if (fromRequestedTask) {
+    return { workSessionId: fromRequestedTask, taskId };
+  }
+
+  try {
+    const currentTaskId = await readCurrentTaskId(workspaceDir);
+    if (currentTaskId) {
+      taskId = taskId ?? currentTaskId;
+      const fromCurrentTask = await readTaskWorkSessionId(currentTaskId);
+      if (fromCurrentTask) {
+        return { workSessionId: fromCurrentTask, taskId };
+      }
+    }
+  } catch {
+    // ignore task context resolution errors
+  }
+
+  return { taskId };
+}
 
 export function createSessionsSendTool(opts?: {
   agentSessionKey?: string;
@@ -48,6 +117,15 @@ export function createSessionsSendTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const message = readStringParam(params, "message", { required: true });
+      const taskIdParam = normalizeOptionalString(readStringParam(params, "taskId"));
+      const explicitWorkSessionId = normalizeOptionalString(
+        readStringParam(params, "workSessionId"),
+      );
+      const parentConversationId = normalizeOptionalString(
+        readStringParam(params, "parentConversationId"),
+      );
+      const depth = normalizeNonNegativeInt(params.depth);
+      const hop = normalizeNonNegativeInt(params.hop);
       const cfg = loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = cfg.agents?.defaults?.sandbox?.sessionToolsVisibility ?? "spawned";
@@ -226,6 +304,14 @@ export function createSessionsSendTool(opts?: {
       let runId: string = idempotencyKey;
       const requesterAgentId = resolveAgentIdFromSessionKey(requesterInternalKey);
       const targetAgentId = resolveAgentIdFromSessionKey(resolvedKey);
+      const { workSessionId, taskId } = await resolveSendWorkSessionContext({
+        cfg,
+        requesterAgentId,
+        requestedTaskId: taskIdParam,
+        explicitWorkSessionId,
+      });
+      const depthValue = depth;
+      const hopValue = hop;
       const isCrossAgent = requesterAgentId !== targetAgentId;
       if (isCrossAgent) {
         if (!a2aPolicy.enabled) {
@@ -283,6 +369,11 @@ export function createSessionsSendTool(opts?: {
           requesterChannel,
           roundOneReply,
           waitRunId,
+          taskId,
+          workSessionId,
+          parentConversationId,
+          depth: depthValue,
+          hop: hopValue,
         });
       };
 
@@ -301,6 +392,8 @@ export function createSessionsSendTool(opts?: {
             runId,
             status: "accepted",
             sessionKey: displayKey,
+            taskId,
+            workSessionId,
             delivery,
           });
         } catch (err) {
@@ -390,6 +483,8 @@ export function createSessionsSendTool(opts?: {
         status: "ok",
         reply,
         sessionKey: displayKey,
+        taskId,
+        workSessionId,
         delivery,
       });
     },

@@ -48,6 +48,7 @@ done
 ```
 
 Interpretation:
+
 - `AT_HEAD=true` means current file equals pre-merge side.
 - `AT_MERGE_HEAD=true` means current file equals upstream side.
 - A failing cluster should be aligned to one side instead of partial mixing.
@@ -87,6 +88,12 @@ tail -n 200 ~/.openclaw/logs/coordination-events.ndjson
 cd /Users/server/Projects/task-hub
 /Applications/OrbStack.app/Contents/MacOS/xbin/docker compose up -d --build task-hub
 /Applications/OrbStack.app/Contents/MacOS/xbin/docker compose ps task-hub
+
+# Task-Hub(3102)가 맞는지 확인 (3001은 Persona)
+/usr/bin/curl -sS http://127.0.0.1:3102/login | /usr/bin/grep -q "Task Hub" && echo "task-hub ok"
+
+# Conversations API 프록시 점검 (로그인 쿠키 필요)
+/usr/bin/curl -sS -i "http://127.0.0.1:3102/api/proxy/events?limit=3" -H "Cookie: task-hub-session=authenticated" | /usr/bin/head -n 20
 ```
 
 확인 포인트:
@@ -101,5 +108,7 @@ cd /Users/server/prontolab-openclaw
 pnpm vitest run --config vitest.unit.config.ts \
   src/agents/tools/sessions-spawn-tool.events.test.ts \
   src/task-monitor/task-monitor-parser-integration.test.ts
-```
 
+# 라이브 협업 E2E (Task-Hub 3102 + Conversations 요약 검증 포함)
+pnpm test:e2e:collab:live
+```

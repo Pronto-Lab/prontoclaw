@@ -145,6 +145,15 @@ describe("M1 - skipPingPong in A2A flow", () => {
     expect(sendEvent![0].data.conversationId).toBeDefined();
   });
 
+  it("keeps full outbound message in A2A_SEND event (not clipped to 200 chars)", async () => {
+    const longMessage = "M".repeat(260);
+    await runSessionsSendA2AFlow(baseParams({ skipPingPong: true, message: longMessage }));
+
+    const sendEvent = mockEmit.mock.calls.find((c: unknown[]) => (c[0] as any).type === "a2a.send");
+    expect(sendEvent).toBeDefined();
+    expect(sendEvent?.[0]?.data?.message).toBe(longMessage);
+  });
+
   it("emits A2A_COMPLETE event at end", async () => {
     await runSessionsSendA2AFlow(baseParams({ skipPingPong: true }));
 
@@ -166,12 +175,52 @@ describe("M1 - skipPingPong in A2A flow", () => {
     expect(mockRunAgentStep).toHaveBeenCalledTimes(1);
   });
 
-  it("does not emit A2A_RESPONSE when ping-pong is skipped", async () => {
+  it("emits initial A2A_RESPONSE even when ping-pong is skipped", async () => {
     await runSessionsSendA2AFlow(baseParams({ skipPingPong: true }));
 
     const responseEvents = mockEmit.mock.calls.filter(
       (c: unknown[]) => (c[0] as any).type === "a2a.response",
     );
-    expect(responseEvents).toHaveLength(0);
+    expect(responseEvents).toHaveLength(1);
+    expect(responseEvents[0]?.[0]?.data?.fromAgent).toBe("target");
+    expect(responseEvents[0]?.[0]?.data?.toAgent).toBe("requester");
+  });
+
+  it("sanitizes directive tokens from initial response message", async () => {
+    await runSessionsSendA2AFlow(
+      baseParams({
+        skipPingPong: true,
+        roundOneReply: "[[reply_to_current]]\n코드 구현 상태 공유",
+      }),
+    );
+
+    const responseEvent = mockEmit.mock.calls.find(
+      (c: unknown[]) => (c[0] as any).type === "a2a.response",
+    );
+    expect(responseEvent).toBeDefined();
+    expect(responseEvent?.[0]?.data?.message).toBe("코드 구현 상태 공유");
+    expect(responseEvent?.[0]?.data?.replyPreview).toBe("코드 구현 상태 공유");
+  });
+
+  it("keeps full response text in message while clipping preview", async () => {
+    const longReply = "L".repeat(260);
+    mockRunAgentStep.mockResolvedValueOnce(longReply).mockResolvedValueOnce("announce result");
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        skipPingPong: false,
+        maxPingPongTurns: 1,
+        message: "normal conversation",
+      }),
+    );
+
+    const responseEvents = mockEmit.mock.calls
+      .filter((c: unknown[]) => (c[0] as any).type === "a2a.response")
+      .map((c: unknown[]) => c[0]);
+    const pingPongResponse = responseEvents.find((event: any) => event.data?.turn === 1);
+
+    expect(pingPongResponse).toBeDefined();
+    expect(pingPongResponse?.data?.message).toBe(longReply);
+    expect(pingPongResponse?.data?.replyPreview).toBe(longReply.slice(0, 200));
   });
 });

@@ -458,6 +458,19 @@ See [Slash commands](/tools/slash-commands) for command catalog and behavior.
     Related docs: [Exec approvals](/tools/exec-approvals)
 
   </Accordion>
+
+  <Accordion title="Task approvals in Discord">
+    Discord can deliver task approval prompts as DM buttons to configured approvers when tasks start with `requires_approval=true`.
+
+    Config path:
+
+    - `channels.discord.taskApprovals.enabled`
+    - `channels.discord.taskApprovals.approvers`
+    - `channels.discord.taskApprovals.taskHubUrl` (optional; enables `Open Task Hub` link button)
+
+    When approved, OpenClaw invokes `task_approve` for the target agent task and updates all pending approval messages to a resolved state.
+
+  </Accordion>
 </AccordionGroup>
 
 ## Tools and action gates
@@ -574,7 +587,7 @@ High-signal Discord fields:
 - media/retry: `mediaMaxMb`, `retry`
 - actions: `actions.*`
 - presence: `activity`, `status`, `activityType`, `activityUrl`
-- features: `pluralkit`, `execApprovals`, `intents`, `agentComponents`, `heartbeat`, `responsePrefix`
+- features: `pluralkit`, `execApprovals`, `taskApprovals`, `intents`, `agentComponents`, `heartbeat`, `responsePrefix`
 
 ## Safety and operations
 

@@ -461,13 +461,17 @@ export async function runSubagentAnnounceFlow(params: {
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
   conversationId?: string;
+  parentConversationId?: string;
+  taskId?: string;
+  workSessionId?: string;
+  depth?: number;
+  hop?: number;
   requesterAgentId?: string;
   targetAgentId?: string;
 }): Promise<boolean> {
   let didAnnounce = false;
   let shouldDeleteChildSession = params.cleanup === "delete";
-  const fromAgent =
-    params.targetAgentId ?? resolveAgentIdFromSessionKey(params.childSessionKey);
+  const fromAgent = params.targetAgentId ?? resolveAgentIdFromSessionKey(params.childSessionKey);
   const toAgent =
     params.requesterAgentId ?? resolveAgentIdFromSessionKey(params.requesterSessionKey);
   const conversationId = params.conversationId ?? params.childRunId;
@@ -584,6 +588,11 @@ export async function runSubagentAnnounceFlow(params: {
         replyPreview: responsePreview,
         targetSessionKey: params.requesterSessionKey,
         conversationId,
+        parentConversationId: params.parentConversationId,
+        taskId: params.taskId,
+        workSessionId: params.workSessionId,
+        depth: params.depth,
+        hop: params.hop,
         runId: params.childRunId,
       },
     });
@@ -641,6 +650,11 @@ export async function runSubagentAnnounceFlow(params: {
           totalTurns: 1,
           targetSessionKey: params.requesterSessionKey,
           conversationId,
+          parentConversationId: params.parentConversationId,
+          taskId: params.taskId,
+          workSessionId: params.workSessionId,
+          depth: params.depth,
+          hop: params.hop,
           runId: params.childRunId,
         },
       });
@@ -660,6 +674,11 @@ export async function runSubagentAnnounceFlow(params: {
           totalTurns: 1,
           targetSessionKey: params.requesterSessionKey,
           conversationId,
+          parentConversationId: params.parentConversationId,
+          taskId: params.taskId,
+          workSessionId: params.workSessionId,
+          depth: params.depth,
+          hop: params.hop,
           runId: params.childRunId,
         },
       });
@@ -705,6 +724,11 @@ export async function runSubagentAnnounceFlow(params: {
         totalTurns: 1,
         targetSessionKey: params.requesterSessionKey,
         conversationId,
+        parentConversationId: params.parentConversationId,
+        taskId: params.taskId,
+        workSessionId: params.workSessionId,
+        depth: params.depth,
+        hop: params.hop,
         runId: params.childRunId,
       },
     });
@@ -722,6 +746,11 @@ export async function runSubagentAnnounceFlow(params: {
         totalTurns: 1,
         targetSessionKey: params.requesterSessionKey,
         conversationId,
+        parentConversationId: params.parentConversationId,
+        taskId: params.taskId,
+        workSessionId: params.workSessionId,
+        depth: params.depth,
+        hop: params.hop,
         runId: params.childRunId,
       },
     });

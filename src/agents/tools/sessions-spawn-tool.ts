@@ -13,7 +13,7 @@ import {
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.js";
-import { resolveAgentConfig } from "../agent-scope.js";
+import { resolveAgentConfig, resolveAgentWorkspaceDir } from "../agent-scope.js";
 import { AGENT_LANE_SUBAGENT } from "../lanes.js";
 import { optionalStringEnum } from "../schema/typebox.js";
 import { buildSubagentSystemPrompt } from "../subagent-announce.js";
@@ -24,9 +24,15 @@ import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
 } from "./sessions-helpers.js";
+import { readCurrentTaskId, readTask } from "./task-tool.js";
 
 const SessionsSpawnToolSchema = Type.Object({
   task: Type.String(),
+  taskId: Type.Optional(Type.String()),
+  workSessionId: Type.Optional(Type.String()),
+  parentConversationId: Type.Optional(Type.String()),
+  depth: Type.Optional(Type.Number({ minimum: 0 })),
+  hop: Type.Optional(Type.Number({ minimum: 0 })),
   label: Type.Optional(Type.String()),
   agentId: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
@@ -67,6 +73,68 @@ function normalizeModelSelection(value: unknown): string | undefined {
   return undefined;
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizeNonNegativeInt(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+async function resolveSpawnWorkSessionContext(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  requesterAgentId: string;
+  requestedTaskId?: string;
+  explicitWorkSessionId?: string;
+}): Promise<{ workSessionId: string; taskId?: string }> {
+  const explicitWorkSessionId = normalizeOptionalString(params.explicitWorkSessionId);
+  let taskId = normalizeOptionalString(params.requestedTaskId);
+  if (explicitWorkSessionId) {
+    return { workSessionId: explicitWorkSessionId, taskId };
+  }
+
+  const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.requesterAgentId);
+
+  const readTaskWorkSessionId = async (candidateTaskId?: string): Promise<string | undefined> => {
+    if (!candidateTaskId) {
+      return undefined;
+    }
+    try {
+      const linkedTask = await readTask(workspaceDir, candidateTaskId);
+      return normalizeOptionalString(linkedTask?.workSessionId);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const fromRequestedTask = await readTaskWorkSessionId(taskId);
+  if (fromRequestedTask) {
+    return { workSessionId: fromRequestedTask, taskId };
+  }
+
+  try {
+    const currentTaskId = await readCurrentTaskId(workspaceDir);
+    if (currentTaskId) {
+      taskId = taskId ?? currentTaskId;
+      const fromCurrentTask = await readTaskWorkSessionId(currentTaskId);
+      if (fromCurrentTask) {
+        return { workSessionId: fromCurrentTask, taskId };
+      }
+    }
+  } catch {
+    // ignore task context resolution errors
+  }
+
+  return { workSessionId: `ws_${crypto.randomUUID()}`, taskId };
+}
+
 export function createSessionsSpawnTool(opts?: {
   agentSessionKey?: string;
   agentChannel?: GatewayMessageChannel;
@@ -89,6 +157,15 @@ export function createSessionsSpawnTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const task = readStringParam(params, "task", { required: true });
+      const taskIdParam = normalizeOptionalString(readStringParam(params, "taskId"));
+      const explicitWorkSessionId = normalizeOptionalString(
+        readStringParam(params, "workSessionId"),
+      );
+      const parentConversationId = normalizeOptionalString(
+        readStringParam(params, "parentConversationId"),
+      );
+      const depth = normalizeNonNegativeInt(params.depth);
+      const hop = normalizeNonNegativeInt(params.hop);
       const label = typeof params.label === "string" ? params.label.trim() : "";
       const requestedAgentId = readStringParam(params, "agentId");
       const modelOverride = readStringParam(params, "model");
@@ -169,7 +246,15 @@ export function createSessionsSpawnTool(opts?: {
       }
       const childSessionKey = "agent:" + targetAgentId + ":subagent:" + crypto.randomUUID();
       const spawnedByKey = requesterInternalKey;
-      const conversationId = crypto.randomUUID();
+      const { workSessionId, taskId } = await resolveSpawnWorkSessionContext({
+        cfg,
+        requesterAgentId,
+        requestedTaskId: taskIdParam,
+        explicitWorkSessionId,
+      });
+      const conversationId = parentConversationId ?? crypto.randomUUID();
+      const depthValue = depth ?? 0;
+      const hopValue = hop ?? 0;
       const spawnRequestPreview = task.slice(0, 200);
       emit({
         type: EVENT_TYPES.A2A_SPAWN,
@@ -180,7 +265,13 @@ export function createSessionsSpawnTool(opts?: {
           toAgent: targetAgentId,
           targetSessionKey: childSessionKey,
           message: spawnRequestPreview,
+          replyPreview: spawnRequestPreview,
           conversationId,
+          parentConversationId,
+          taskId,
+          workSessionId,
+          depth: depthValue,
+          hop: hopValue,
           label: label || undefined,
         },
       });
@@ -193,7 +284,13 @@ export function createSessionsSpawnTool(opts?: {
           toAgent: targetAgentId,
           targetSessionKey: childSessionKey,
           message: spawnRequestPreview,
+          replyPreview: spawnRequestPreview,
           conversationId,
+          parentConversationId,
+          taskId,
+          workSessionId,
+          depth: depthValue,
+          hop: hopValue,
         },
       });
       const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
@@ -243,16 +340,24 @@ export function createSessionsSpawnTool(opts?: {
                 toAgent: targetAgentId,
                 targetSessionKey: childSessionKey,
                 conversationId,
+                parentConversationId,
+                taskId,
+                workSessionId,
+                depth: depthValue,
+                hop: hopValue,
                 status: "error",
                 error: messageText,
-                replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+                replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
               },
             });
             return jsonResult({
               status: "error",
               error: messageText,
-              replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+              replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
               childSessionKey,
+              workSessionId,
+              taskId,
+              conversationId,
             });
           }
           modelWarning = messageText;
@@ -280,16 +385,24 @@ export function createSessionsSpawnTool(opts?: {
               toAgent: targetAgentId,
               targetSessionKey: childSessionKey,
               conversationId,
+              parentConversationId,
+              taskId,
+              workSessionId,
+              depth: depthValue,
+              hop: hopValue,
               status: "error",
               error: messageText,
-              replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+              replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
             },
           });
           return jsonResult({
             status: "error",
             error: messageText,
-            replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+            replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
             childSessionKey,
+            workSessionId,
+            taskId,
+            conversationId,
           });
         }
       }
@@ -343,10 +456,15 @@ export function createSessionsSpawnTool(opts?: {
             toAgent: targetAgentId,
             targetSessionKey: childSessionKey,
             conversationId,
+            parentConversationId,
+            taskId,
+            workSessionId,
+            depth: depthValue,
+            hop: hopValue,
             runId: childRunId,
             status: "error",
             error: messageText,
-            replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+            replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
           },
         });
         return jsonResult({
@@ -354,7 +472,10 @@ export function createSessionsSpawnTool(opts?: {
           error: messageText,
           childSessionKey,
           runId: childRunId,
-          replyPreview: (`spawn failed: ${messageText}`).slice(0, 200),
+          replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+          workSessionId,
+          taskId,
+          conversationId,
         });
       }
 
@@ -368,6 +489,11 @@ export function createSessionsSpawnTool(opts?: {
         cleanup,
         label: label || undefined,
         conversationId,
+        parentConversationId,
+        taskId,
+        workSessionId,
+        depth: depthValue,
+        hop: hopValue,
         requesterAgentId,
         targetAgentId,
         runTimeoutSeconds,
@@ -382,10 +508,15 @@ export function createSessionsSpawnTool(opts?: {
           toAgent: targetAgentId,
           targetSessionKey: childSessionKey,
           conversationId,
+          parentConversationId,
+          taskId,
+          workSessionId,
+          depth: depthValue,
+          hop: hopValue,
           runId: childRunId,
           status: "accepted",
           label: label || undefined,
-          replyPreview: (`spawn accepted · run ${childRunId}`).slice(0, 200),
+          replyPreview: `spawn accepted · run ${childRunId}`.slice(0, 200),
         },
       });
 
@@ -393,6 +524,9 @@ export function createSessionsSpawnTool(opts?: {
         status: "accepted",
         childSessionKey,
         runId: childRunId,
+        conversationId,
+        taskId,
+        workSessionId,
         modelApplied: resolvedModel ? modelApplied : undefined,
         warning: modelWarning,
       });

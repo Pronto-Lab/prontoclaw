@@ -49,6 +49,7 @@ import {
   createDiscordNativeCommand,
 } from "./native-command.js";
 import { registerSiblingBot } from "./sibling-bots.js";
+import { createTaskApprovalButton, DiscordTaskApprovalHandler } from "./task-approvals.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
@@ -483,6 +484,16 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         runtime,
       })
     : null;
+  const taskApprovalsConfig = discordCfg.taskApprovals ?? {};
+  const taskApprovalsHandler = taskApprovalsConfig.enabled
+    ? new DiscordTaskApprovalHandler({
+        token,
+        accountId: account.accountId,
+        cfg,
+        approvers: taskApprovalsConfig.approvers ?? execApprovalsConfig.approvers ?? [],
+        taskHubUrl: taskApprovalsConfig.taskHubUrl ?? process.env.TASK_HUB_URL,
+      })
+    : null;
 
   const agentComponentsConfig = discordCfg.agentComponents ?? {};
   const agentComponentsEnabled = agentComponentsConfig.enabled ?? true;
@@ -498,6 +509,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
 
   if (execApprovalsHandler) {
     components.push(createExecApprovalButton({ handler: execApprovalsHandler }));
+  }
+  if (taskApprovalsHandler) {
+    components.push(createTaskApprovalButton({ handler: taskApprovalsHandler }));
   }
 
   if (agentComponentsEnabled) {
@@ -717,6 +731,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   if (execApprovalsHandler) {
     await execApprovalsHandler.start();
   }
+  if (taskApprovalsHandler) {
+    await taskApprovalsHandler.start();
+  }
 
   const gateway = client.getPlugin<GatewayPlugin>("gateway");
   if (gateway) {
@@ -795,6 +812,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     }
     gatewayEmitter?.removeListener("debug", onGatewayDebug);
     abortSignal?.removeEventListener("abort", onAbort);
+    if (taskApprovalsHandler) {
+      await taskApprovalsHandler.stop();
+    }
     if (execApprovalsHandler) {
       await execApprovalsHandler.stop();
     }

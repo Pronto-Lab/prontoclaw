@@ -40,4 +40,29 @@ Parser export check
   it("returns null for no-task marker", () => {
     expect(parseTaskFileMd("*(No task)*", "task_any.md")).toBeNull();
   });
+
+  it("parses work session metadata from real server parser", () => {
+    const content = `# Task: task_ws_meta
+
+## Metadata
+- **Status:** in_progress
+- **Priority:** medium
+- **Created:** 2026-02-16T12:00:00.000Z
+- **Work Session:** ws_abc
+- **Previous Work Session:** ws_prev
+
+## Description
+Work session parse check
+
+## Progress
+- Started
+
+## Last Activity
+2026-02-16T12:31:00.000Z`;
+
+    const task = parseTaskFileMd(content, "task_ws_meta.md");
+    expect(task).not.toBeNull();
+    expect(task?.workSessionId).toBe("ws_abc");
+    expect(task?.previousWorkSessionId).toBe("ws_prev");
+  });
 });

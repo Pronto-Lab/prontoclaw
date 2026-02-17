@@ -248,7 +248,10 @@ Task-Hub(`/Users/server/Projects/task-hub`)의 Conversations 화면에서:
 - 세션 제목 고정값 `Work Session` 제거
 - `label`, `[Goal]`, 메시지 본문 기반 1줄 요약 노출
 - 참여 에이전트 요약(`A · B 외 n`) 노출
-- 협업 이벤트 필터를 `a2a.*` + `continuation.*` + `plan.*` + `unblock.*` + `zombie.*`로 확장
+- Conversations는 `conversation.main` 역할(메인↔메인 `a2a.send/response/complete`)만 표시
+- spawn/subagent 흐름(`a2a.spawn`, `a2a.spawn_result`, subagent 관련 `a2a.*`)은 Events/Tasks에서 표시
+- continuation/plan/unblock/zombie/task 신호는 Conversations가 아니라 상태/운영 뷰에서 소비
+- Conversations는 상위 카테고리(`engineering_build` 등)를 고정 배지 항목으로 먼저 제시하고, 선택 후 해당 뷰로 진입
 
 관련 파일:
 

@@ -30,10 +30,9 @@ export function resolveAgentWorkspaceDir(cfg: OpenClawConfig, agentId: string) {
 **파일**: `src/agents/tools/sessions-spawn-tool.ts`
 
 핵심 로직 (line 144-168):
+
 ```typescript
-const targetAgentId = requestedAgentId
-  ? normalizeAgentId(requestedAgentId)
-  : requesterAgentId;  // agentId 미지정 → 부모 자신
+const targetAgentId = requestedAgentId ? normalizeAgentId(requestedAgentId) : requesterAgentId; // agentId 미지정 → 부모 자신
 
 if (targetAgentId !== requesterAgentId) {
   const allowAgents = resolveAgentConfig(cfg, requesterAgentId)?.subagents?.allowAgents ?? [];
@@ -53,9 +52,17 @@ Sub-agent 재귀 차단 (line 122-127): `isSubagentSessionKey` 체크로 sub-age
 
 ```typescript
 const DEFAULT_SUBAGENT_TOOL_DENY = [
-  "sessions_list", "sessions_history", "sessions_send", "sessions_spawn",
-  "gateway", "agents_list", "whatsapp_login", "session_status", "cron",
-  "memory_search", "memory_get",
+  "sessions_list",
+  "sessions_history",
+  "sessions_send",
+  "sessions_spawn",
+  "gateway",
+  "agents_list",
+  "whatsapp_login",
+  "session_status",
+  "cron",
+  "memory_search",
+  "memory_get",
 ];
 ```
 
@@ -136,46 +143,46 @@ subagents?: {
 
 ### 3.1 에이전트 목록
 
-| ID | 이름 | 역할 | 모델 | AGENTS.md 크기 | Bootstrap 한도 대비 |
-|----|------|------|------|---------------|-------------------|
-| ruda | 루다 | 팀 리더 | opus-4-6 | 21,458 bytes | 초과 (트리밍됨) |
-| eden | 이든 | 개발 | opus-4-5 | 23,886 bytes | 초과 (트리밍됨) |
-| seum | 세움 | 인프라 | opus-4-5 | 18,182 bytes | 91% |
-| dajim | 다짐 | QA | opus-4-5 | 14,320 bytes | 72% |
-| yunseul | 윤슬 | 마케팅 | sonnet-4-5 | 17,140 bytes | 86% |
-| miri | 미리 | 비즈니스 분석 | sonnet-4-5 | 16,762 bytes | 84% |
-| onsae | 온새 | 개인비서 | sonnet-4-5 | 18,256 bytes | 91% |
-| ieum | 이음 | 소셜 커뮤니티 | sonnet-4-5 | 8,016 bytes | 40% |
-| nuri | 누리 | CS/커뮤니티 | sonnet-4-5 | 7,567 bytes | 38% |
-| hangyeol | 한결 | 법무 | sonnet-4-5 | 9,793 bytes | 49% |
-| grim | 그림 | UI/UX | sonnet-4-5 | 6,733 bytes | 34% |
+| ID       | 이름 | 역할          | 모델       | AGENTS.md 크기 | Bootstrap 한도 대비 |
+| -------- | ---- | ------------- | ---------- | -------------- | ------------------- |
+| ruda     | 루다 | 팀 리더       | opus-4-6   | 21,458 bytes   | 초과 (트리밍됨)     |
+| eden     | 이든 | 개발          | opus-4-5   | 23,886 bytes   | 초과 (트리밍됨)     |
+| seum     | 세움 | 인프라        | opus-4-5   | 18,182 bytes   | 91%                 |
+| dajim    | 다짐 | QA            | opus-4-5   | 14,320 bytes   | 72%                 |
+| yunseul  | 윤슬 | 마케팅        | sonnet-4-5 | 17,140 bytes   | 86%                 |
+| miri     | 미리 | 비즈니스 분석 | sonnet-4-5 | 16,762 bytes   | 84%                 |
+| onsae    | 온새 | 개인비서      | sonnet-4-5 | 18,256 bytes   | 91%                 |
+| ieum     | 이음 | 소셜 커뮤니티 | sonnet-4-5 | 8,016 bytes    | 40%                 |
+| nuri     | 누리 | CS/커뮤니티   | sonnet-4-5 | 7,567 bytes    | 38%                 |
+| hangyeol | 한결 | 법무          | sonnet-4-5 | 9,793 bytes    | 49%                 |
+| grim     | 그림 | UI/UX         | sonnet-4-5 | 6,733 bytes    | 34%                 |
 
 ### 3.2 에이전트별 도구 설정
 
-| 에이전트 | tools.allow |
-|---------|-------------|
-| ruda | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task, group:milestone |
-| eden | exec, read, write, edit, apply_patch, browser, web_search, web_fetch, message, group:sessions, group:task |
-| seum | exec, read, write, edit, message, nodes, browser, web_search, web_fetch, group:sessions, group:task |
-| dajim | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task |
-| yunseul | read, write, edit, browser, web_search, web_fetch, message, group:sessions, group:task |
-| miri | read, write, edit, exec, browser, web_search, web_fetch, message, group:sessions, group:task, group:milestone |
-| onsae | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task |
-| ieum | read, write, edit, web_search, web_fetch, message, group:sessions, group:task |
-| nuri | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task |
-| hangyeol | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task |
-| grim | read, write, edit, browser, web_search, web_fetch, message, group:sessions, group:task |
+| 에이전트 | tools.allow                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| ruda     | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task, group:milestone          |
+| eden     | exec, read, write, edit, apply_patch, browser, web_search, web_fetch, message, group:sessions, group:task     |
+| seum     | exec, read, write, edit, message, nodes, browser, web_search, web_fetch, group:sessions, group:task           |
+| dajim    | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task                           |
+| yunseul  | read, write, edit, browser, web_search, web_fetch, message, group:sessions, group:task                        |
+| miri     | read, write, edit, exec, browser, web_search, web_fetch, message, group:sessions, group:task, group:milestone |
+| onsae    | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task                           |
+| ieum     | read, write, edit, web_search, web_fetch, message, group:sessions, group:task                                 |
+| nuri     | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task                           |
+| hangyeol | read, write, edit, exec, web_search, web_fetch, message, group:sessions, group:task                           |
+| grim     | read, write, edit, browser, web_search, web_fetch, message, group:sessions, group:task                        |
 
 ### 3.3 서버 환경
 
-| 항목 | 값 |
-|------|-----|
-| 서버 | Mac Mini (Yoonui-Macmini) |
-| SSH | `ssh -p 2222 server@ssh.speculatingwook.online` |
-| 설정 파일 | `~/.openclaw/openclaw.json` |
-| Workspace | `~/.openclaw/workspace-{agentId}/` |
-| Gateway 포트 | 18789 |
-| Task-Hub | Docker (OrbStack), port 3102→3000 |
+| 항목         | 값                                              |
+| ------------ | ----------------------------------------------- |
+| 서버         | Mac Mini (Yoonui-Macmini)                       |
+| SSH          | `ssh -p 2222 server@ssh.speculatingwook.online` |
+| 설정 파일    | `~/.openclaw/openclaw.json`                     |
+| Workspace    | `~/.openclaw/workspace-{agentId}/`              |
+| Gateway 포트 | 18789                                           |
+| Task-Hub     | Docker (OrbStack), port 3102→3000               |
 
 ---
 
@@ -225,7 +232,10 @@ Task-Hub(`/Users/server/Projects/task-hub`)의 Conversations 화면에서:
 - 세션 제목 고정값 `Work Session` 제거
 - `label`, `[Goal]`, 메시지 본문 기반 1줄 요약 노출
 - 참여 에이전트 요약(`A · B 외 n`) 노출
-- 협업 이벤트 필터를 `a2a.*` + `continuation.*` + `plan.*` + `unblock.*` + `zombie.*`로 확장
+- Conversations는 `conversation.main` 역할(메인↔메인 `a2a.send/response/complete`)만 표시
+- spawn/subagent 흐름(`a2a.spawn`, `a2a.spawn_result`, subagent 관련 `a2a.*`)은 Events/Tasks에서 표시
+- continuation/plan/unblock/zombie/task 신호는 Conversations가 아니라 상태/운영 뷰에서 소비
+- Conversations는 상위 카테고리(`engineering_build` 등)를 고정 배지 항목으로 먼저 제시하고, 선택 후 해당 뷰로 진입
 
 관련 파일:
 

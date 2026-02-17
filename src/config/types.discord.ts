@@ -127,6 +127,15 @@ export type DiscordExecApprovalConfig = {
   target?: "dm" | "channel" | "both";
 };
 
+export type DiscordTaskApprovalConfig = {
+  /** Enable task approval forwarding to Discord DMs. Default: false. */
+  enabled?: boolean;
+  /** Discord user IDs to receive task approval prompts. Required if enabled. */
+  approvers?: Array<string | number>;
+  /** Optional Task Hub base URL used for "Open Task Hub" button. */
+  taskHubUrl?: string;
+};
+
 export type DiscordAgentComponentsConfig = {
   /** Enable agent-controlled interactive components (buttons, select menus). Default: true. */
   enabled?: boolean;
@@ -203,6 +212,8 @@ export type DiscordAccountConfig = {
   heartbeat?: ChannelHeartbeatVisibilityConfig;
   /** Exec approval forwarding configuration. */
   execApprovals?: DiscordExecApprovalConfig;
+  /** Task approval forwarding configuration. */
+  taskApprovals?: DiscordTaskApprovalConfig;
   /** Agent-controlled interactive components (buttons, select menus). */
   agentComponents?: DiscordAgentComponentsConfig;
   /** Privileged Gateway Intents (must also be enabled in Discord Developer Portal). */
