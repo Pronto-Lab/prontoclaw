@@ -145,7 +145,8 @@ interface WsMessage {
     | "team_state_update"
     | "event_log"
     | "plan_update"
-    | "continuation_event";
+    | "continuation_event"
+    | "coordination_event_new";
   agentId?: string;
   taskId?: string;
   timestamp: string;
@@ -756,24 +757,7 @@ function buildTaskHubCookieHeader(req?: http.IncomingMessage): string | null {
   return null;
 }
 
-async function readLastCoordinationEvent(): Promise<Record<string, unknown> | null> {
-  const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
-  try {
-    const raw = await fs.readFile(eventLogPath, "utf-8");
-    const lines = raw.trim().split("\n").filter(Boolean);
-    if (lines.length === 0) {
-      return null;
-    }
-    const lastLine = lines[lines.length - 1] ?? "";
-    const parsed = parseJsonSafe(lastLine);
-    if (!parsed || typeof parsed !== "object") {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
+// readLastCoordinationEvent removed — replaced by EventCache.onFileChange() (Design #2)
 
 // ============================================================================
 // Event Classification (Role + Category)
@@ -1732,6 +1716,150 @@ async function readWorkSessionCategoryOverrides(): Promise<WorkSessionCategoryOv
   }
 }
 
+// ============================================================================
+// EventCache — In-memory incremental event cache (Design #2 Phase 1)
+// ============================================================================
+
+class EventCache {
+  private events: EnrichedCoordinationEvent[] = [];
+  private workSessionsCache: WorkSessionSummary[] | null = null;
+  private lastFileOffset = 0;
+  private eventLogPath: string;
+  private overridesCache: WorkSessionCategoryOverrideMap = {};
+  private overridesMtimeMs = 0;
+  private static MAX_EVENTS = 100_000;
+
+  constructor(eventLogPath: string) {
+    this.eventLogPath = eventLogPath;
+  }
+
+  /** Full load on startup */
+  async initialize(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.eventLogPath, "utf-8");
+      const { events } = parseCoordinationEventsFromRaw(raw);
+      this.events = events;
+      const stat = await fs.stat(this.eventLogPath);
+      this.lastFileOffset = stat.size;
+      this.workSessionsCache = null;
+      console.log(
+        "[EventCache] Initialized with",
+        events.length,
+        "events, offset:",
+        this.lastFileOffset,
+      );
+    } catch (err) {
+      console.error("[EventCache] Init failed, starting empty:", (err as Error).message);
+      this.events = [];
+      this.lastFileOffset = 0;
+    }
+  }
+
+  /** Incremental read on file change — returns newly added events */
+  async onFileChange(): Promise<EnrichedCoordinationEvent[]> {
+    try {
+      const stat = await fs.stat(this.eventLogPath);
+      const currentSize = stat.size;
+
+      if (currentSize < this.lastFileOffset) {
+        console.log("[EventCache] File rotated/truncated, full reload");
+        await this.initialize();
+        return this.events;
+      }
+
+      if (currentSize === this.lastFileOffset) {
+        return [];
+      }
+
+      const fd = await fs.open(this.eventLogPath, "r");
+      try {
+        const newSize = currentSize - this.lastFileOffset;
+        const buffer = Buffer.alloc(newSize);
+        await fd.read(buffer, 0, newSize, this.lastFileOffset);
+        const newData = buffer.toString("utf-8");
+
+        const newLines = newData
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
+        const newEvents: EnrichedCoordinationEvent[] = [];
+
+        for (const line of newLines) {
+          try {
+            const enriched = enrichCoordinationEvent(JSON.parse(line));
+            if (enriched) {
+              newEvents.push(enriched);
+            }
+          } catch {
+            // skip malformed lines
+          }
+        }
+
+        if (newEvents.length > 0) {
+          this.events.push(...newEvents);
+          if (this.events.length > EventCache.MAX_EVENTS) {
+            this.events = this.events.slice(-EventCache.MAX_EVENTS);
+          }
+          this.workSessionsCache = null;
+        }
+
+        this.lastFileOffset = currentSize;
+        return newEvents;
+      } finally {
+        await fd.close();
+      }
+    } catch (err) {
+      console.error("[EventCache] onFileChange error:", (err as Error).message);
+      return [];
+    }
+  }
+
+  getEvents(): EnrichedCoordinationEvent[] {
+    return this.events;
+  }
+
+  async getWorkSessions(options: BuildWorkSessionsOptions = {}): Promise<WorkSessionSummary[]> {
+    await this.refreshOverrides();
+
+    const hasFilters = options.roleFilters || options.eventTypeFilters;
+    if (hasFilters) {
+      return buildWorkSessionsFromEvents(this.events, {
+        ...options,
+        categoryOverrides: this.overridesCache,
+      });
+    }
+
+    if (!this.workSessionsCache) {
+      this.workSessionsCache = buildWorkSessionsFromEvents(this.events, {
+        categoryOverrides: this.overridesCache,
+      });
+    }
+    return this.workSessionsCache;
+  }
+
+  invalidateWorkSessions(): void {
+    this.workSessionsCache = null;
+  }
+
+  private async refreshOverrides(): Promise<void> {
+    try {
+      const stat = await fs.stat(WORK_SESSION_CATEGORY_OVERRIDES_PATH);
+      if (stat.mtimeMs !== this.overridesMtimeMs) {
+        this.overridesCache = await readWorkSessionCategoryOverrides();
+        this.overridesMtimeMs = stat.mtimeMs;
+      }
+    } catch {
+      if (Object.keys(this.overridesCache).length > 0) {
+        this.overridesCache = {};
+        this.overridesMtimeMs = 0;
+      }
+    }
+  }
+}
+
+const eventLogPathForCache = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
+const eventCache = new EventCache(eventLogPathForCache);
+
 async function writeWorkSessionCategoryOverrides(
   overrides: WorkSessionCategoryOverrideMap,
 ): Promise<void> {
@@ -1966,11 +2094,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const viewCategory = asString(url.searchParams.get("viewCategory")) || undefined;
     const typeFilters = parseCsvQueryParam(url, "type");
     const requestedTypes = normalizeEventTypeFilters(typeFilters);
-    const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
     try {
-      const raw = await fs.readFile(eventLogPath, "utf-8");
-      const { lines, events: parsedEvents } = parseCoordinationEventsFromRaw(raw);
-      let events = parsedEvents;
+      const allEvents = eventCache.getEvents();
+      let events = [...allEvents];
 
       if (since) {
         const sinceMs = new Date(since).getTime();
@@ -2001,7 +2127,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       jsonResponse(res, {
         events: limitedEvents,
         count: limitedEvents.length,
-        total: lines.length,
+        total: allEvents.length,
         totalMatched,
         role: roleFilter || null,
         type: typeFilters,
@@ -2062,6 +2188,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       updatedBy: asString(body.updatedBy),
     };
     await writeWorkSessionCategoryOverrides(overrides);
+    eventCache.invalidateWorkSessions();
 
     jsonResponse(res, {
       ok: true,
@@ -2082,13 +2209,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const roleFilter = asString(url.searchParams.get("role")) || undefined;
     const role = roleFilter ? eventRoleFromValue(roleFilter) : null;
     const typeFilters = parseCsvQueryParam(url, "type");
-    const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
     try {
-      const raw = await fs.readFile(eventLogPath, "utf-8");
-      const { events } = parseCoordinationEventsFromRaw(raw);
-      const overrides = await readWorkSessionCategoryOverrides();
-      const sessions = buildWorkSessionsFromEvents(events, {
-        categoryOverrides: overrides,
+      const sessions = await eventCache.getWorkSessions({
         roleFilters: role ? [role] : undefined,
         eventTypeFilters: typeFilters.length > 0 ? typeFilters : undefined,
       });
@@ -2128,14 +2250,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     );
     const requestedStatuses = new Set(statusFilters);
 
-    const eventLogPath = path.join(OPENCLAW_DIR, "logs", "coordination-events.ndjson");
-
     try {
-      const raw = await fs.readFile(eventLogPath, "utf-8");
-      const { events } = parseCoordinationEventsFromRaw(raw);
-      const overrides = await readWorkSessionCategoryOverrides();
-      const sessions = buildWorkSessionsFromEvents(events, {
-        categoryOverrides: overrides,
+      const sessions = await eventCache.getWorkSessions({
         roleFilters: roleFilters.length > 0 ? roleFilters : undefined,
         eventTypeFilters: typeFilters,
       });
@@ -2389,22 +2505,47 @@ function setupWebSocket(server: http.Server): WebSocketServer {
       broadcast(message);
       if (isEventLog) {
         void (async () => {
-          const lastEvent = await readLastCoordinationEvent();
-          const eventType = typeof lastEvent?.type === "string" ? lastEvent.type : "";
-          if (!eventType.startsWith("continuation.")) {
-            return;
+          // Incremental cache update (Design #2 Phase 1)
+          const newEvents = await eventCache.onFileChange();
+
+          // Push actual event data via WebSocket
+          if (newEvents.length > 0) {
+            const affectedWorkSessionIds = new Set<string>();
+            for (const ev of newEvents) {
+              const wsId = asString(asRecord(ev.data).workSessionId);
+              if (wsId) {
+                affectedWorkSessionIds.add(wsId);
+              }
+            }
+
+            broadcast({
+              type: "coordination_event_new",
+              timestamp: new Date().toISOString(),
+              data: {
+                events: newEvents,
+                affectedWorkSessions: Array.from(affectedWorkSessionIds),
+              },
+            });
           }
-          broadcast({
-            type: "continuation_event",
-            agentId: lastEvent?.agentId,
-            timestamp: new Date().toISOString(),
-            data: {
-              event,
-              file: basename,
-              eventType,
-              eventData: lastEvent,
-            },
-          });
+
+          // Check for continuation events
+          const lastNewEvent = newEvents[newEvents.length - 1];
+          if (lastNewEvent) {
+            const eventType = typeof lastNewEvent.type === "string" ? lastNewEvent.type : "";
+            if (eventType.startsWith("continuation.")) {
+              broadcast({
+                type: "continuation_event",
+                agentId: lastNewEvent.agentId as string | undefined,
+                timestamp: new Date().toISOString(),
+                data: {
+                  event,
+                  file: basename,
+                  eventType,
+                  eventData: lastNewEvent,
+                },
+              });
+            }
+          }
         })();
       }
       return;
@@ -2530,6 +2671,9 @@ async function main(): Promise<void> {
       errorResponse(res, "Internal server error", 500);
     });
   });
+
+  // Initialize event cache (Design #2 Phase 1)
+  await eventCache.initialize();
 
   // Setup WebSocket
   setupWebSocket(server);
