@@ -123,6 +123,16 @@ function normalizeCdpUrl(raw: string) {
   return raw.replace(/\/$/, "");
 }
 
+function findNetworkRequestById(state: PageState, id: string): BrowserNetworkRequest | undefined {
+  for (let i = state.requests.length - 1; i >= 0; i -= 1) {
+    const candidate = state.requests[i];
+    if (candidate && candidate.id === id) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 function roleRefsKey(cdpUrl: string, targetId: string) {
   return `${normalizeCdpUrl(cdpUrl)}::${targetId}`;
 }
@@ -268,14 +278,7 @@ export function ensurePageState(page: Page): PageState {
       if (!id) {
         return;
       }
-      let rec: BrowserNetworkRequest | undefined;
-      for (let i = state.requests.length - 1; i >= 0; i -= 1) {
-        const candidate = state.requests[i];
-        if (candidate && candidate.id === id) {
-          rec = candidate;
-          break;
-        }
-      }
+      const rec = findNetworkRequestById(state, id);
       if (!rec) {
         return;
       }
@@ -287,14 +290,7 @@ export function ensurePageState(page: Page): PageState {
       if (!id) {
         return;
       }
-      let rec: BrowserNetworkRequest | undefined;
-      for (let i = state.requests.length - 1; i >= 0; i -= 1) {
-        const candidate = state.requests[i];
-        if (candidate && candidate.id === id) {
-          rec = candidate;
-          break;
-        }
-      }
+      const rec = findNetworkRequestById(state, id);
       if (!rec) {
         return;
       }

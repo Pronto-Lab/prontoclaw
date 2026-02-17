@@ -43,6 +43,7 @@ export {
   sendStickerDiscord,
   sendVoiceMessageDiscord,
 } from "./send.outbound.js";
+export { sendDiscordComponentMessage } from "./send.components.js";
 export { sendDiscordWebhook } from "./send.webhook.js";
 export type { DiscordWebhookSendOpts } from "./send.webhook.js";
 export {

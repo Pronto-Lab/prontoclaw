@@ -1,5 +1,5 @@
-import type { RequestClient } from "@buape/carbon";
 import type { APIChannel } from "discord-api-types/v10";
+import { serializePayload, type MessagePayloadObject, type RequestClient } from "@buape/carbon";
 import { ChannelType, Routes } from "discord-api-types/v10";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
@@ -20,6 +20,7 @@ import { loadWebMediaRaw } from "../web/media.js";
 import { resolveDiscordAccount } from "./accounts.js";
 import { resolveDmRetryConfig, trackOutboundDm } from "./dm-retry/index.js";
 import {
+  buildDiscordMessagePayload,
   buildDiscordSendError,
   buildDiscordTextChunks,
   createDiscordClient,
@@ -27,9 +28,14 @@ import {
   normalizeStickerIds,
   parseAndResolveRecipient,
   resolveChannelId,
+  resolveDiscordSendComponents,
+  resolveDiscordSendEmbeds,
   sendDiscordMedia,
   sendDiscordText,
+  stripUndefinedFields,
   SUPPRESS_NOTIFICATIONS_FLAG,
+  type DiscordSendComponents,
+  type DiscordSendEmbeds,
 } from "./send.shared.js";
 import {
   ensureOggOpus,
@@ -41,11 +47,13 @@ type DiscordSendOpts = {
   token?: string;
   accountId?: string;
   mediaUrl?: string;
+  mediaLocalRoots?: readonly string[];
   verbose?: boolean;
   rest?: RequestClient;
   replyTo?: string;
   retry?: RetryConfig;
-  embeds?: unknown[];
+  components?: DiscordSendComponents;
+  embeds?: DiscordSendEmbeds;
   senderAgentId?: string;
   targetUserId?: string;
   silent?: boolean;
@@ -106,7 +114,19 @@ export async function sendMessageDiscord(
       chunkMode,
     });
     const starterContent = chunks[0]?.trim() ? chunks[0] : threadName;
-    const starterEmbeds = opts.embeds?.length ? opts.embeds : undefined;
+    const starterComponents = resolveDiscordSendComponents({
+      components: opts.components,
+      text: starterContent,
+      isFirst: true,
+    });
+    const starterEmbeds = resolveDiscordSendEmbeds({ embeds: opts.embeds, isFirst: true });
+    const silentFlags = opts.silent ? 1 << 12 : undefined;
+    const starterPayload: MessagePayloadObject = buildDiscordMessagePayload({
+      text: starterContent,
+      components: starterComponents,
+      embeds: starterEmbeds,
+      flags: silentFlags,
+    });
     let threadRes: { id: string; message?: { id: string; channel_id: string } };
     try {
       threadRes = (await request(
@@ -114,10 +134,7 @@ export async function sendMessageDiscord(
           rest.post(Routes.threads(channelId), {
             body: {
               name: threadName,
-              message: {
-                content: starterContent,
-                ...(starterEmbeds ? { embeds: starterEmbeds } : {}),
-              },
+              message: stripUndefinedFields(serializePayload(starterPayload)),
             },
           }) as Promise<{ id: string; message?: { id: string; channel_id: string } }>,
         "forum-thread",
@@ -144,9 +161,11 @@ export async function sendMessageDiscord(
           threadId,
           mediaCaption ?? "",
           opts.mediaUrl,
+          opts.mediaLocalRoots,
           undefined,
           request,
           accountInfo.config.maxLinesPerMessage,
+          undefined,
           undefined,
           chunkMode,
           opts.silent,
@@ -159,6 +178,7 @@ export async function sendMessageDiscord(
             undefined,
             request,
             accountInfo.config.maxLinesPerMessage,
+            undefined,
             undefined,
             chunkMode,
             opts.silent,
@@ -173,6 +193,7 @@ export async function sendMessageDiscord(
             undefined,
             request,
             accountInfo.config.maxLinesPerMessage,
+            undefined,
             undefined,
             chunkMode,
             opts.silent,
@@ -207,9 +228,11 @@ export async function sendMessageDiscord(
         channelId,
         textWithTables,
         opts.mediaUrl,
+        opts.mediaLocalRoots,
         opts.replyTo,
         request,
         accountInfo.config.maxLinesPerMessage,
+        opts.components,
         opts.embeds,
         chunkMode,
         opts.silent,
@@ -222,6 +245,7 @@ export async function sendMessageDiscord(
         opts.replyTo,
         request,
         accountInfo.config.maxLinesPerMessage,
+        opts.components,
         opts.embeds,
         chunkMode,
         opts.silent,
@@ -241,8 +265,6 @@ export async function sendMessageDiscord(
     accountId: accountInfo.accountId,
     direction: "outbound",
   });
-
-  // Track outbound DM for retry if enabled
   const dmRetryConfig = resolveDmRetryConfig(cfg, accountInfo.accountId);
   if (dmRetryConfig.enabled && opts.senderAgentId && opts.targetUserId) {
     try {
@@ -253,9 +275,9 @@ export async function sendMessageDiscord(
         targetUserId: opts.targetUserId,
         originalText: text,
       });
-      logVerbose(`dm-retry: tracked outbound DM to ${opts.targetUserId}`);
+      logVerbose("dm-retry: tracked outbound DM to " + opts.targetUserId);
     } catch (err) {
-      logVerbose(`dm-retry: failed to track outbound DM: ${String(err)}`);
+      logVerbose("dm-retry: failed to track outbound DM: " + String(err));
     }
   }
 

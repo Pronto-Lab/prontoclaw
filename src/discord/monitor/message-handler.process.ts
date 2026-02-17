@@ -78,6 +78,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     client,
     channelInfo,
     channelName,
+    messageChannelId,
     isGuildMessage,
     isDirectMessage,
     isGroupDm,
@@ -108,6 +109,8 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     return;
   }
 
+  const resolvedMessageChannelId = messageChannelId ?? message.channelId;
+
   // ── A2A Auto-Routing ──────────────────────────────────────────────
   // When a sibling bot @mentions us, route through the A2A flow instead
   // of normal message processing.  This injects the sender's conversation
@@ -123,7 +126,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         const senderSessionKey = buildAgentSessionKey({
           agentId: senderAgentId,
           channel: "discord",
-          peer: { kind: "channel", id: message.channelId },
+          peer: { kind: "channel", id: resolvedMessageChannelId },
         });
 
         // Target is the receiving agent (us) — session key from preflight route
@@ -150,7 +153,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           senderAgentId,
           senderSessionKey,
           targetSessionKey,
-          channelId: message.channelId,
+          channelId: resolvedMessageChannelId,
           maxTurns,
         });
 
@@ -164,7 +167,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           data: {
             senderAgentId,
             targetAgentId: route.agentId,
-            channelId: message.channelId,
+            channelId: resolvedMessageChannelId,
             maxTurns,
             message: (cleanMessage || text).slice(0, 200),
             conversationId,
@@ -218,7 +221,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         a2aLog.warn("A2A auto-routing failed, falling back to normal processing", {
           error: err instanceof Error ? err.message : String(err),
           authorId: author.id,
-          channelId: message.channelId,
+          channelId: resolvedMessageChannelId,
         });
       }
     }
@@ -241,12 +244,12 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       }),
     );
   const ackReactionPromise = shouldAckReaction()
-    ? reactMessageDiscord(message.channelId, message.id, ackReaction, {
+    ? reactMessageDiscord(resolvedMessageChannelId, message.id, ackReaction, {
         rest: client.rest,
       }).then(
         () => true,
         (err) => {
-          logVerbose(`discord react failed for channel ${message.channelId}: ${String(err)}`);
+          logVerbose(`discord react failed for channel ${resolvedMessageChannelId}: ${String(err)}`);
           return false;
         },
       )
@@ -256,8 +259,8 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     ? buildDirectLabel(author)
     : buildGuildLabel({
         guild: data.guild ?? undefined,
-        channelName: channelName ?? message.channelId,
-        channelId: message.channelId,
+        channelName: channelName ?? resolvedMessageChannelId,
+        channelId: resolvedMessageChannelId,
       });
   const senderLabel = sender.label;
   const isForumParent =
@@ -317,7 +320,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   if (shouldIncludeChannelHistory) {
     combinedBody = buildPendingHistoryContextFromMap({
       historyMap: guildHistories,
-      historyKey: message.channelId,
+      historyKey: resolvedMessageChannelId,
       limit: historyLimit,
       currentMessage: combinedBody,
       formatEntry: (entry) =>
@@ -325,7 +328,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           channel: "Discord",
           from: fromLabel,
           timestamp: entry.timestamp,
-          body: `${entry.body} [id:${entry.messageId ?? "unknown"} channel:${message.channelId}]`,
+          body: `${entry.body} [id:${entry.messageId ?? "unknown"} channel:${resolvedMessageChannelId}]`,
           chatType: "channel",
           senderLabel: entry.sender,
           envelope: envelopeOptions,
@@ -370,7 +373,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   const mediaPayload = buildDiscordMediaPayload(mediaList);
   const threadKeys = resolveThreadSessionKeys({
     baseSessionKey,
-    threadId: threadChannel ? message.channelId : undefined,
+    threadId: threadChannel ? resolvedMessageChannelId : undefined,
     parentSessionKey,
     useSuffix: false,
   });
@@ -393,7 +396,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
 
   const effectiveFrom = isDirectMessage
     ? `discord:${author.id}`
-    : (autoThreadContext?.From ?? `discord:channel:${message.channelId}`);
+    : (autoThreadContext?.From ?? `discord:channel:${resolvedMessageChannelId}`);
   const effectiveTo = autoThreadContext?.To ?? replyTarget;
   if (!effectiveTo) {
     runtime.error?.(danger("discord: missing reply target"));
@@ -402,7 +405,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
 
   const inboundHistory =
     shouldIncludeChannelHistory && historyLimit > 0
-      ? (guildHistories.get(message.channelId) ?? []).map((entry) => ({
+      ? (guildHistories.get(resolvedMessageChannelId) ?? []).map((entry) => ({
           sender: entry.sender,
           body: entry.body,
           timestamp: entry.timestamp,
@@ -471,10 +474,10 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     const dmRetryConfig = resolveDmRetryConfig(cfg, accountId);
     if (dmRetryConfig.enabled) {
       try {
-        const count = await markDmResponded(message.channelId);
+        const count = await markDmResponded(resolvedMessageChannelId);
         if (count > 0) {
           logVerbose(
-            `dm-retry: marked ${count} DM(s) as responded for channel ${message.channelId}`,
+            `dm-retry: marked ${count} DM(s) as responded for channel ${resolvedMessageChannelId}`,
           );
         }
       } catch (err) {
@@ -486,13 +489,13 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   if (shouldLogVerbose()) {
     const preview = truncateUtf16Safe(combinedBody, 200).replace(/\n/g, "\\n");
     logVerbose(
-      `discord inbound: channel=${message.channelId} deliver=${deliverTarget} from=${ctxPayload.From} preview="${preview}"`,
+      `discord inbound: channel=${resolvedMessageChannelId} deliver=${deliverTarget} from=${ctxPayload.From} preview="${preview}"`,
     );
   }
 
   const typingChannelId = deliverTarget.startsWith("channel:")
     ? deliverTarget.slice("channel:".length)
-    : message.channelId;
+    : resolvedMessageChannelId;
 
   const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
     cfg,
@@ -561,7 +564,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     if (isGuildMessage) {
       clearHistoryEntriesIfEnabled({
         historyMap: guildHistories,
-        historyKey: message.channelId,
+        historyKey: resolvedMessageChannelId,
         limit: historyLimit,
       });
     }
@@ -578,7 +581,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     ackReactionPromise,
     ackReactionValue: ackReaction,
     remove: async () => {
-      await removeReactionDiscord(message.channelId, message.id, ackReaction, {
+      await removeReactionDiscord(resolvedMessageChannelId, message.id, ackReaction, {
         rest: client.rest,
       });
     },
@@ -586,7 +589,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
       logAckFailure({
         log: logVerbose,
         channel: "discord",
-        target: `${message.channelId}/${message.id}`,
+        target: `${resolvedMessageChannelId}/${message.id}`,
         error: err,
       });
     },
@@ -594,7 +597,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   if (isGuildMessage) {
     clearHistoryEntriesIfEnabled({
       historyMap: guildHistories,
-      historyKey: message.channelId,
+      historyKey: resolvedMessageChannelId,
       limit: historyLimit,
     });
   }

@@ -48,145 +48,6 @@
   `pkill -9 -f openclaw-gateway || true; nohup openclaw gateway run --bind loopback --port 18789 --force > /tmp/openclaw-gateway.log 2>&1 &`
 - Verify: `openclaw channels status --probe`, `ss -ltnp | rg 18789`, `tail -n 120 /tmp/openclaw-gateway.log`.
 
-## Multi-Agent Coordination
-
-This workspace includes multi-agent coordination features. Here is what you need to know as an agent.
-
-### Task Lifecycle
-
-Use task tools to track work across sessions. Tasks are stored as markdown files in your workspace (`tasks/task_*.md`) and archived to `TASK_HISTORY.md` on completion.
-
-| Tool                | Purpose                                        |
-| ------------------- | ---------------------------------------------- |
-| `task_start`        | Begin a new task (creates tracking file)       |
-| `task_update`       | Add progress entry to current task             |
-| `task_complete`     | Finish task, archive to TASK_HISTORY.md        |
-| `task_status`       | Check current task state (or all active tasks) |
-| `task_list`         | List all active tasks                          |
-| `task_cancel`       | Abandon a task without completing              |
-| `task_approve`      | Approve a task in `pending_approval` status    |
-| `task_block`        | Block a task (waiting for another agent)       |
-| `task_resume`       | Resume a blocked task                          |
-| `task_backlog_add`  | Add a task to the backlog for later            |
-| `task_pick_backlog` | Pick and start a task from the backlog         |
-
-**Task states:** `pending_approval` → `in_progress` → `completed` / `cancelled` / `blocked`
-
-If `requires_approval` is set on `task_start`, the task starts as `pending_approval` and needs `task_approve` before work begins.
-
-**Task outcomes:** When a task reaches a terminal state (`task_complete`, `task_cancel`, or zombie interruption), a structured outcome is recorded. This includes the outcome type and a summary.
-
-### Task Continuation (Auto-Resume)
-
-The gateway automatically monitors active tasks and sends continuation prompts when an agent goes idle. Configuration lives in `openclaw.json`:
-
-```json5
-{
-  agents: {
-    defaults: {
-      taskContinuation: {
-        enabled: true,
-        idleMs: 30000, // idle threshold before prompting
-        intervalMs: 15000, // check interval
-        maxRetries: 5, // max prompts per task
-        cooldownMs: 60000, // cooldown after max retries
-        zombieMs: 600000, // threshold to mark task as zombie
-      },
-    },
-  },
-}
-```
-
-**Zombie detection:** Tasks idle beyond `zombieMs` are transitioned to `interrupted` status. The lead agent is notified.
-
-**Race condition safety:** Continuation uses per-agent locking and freshness checks to prevent duplicate prompts and race conditions.
-
-### Inter-Agent Communication
-
-Use `sessions_send` to message other agents directly:
-
-```
-sessions_send { "target": "agent:work:main", "message": "Status update: deployment complete" }
-```
-
-For broadcast to all agents, the system supports broadcast routing via configured broadcast groups.
-
-**Loop prevention:** Agent-to-agent messages are protected by:
-
-- Self-message filtering (messages from your own application ID are dropped)
-- Rate limiting per agent pair (sliding window)
-- Hop depth cap (prevents infinite A2A relay chains)
-
-### Agent-to-Agent Configuration
-
-Enable A2A messaging in `openclaw.json`:
-
-```json5
-{
-  tools: {
-    agentToAgent: {
-      enabled: true,
-      allow: ["agent-a", "agent-b"], // allowlist of agent IDs
-    },
-  },
-}
-```
-
-### Sibling Bot Recognition
-
-In Discord guild channels, messages from other agents in the same gateway are recognized as sibling bots. Their messages bypass the bot filter, so you can see and respond to other agents' messages in shared guild channels.
-
-### Team Coordination
-
-Agents track each other's status (active task, last activity, online/offline). A lead agent receives notifications when:
-
-- A worker's task transitions to `interrupted` (zombie detection)
-- Team state changes occur
-
-A periodic team dashboard embed is posted to the configured Discord monitoring webhook, showing each agent's status, current task, and last activity.
-
-### Plan Approval Flow
-
-For structured workflows, worker agents can submit plans for lead approval:
-
-1. Worker submits a plan (stored as a pending plan file)
-2. Lead reviews and approves or rejects
-3. Worker checks plan status before proceeding
-
-Plans are managed through the plan approval system and events are emitted for monitoring.
-
-### Event Monitoring
-
-Task and coordination events are automatically emitted and forwarded to a Discord webhook as color-coded embeds. Events include:
-
-- Task lifecycle: started, updated, completed, cancelled, blocked, resumed
-- Continuation: prompts sent, unblock requests, zombie detection
-- Plans: submitted, approved, rejected
-
-Events are batched (default 5 seconds) before sending to avoid rate limits.
-
-### Session Tool Gating
-
-A lead agent can restrict which tools are available to worker agents on a per-session basis. Tools can be gated (blocked until approved), approved, or revoked at runtime. This enables least-privilege workflows where workers only get the tools they need.
-
-### Browser Isolation
-
-Browser snapshot references are scoped per session. One agent's browser state does not leak into another agent's session, even when running in the same gateway.
-
-### Discord-Specific Configuration
-
-**History include bots:** Set `channels.discord.historyIncludeBots: true` in `openclaw.json` to make bot messages visible in guild history (normally bot messages are dropped before reaching the agent). Useful when agents need to see each other's Discord messages in context.
-
-**Per-agent webhooks:** Each agent can have its own Discord webhook for monitoring output, configured via the agent's delivery settings.
-
-### Cross-Agent Memory
-
-Memory search results can include entries from other agents when the cross-agent memory allowlist is configured. This enables shared knowledge without shared workspaces.
-
-### Agent Identity Headers
-
-Messages between agents include identity headers (`From:` / `To:`) so each agent knows who sent the message and who it was intended for.
-
 ## Build, Test, and Development Commands
 
 - Runtime baseline: Node **22+** (keep Node + Bun paths working).
@@ -241,7 +102,6 @@ Messages between agents include identity headers (`From:` / `To:`) so each agent
 - Group related changes; avoid bundling unrelated refactors.
 - PR submission template (canonical): `.github/pull_request_template.md`
 - Issue submission templates (canonical): `.github/ISSUE_TEMPLATE/`
-- **MUST READ BEFORE SUBMITTING PR OR ISSUE:** [Agent Submission Control Policy](.agents/AGENT_SUBMISSION_CONTROL_POLICY.md)
 
 ## Shorthand Commands
 
@@ -258,6 +118,19 @@ Messages between agents include identity headers (`From:` / `To:`) so each agent
 - Environment variables: see `~/.profile`.
 - Never commit or publish real phone numbers, videos, or live configuration values. Use obviously fake placeholders in docs, tests, and examples.
 - Release flow: always read `docs/reference/RELEASING.md` and `docs/platforms/mac/release.md` before any release work; do not ask routine questions once those docs answer them.
+
+## GHSA (Repo Advisory) Patch/Publish
+
+- Fetch: `gh api /repos/openclaw/openclaw/security-advisories/<GHSA>`
+- Latest npm: `npm view openclaw version --userconfig "$(mktemp)"`
+- Private fork PRs must be closed:
+  `fork=$(gh api /repos/openclaw/openclaw/security-advisories/<GHSA> | jq -r .private_fork.full_name)`
+  `gh pr list -R "$fork" --state open` (must be empty)
+- Description newline footgun: write Markdown via heredoc to `/tmp/ghsa.desc.md` (no `"\\n"` strings)
+- Build patch JSON via jq: `jq -n --rawfile desc /tmp/ghsa.desc.md '{summary,severity,description:$desc,vulnerabilities:[...]}' > /tmp/ghsa.patch.json`
+- Patch + publish: `gh api -X PATCH /repos/openclaw/openclaw/security-advisories/<GHSA> --input /tmp/ghsa.patch.json` (publish = include `"state":"published"`; no `/publish` endpoint)
+- If publish fails (HTTP 422): missing `severity`/`description`/`vulnerabilities[]`, or private fork has open PRs
+- Verify: re-fetch; ensure `state=published`, `published_at` set; `jq -r .description | rg '\\\\n'` returns nothing
 
 ## Troubleshooting
 
@@ -323,37 +196,32 @@ Messages between agents include identity headers (`From:` / `To:`) so each agent
 - Verify without local npmrc side effects: `npm view <pkg> version --userconfig "$(mktemp)"`.
 - Kill the tmux session after publish.
 
-## Task Steps (구조화된 작업 단계)
+## Plugin Release Fast Path (no core `openclaw` publish)
 
-복잡한 작업(3단계 이상)은 반드시 steps를 설정하라:
+- Release only already-on-npm plugins. Source list is in `docs/reference/RELEASING.md` under "Current npm plugin list".
+- Run all CLI `op` calls and `npm publish` inside tmux to avoid hangs/interruption:
+  - `tmux new -d -s release-plugins-$(date +%Y%m%d-%H%M%S)`
+  - `eval "$(op signin --account my.1password.com)"`
+- 1Password helpers:
+  - password used by `npm login`:
+    `op item get Npmjs --format=json | jq -r '.fields[] | select(.id=="password").value'`
+  - OTP:
+    `op read 'op://Private/Npmjs/one-time password?attribute=otp'`
+- Fast publish loop (local helper script in `/tmp` is fine; keep repo clean):
+  - compare local plugin `version` to `npm view <name> version`
+  - only run `npm publish --access public --otp="<otp>"` when versions differ
+  - skip if package is missing on npm or version already matches.
+- Keep `openclaw` untouched: never run publish from repo root unless explicitly requested.
+- Post-check for each release:
+  - per-plugin: `npm view @openclaw/<name> version --userconfig "$(mktemp)"` should be `2026.2.15`
+  - core guard: `npm view openclaw version --userconfig "$(mktemp)"` should stay at previous version unless explicitly requested.
 
-```
-task_start("기능 구현")
-task_update(action: "set_steps", steps: [
-  {content: "현재 코드 분석"},
-  {content: "구현"},
-  {content: "테스트 작성"},
-  {content: "빌드 확인"}
-])
-```
+## Changelog Release Notes
 
-각 단계 완료 시:
-
-```
-task_update(action: "complete_step", step_id: "s1")
-```
-
-새 단계 발견 시:
-
-```
-task_update(action: "add_step", step_content: "새로 필요한 작업")
-```
-
-task_complete()는 모든 steps가 done/skipped일 때만 호출하라.
-steps가 남아있는데 task_complete를 호출하면 Stop Guard가 차단한다.
-
-## 연속 실행 규칙
-
-모든 steps가 완료될 때까지 연속으로 작업하라.
-중간에 멈추면 시스템이 자동으로 재개 프롬프트를 보낸다.
-멈출 필요가 없다면 멈추지 마라.
+- Keep top version entries in `CHANGELOG.md` sorted by impact:
+  - `### Changes` first.
+  - `### Fixes` deduped and ranked with user-facing fixes first.
+- Before tagging/publishing, run:
+  - `node --import tsx scripts/release-check.ts`
+  - `pnpm release:check`
+  - `pnpm test:install:smoke` or `OPENCLAW_INSTALL_SMOKE_SKIP_NONROOT=1 pnpm test:install:smoke` for non-root smoke path.
