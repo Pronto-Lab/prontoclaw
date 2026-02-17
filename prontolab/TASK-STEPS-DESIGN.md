@@ -3,7 +3,7 @@
 > Task 시스템에 구조화된 하위 단계(steps)를 추가하고,
 > 에이전트 실행 종료 시 즉시 continuation을 트리거하는 메커니즘 도입.
 >
-> **상태**: 설계 완료, 미구현
+> **상태**: 핵심 로직 구현 완료 (Gateway + Task Monitor, 2026-02 기준). Task Hub 연동/운영 고도화는 별도 트랙.
 
 ---
 
@@ -22,14 +22,14 @@ prontolab-openclaw 에이전트가 task를 시작하지만 완료하지 않는 �
 
 oh-my-opencode의 Sisyphus 패턴과 동등한 task 완료 강제 메커니즘을 OpenClaw의 기존 인프라 위에 구현한다.
 
-| 기능 | Sisyphus (oh-my-opencode) | 목표 (prontolab-openclaw) |
-|------|--------------------------|--------------------------|
-| 구조화된 체크리스트 | `todowrite` | `task steps` |
-| 항목별 상태 관리 | `pending → in_progress → completed` | `pending → in_progress → done` |
-| 순서 변경 | 배열 전체 덮어쓰기 | `reorder_steps` |
-| 즉시 감지 | `session.idle` 이벤트 | `lifecycle:end` 이벤트 |
-| 재개 지연 | ~2초 (카운트다운) | ~2초 (setTimeout) |
-| 파일 영구 저장 | ❌ (세션 메모리, boulder로 보완) | ✅ (task 파일에 내장) |
+| 기능                | Sisyphus (oh-my-opencode)           | 목표 (prontolab-openclaw)      |
+| ------------------- | ----------------------------------- | ------------------------------ |
+| 구조화된 체크리스트 | `todowrite`                         | `task steps`                   |
+| 항목별 상태 관리    | `pending → in_progress → completed` | `pending → in_progress → done` |
+| 순서 변경           | 배열 전체 덮어쓰기                  | `reorder_steps`                |
+| 즉시 감지           | `session.idle` 이벤트               | `lifecycle:end` 이벤트         |
+| 재개 지연           | ~2초 (카운트다운)                   | ~2초 (setTimeout)              |
+| 파일 영구 저장      | ❌ (세션 메모리, boulder로 보완)    | ✅ (task 파일에 내장)          |
 
 ### 1.3 제약 조건
 
@@ -47,64 +47,75 @@ oh-my-opencode의 Sisyphus 패턴과 동등한 task 완료 강제 메커니즘�
 // src/agents/tools/task-tool.ts
 
 export interface TaskStep {
-  id: string;           // 자동 생성 (s1, s2, ...)
-  content: string;      // 단계 설명
+  id: string; // 자동 생성 (s1, s2, ...)
+  content: string; // 단계 설명
   status: "pending" | "in_progress" | "done" | "skipped";
-  order: number;        // 정렬 순서
+  order: number; // 정렬 순서
 }
 
 export interface TaskFile {
   // ... 기존 필드 전부 유지 ...
-  steps?: TaskStep[];   // NEW — 구조화된 하위 단계
+  steps?: TaskStep[]; // NEW — 구조화된 하위 단계
 }
 ```
 
 ### 2.2 Task 파일 포맷 확장
 
 기존:
+
 ```markdown
 # Task: task_xxx
 
 ## Metadata
+
 - **Status:** in_progress
 - **Priority:** high
 - **Created:** 2026-02-13T12:00:00.000Z
 
 ## Description
+
 OAuth 로그인 구현
 
 ## Progress
+
 - Task started
 - 기존 auth 구조 분석 완료
 
 ## Last Activity
+
 2026-02-13T12:30:00.000Z
 ```
 
 확장:
+
 ```markdown
 # Task: task_xxx
 
 ## Metadata
+
 - **Status:** in_progress
 - **Priority:** high
 - **Created:** 2026-02-13T12:00:00.000Z
 
 ## Description
+
 OAuth 로그인 구현
 
 ## Steps
+
 - [x] (s1) 기존 auth 구조 파악
 - [>] (s2) Google OAuth strategy 추가
 - [ ] (s3) GitHub OAuth callback 구현
 - [ ] (s4) 통합 테스트 통과 확인
 
 ## Progress
+
 - Task started
 - [s1] 기존 auth 구조 분석 완료 — JWT 미들웨어 /src/middleware/auth.ts
 - [s2] Google OAuth strategy 추가 시작
 
 ## Last Activity
+
 2026-02-13T12:30:00.000Z
 ```
 
@@ -117,51 +128,65 @@ Steps 마커: `[x]` = done, `[>]` = in_progress, `[ ]` = pending, `[-]` = skippe
 ```typescript
 const TaskUpdateSchema = Type.Object({
   task_id: Type.Optional(Type.String()),
-  progress: Type.Optional(Type.String()),        // 기존: 자유 형식 로그 추가
+  progress: Type.Optional(Type.String()), // 기존: 자유 형식 로그 추가
   // NEW — step 관리
-  action: Type.Optional(Type.String()),           // "add_step" | "complete_step" | "start_step" | "skip_step" | "reorder_steps" | "set_steps"
-  step_content: Type.Optional(Type.String()),     // add_step 시 내용
-  step_id: Type.Optional(Type.String()),          // complete_step, start_step, skip_step 시 대상
-  steps_order: Type.Optional(Type.Array(Type.String())),  // reorder_steps 시 새 순서
-  steps: Type.Optional(Type.Array(Type.Object({   // set_steps 시 전체 교체
-    content: Type.String(),
-    status: Type.Optional(Type.String()),
-  }))),
+  action: Type.Optional(Type.String()), // "add_step" | "complete_step" | "start_step" | "skip_step" | "reorder_steps" | "set_steps"
+  step_content: Type.Optional(Type.String()), // add_step 시 내용
+  step_id: Type.Optional(Type.String()), // complete_step, start_step, skip_step 시 대상
+  steps_order: Type.Optional(Type.Array(Type.String())), // reorder_steps 시 새 순서
+  steps: Type.Optional(
+    Type.Array(
+      Type.Object({
+        // set_steps 시 전체 교체
+        content: Type.String(),
+        status: Type.Optional(Type.String()),
+      }),
+    ),
+  ),
 });
 ```
 
 #### action별 동작
 
 **`add_step`**: 새 단계 추가
+
 ```
 task_update(action: "add_step", step_content: "Token refresh 로직 추가")
 ```
+
 → steps 배열 끝에 `{id: "s5", content: "Token refresh 로직 추가", status: "pending", order: 5}` 추가
 
 **`complete_step`**: 단계 완료 처리 + 다음 단계 자동 시작
+
 ```
 task_update(action: "complete_step", step_id: "s2")
 ```
+
 → s2.status = "done", s3.status = "in_progress" (다음 pending 단계 자동 시작)
 → progress에 자동 추가: "[s2] Google OAuth strategy 추가 — 완료"
 
 **`start_step`**: 특정 단계 시작 (순서 건너뛰기)
+
 ```
 task_update(action: "start_step", step_id: "s3")
 ```
+
 → 현재 in_progress를 pending으로 되돌리고, s3.status = "in_progress"
 
 **`skip_step`**: 단계 건너뛰기
+
 ```
 task_update(action: "skip_step", step_id: "s3", progress: "GitHub OAuth는 Phase 2에서 진행")
 ```
 
 **`reorder_steps`**: 순서 변경
+
 ```
 task_update(action: "reorder_steps", steps_order: ["s1", "s3", "s2", "s4"])
 ```
 
 **`set_steps`**: 초기 계획 설정 (task_start 직후 사용)
+
 ```
 task_update(action: "set_steps", steps: [
   {content: "기존 auth 구조 파악"},
@@ -170,29 +195,33 @@ task_update(action: "set_steps", steps: [
   {content: "통합 테스트 통과 확인"}
 ])
 ```
+
 → 전체 steps 배열 생성 (기존 steps 덮어쓰기), 첫 번째를 자동 in_progress
 
 **기존 `progress` 파라미터 (호환성 유지)**:
+
 ```
 task_update(progress: "자유 형식 로그")
 ```
+
 → steps 무관하게 progress 배열에 추가 (기존 동작 그대로)
 
 ### 2.4 task_complete 확장
 
 `task_complete` 호출 시 steps가 있으면 validation:
+
 - 미완료 steps가 있으면 경고 반환 (강제 complete는 허용하되 경고)
 - 모든 steps가 done/skipped이면 정상 complete
 
 ```typescript
 // task_complete 처리 시
 if (task.steps?.length) {
-  const incomplete = task.steps.filter(s => s.status === "pending" || s.status === "in_progress");
+  const incomplete = task.steps.filter((s) => s.status === "pending" || s.status === "in_progress");
   if (incomplete.length > 0) {
     // 경고 포함하되 complete는 허용
     return jsonResult({
       status: "completed_with_warning",
-      warning: `${incomplete.length} steps still incomplete: ${incomplete.map(s => s.content).join(", ")}`,
+      warning: `${incomplete.length} steps still incomplete: ${incomplete.map((s) => s.content).join(", ")}`,
       taskId: task.id,
     });
   }
@@ -228,7 +257,7 @@ import { onAgentEvent, type AgentEventPayload } from "./agent-events.js";
 import { resolveAgentIdFromSessionKey, isSubagentSessionKey } from "../agents/agent-scope.js";
 import { findActiveTask } from "../agents/tools/task-tool.js";
 
-const CONTINUATION_DELAY_MS = 2_000;  // 2초 대기 (grace period)
+const CONTINUATION_DELAY_MS = 2_000; // 2초 대기 (grace period)
 const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function startTaskStepContinuation(opts: { cfg: OpenClawConfig }) {
@@ -247,10 +276,13 @@ export function startTaskStepContinuation(opts: { cfg: OpenClawConfig }) {
     if (existing) clearTimeout(existing);
 
     // 2초 후 체크
-    pendingTimers.set(agentId, setTimeout(async () => {
-      pendingTimers.delete(agentId);
-      await checkAndContinue(opts.cfg, agentId);
-    }, CONTINUATION_DELAY_MS));
+    pendingTimers.set(
+      agentId,
+      setTimeout(async () => {
+        pendingTimers.delete(agentId);
+        await checkAndContinue(opts.cfg, agentId);
+      }, CONTINUATION_DELAY_MS),
+    );
   });
 }
 
@@ -263,11 +295,11 @@ async function checkAndContinue(cfg: OpenClawConfig, agentId: string) {
   if (!activeTask.steps?.length) return;
 
   const incomplete = activeTask.steps.filter(
-    s => s.status === "pending" || s.status === "in_progress"
+    (s) => s.status === "pending" || s.status === "in_progress",
   );
   if (incomplete.length === 0) return;
 
-  const currentStep = activeTask.steps.find(s => s.status === "in_progress");
+  const currentStep = activeTask.steps.find((s) => s.status === "in_progress");
   const prompt = formatStepContinuationPrompt(activeTask, incomplete, currentStep);
 
   await agentCommand({
@@ -284,7 +316,7 @@ async function checkAndContinue(cfg: OpenClawConfig, agentId: string) {
 function formatStepContinuationPrompt(
   task: TaskFile,
   incomplete: TaskStep[],
-  currentStep?: TaskStep
+  currentStep?: TaskStep,
 ): string {
   const lines = [
     `[SYSTEM REMINDER - STEP CONTINUATION]`,
@@ -294,10 +326,14 @@ function formatStepContinuationPrompt(
   ];
 
   for (const step of task.steps!) {
-    const marker = step.status === "done" ? "✅"
-      : step.status === "in_progress" ? "▶"
-      : step.status === "skipped" ? "⏭"
-      : "□";
+    const marker =
+      step.status === "done"
+        ? "✅"
+        : step.status === "in_progress"
+          ? "▶"
+          : step.status === "skipped"
+            ? "⏭"
+            : "□";
     lines.push(`${marker} (${step.id}) ${step.content}`);
   }
 
@@ -322,6 +358,7 @@ function formatStepContinuationPrompt(
 2초 대기 이유: 새 실행이 즉시 시작될 수 있음 (예: announce 수신 → 새 에이전트 실행).
 
 취소 조건:
+
 - 같은 에이전트의 새 `lifecycle:start` 이벤트 발생 → 타이머 취소
 - agentQueue에 대기 중인 메시지 있음 → 스킵 (이미 다음 작업이 예정됨)
 
@@ -350,15 +387,15 @@ if (evt.data.phase === "start") {
 
 ### 3.7 기존 task-continuation-runner와의 관계
 
-| 항목 | task-continuation-runner (기존) | task-step-continuation (신규) |
-|------|-------------------------------|------------------------------|
-| 트리거 | 2분 폴링 | lifecycle:end 이벤트 |
-| 감지 속도 | 최대 5분 | 2초 |
-| 감지 대상 | in_progress task 전체 | steps가 있는 task만 |
-| prompt 내용 | task description + latest progress | **steps 체크리스트 + 현재 위치** |
-| backlog 픽업 | ✅ | ❌ (기존 runner가 담당) |
-| blocked 처리 | ✅ (unblock 요청) | ❌ (기존 runner가 담당) |
-| zombie 처리 | ✅ (24시간 TTL) | ❌ (기존 runner가 담당) |
+| 항목         | task-continuation-runner (기존)    | task-step-continuation (신규)    |
+| ------------ | ---------------------------------- | -------------------------------- |
+| 트리거       | 2분 폴링                           | lifecycle:end 이벤트             |
+| 감지 속도    | 최대 5분                           | 2초                              |
+| 감지 대상    | in_progress task 전체              | steps가 있는 task만              |
+| prompt 내용  | task description + latest progress | **steps 체크리스트 + 현재 위치** |
+| backlog 픽업 | ✅                                 | ❌ (기존 runner가 담당)          |
+| blocked 처리 | ✅ (unblock 요청)                  | ❌ (기존 runner가 담당)          |
+| zombie 처리  | ✅ (24시간 TTL)                    | ❌ (기존 runner가 담당)          |
 
 신규 모듈은 **steps 기반 즉시 continuation만 담당**. 나머지(backlog, blocked, zombie)는 기존 runner가 계속 처리.
 
@@ -468,14 +505,14 @@ Worker-deep 완료 → announce → 에이전트 재개 → ... 반복
 
 ## 5. 수정 대상 파일
 
-| 파일 | 변경 내용 | 규모 |
-|------|----------|------|
-| `src/agents/tools/task-tool.ts` | TaskStep 타입 추가, TaskFile에 steps 필드 추가, task_update에 step action 처리, task_complete에 steps validation, 파일 직렬화/역직렬화에 Steps 섹션 추가 | 중 |
-| `src/infra/task-step-continuation.ts` | **신규 파일** — lifecycle:end 이벤트 기반 즉시 continuation | 소 |
-| `src/infra/task-continuation-runner.ts` | formatContinuationPrompt에 steps 체크리스트 포함 | 소 |
-| `src/gateway/server.impl.ts` | startTaskStepContinuation() 호출 추가 | 소 |
-| `src/gateway/server-close.ts` | stopTaskStepContinuation() 호출 추가 | 소 |
-| 각 에이전트 AGENTS.md (11개) | steps 사용 가이드라인 추가 | 소 |
+| 파일                                    | 변경 내용                                                                                                                                                | 규모 |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `src/agents/tools/task-tool.ts`         | TaskStep 타입 추가, TaskFile에 steps 필드 추가, task_update에 step action 처리, task_complete에 steps validation, 파일 직렬화/역직렬화에 Steps 섹션 추가 | 중   |
+| `src/infra/task-step-continuation.ts`   | **신규 파일** — lifecycle:end 이벤트 기반 즉시 continuation                                                                                              | 소   |
+| `src/infra/task-continuation-runner.ts` | formatContinuationPrompt에 steps 체크리스트 포함                                                                                                         | 소   |
+| `src/gateway/server.impl.ts`            | startTaskStepContinuation() 호출 추가                                                                                                                    | 소   |
+| `src/gateway/server-close.ts`           | stopTaskStepContinuation() 호출 추가                                                                                                                     | 소   |
+| 각 에이전트 AGENTS.md (11개)            | steps 사용 가이드라인 추가                                                                                                                               | 소   |
 
 ### 코드 변경 예상 규모
 
@@ -498,10 +535,10 @@ Worker-deep 완료 → announce → 에이전트 재개 → ... 반복
 
 task_start("기능 구현")
 task_update(action: "set_steps", steps: [
-  {content: "현재 코드 분석"},
-  {content: "구현"},
-  {content: "테스트 작성"},
-  {content: "빌드 확인"}
+{content: "현재 코드 분석"},
+{content: "구현"},
+{content: "테스트 작성"},
+{content: "빌드 확인"}
 ])
 
 각 단계 완료 시:
@@ -528,15 +565,15 @@ steps가 남아있는데 task_complete를 호출하면 안 된다.
 
 ## 7. 기존 기능과의 호환성
 
-| 기존 기능 | 영향 |
-|----------|------|
-| `task_update(progress: "...")` | ✅ 그대로 동작 (steps와 무관) |
-| `task_start` / `task_complete` | ✅ steps 없이도 기존 방식 동작 |
-| `task_block` / `task_resume` | ✅ steps와 독립적 동작 |
-| `task_list` / `task_status` | ✅ steps 정보 추가 표시 |
-| task-continuation-runner | ✅ 기존 폴링 유지 + steps 체크리스트 추가 |
-| sub-agent task 도구 차단 | ✅ 무관 (sub-agent는 task 도구 미사용) |
-| Task Monitor API | ⚠️ steps 필드 추가 시 API 응답 확장 필요 |
+| 기존 기능                      | 영향                                      |
+| ------------------------------ | ----------------------------------------- |
+| `task_update(progress: "...")` | ✅ 그대로 동작 (steps와 무관)             |
+| `task_start` / `task_complete` | ✅ steps 없이도 기존 방식 동작            |
+| `task_block` / `task_resume`   | ✅ steps와 독립적 동작                    |
+| `task_list` / `task_status`    | ✅ steps 정보 추가 표시                   |
+| task-continuation-runner       | ✅ 기존 폴링 유지 + steps 체크리스트 추가 |
+| sub-agent task 도구 차단       | ✅ 무관 (sub-agent는 task 도구 미사용)    |
+| Task Monitor API               | ⚠️ steps 필드 추가 시 API 응답 확장 필요  |
 
 ---
 
@@ -544,16 +581,16 @@ steps가 남아있는데 task_complete를 호출하면 안 된다.
 
 ### Unit Tests
 
-| 테스트 | 대상 |
-|--------|------|
-| set_steps로 steps 초기화 | task-tool.ts |
-| complete_step 시 다음 step 자동 시작 | task-tool.ts |
-| add_step / skip_step / reorder_steps | task-tool.ts |
-| Steps 섹션 직렬화/역직렬화 | task-tool.ts |
-| task_complete + 미완료 steps 경고 | task-tool.ts |
+| 테스트                                   | 대상                      |
+| ---------------------------------------- | ------------------------- |
+| set_steps로 steps 초기화                 | task-tool.ts              |
+| complete_step 시 다음 step 자동 시작     | task-tool.ts              |
+| add_step / skip_step / reorder_steps     | task-tool.ts              |
+| Steps 섹션 직렬화/역직렬화               | task-tool.ts              |
+| task_complete + 미완료 steps 경고        | task-tool.ts              |
 | lifecycle:end → 2초 후 continuation 발동 | task-step-continuation.ts |
-| lifecycle:start → 타이머 취소 | task-step-continuation.ts |
-| sub-agent 실행 중 → 스킵 | task-step-continuation.ts |
+| lifecycle:start → 타이머 취소            | task-step-continuation.ts |
+| sub-agent 실행 중 → 스킵                 | task-step-continuation.ts |
 
 ### Integration Tests (Discord)
 
@@ -662,7 +699,7 @@ export function startTaskSelfDriving(opts: { cfg: OpenClawConfig }) {
   const unsubscribe = onAgentEvent((evt: AgentEventPayload) => {
     // lifecycle:end만 처리
     if (evt.stream !== "lifecycle") return;
-    
+
     const phase = evt.data.phase as string;
     const sessionKey = evt.sessionKey;
     if (!sessionKey) return;
@@ -711,11 +748,7 @@ export function startTaskSelfDriving(opts: { cfg: OpenClawConfig }) {
   return unsubscribe;
 }
 
-async function checkAndSelfDrive(
-  cfg: OpenClawConfig,
-  agentId: string,
-  state: SelfDrivingState
-) {
+async function checkAndSelfDrive(cfg: OpenClawConfig, agentId: string, state: SelfDrivingState) {
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
   const activeTask = await findActiveTask(workspaceDir);
   if (!activeTask) return;
@@ -724,7 +757,7 @@ async function checkAndSelfDrive(
   if (!activeTask.steps?.length) return;
 
   const incomplete = activeTask.steps.filter(
-    s => s.status === "pending" || s.status === "in_progress"
+    (s) => s.status === "pending" || s.status === "in_progress",
   );
   if (incomplete.length === 0) return;
 
@@ -734,7 +767,7 @@ async function checkAndSelfDrive(
   state.consecutiveCount++;
   state.lastContinuationTs = Date.now();
 
-  const currentStep = activeTask.steps.find(s => s.status === "in_progress");
+  const currentStep = activeTask.steps.find((s) => s.status === "in_progress");
   const prompt = formatSelfDrivingPrompt(activeTask, incomplete, currentStep, state);
 
   await agentCommand({
@@ -754,7 +787,7 @@ function formatSelfDrivingPrompt(
   task: TaskFile,
   incomplete: TaskStep[],
   currentStep: TaskStep | undefined,
-  state: SelfDrivingState
+  state: SelfDrivingState,
 ): string {
   const lines = [
     `[SYSTEM — SELF-DRIVING LOOP ${state.consecutiveCount}/${MAX_CONSECUTIVE_CONTINUATIONS}]`,
@@ -764,10 +797,14 @@ function formatSelfDrivingPrompt(
   ];
 
   for (const step of task.steps!) {
-    const marker = step.status === "done" ? "✅"
-      : step.status === "in_progress" ? "▶️"
-      : step.status === "skipped" ? "⏭️"
-      : "⬜";
+    const marker =
+      step.status === "done"
+        ? "✅"
+        : step.status === "in_progress"
+          ? "▶️"
+          : step.status === "skipped"
+            ? "⏭️"
+            : "⬜";
     lines.push(`${marker} (${step.id}) ${step.content}`);
   }
 
@@ -792,14 +829,14 @@ function formatSelfDrivingPrompt(
 
 ### 10.5 기존 Event-Based Continuation과의 관계
 
-| 항목 | Self-Driving Loop (§10) | Event-Based Continuation (§3) |
-|------|------------------------|-------------------------------|
-| 역할 | **주요 엔진** — 에이전트를 즉시 재시작 | **안전망** — self-driving 실패 시 fallback |
-| 지연 | 0.5초 | 2초 |
-| 트리거 | lifecycle:end + 미완료 steps | lifecycle:end + 미완료 steps |
-| 프롬프트 톤 | 강함 ("do NOT stop") | 보통 ("continue from") |
-| 횟수 제한 | 20회 (무한루프 방지) | 없음 (cooldown만) |
-| 우선순위 | 먼저 발동 (0.5초) | self-driving 미발동 시 2초 후 발동 |
+| 항목        | Self-Driving Loop (§10)                | Event-Based Continuation (§3)              |
+| ----------- | -------------------------------------- | ------------------------------------------ |
+| 역할        | **주요 엔진** — 에이전트를 즉시 재시작 | **안전망** — self-driving 실패 시 fallback |
+| 지연        | 0.5초                                  | 2초                                        |
+| 트리거      | lifecycle:end + 미완료 steps           | lifecycle:end + 미완료 steps               |
+| 프롬프트 톤 | 강함 ("do NOT stop")                   | 보통 ("continue from")                     |
+| 횟수 제한   | 20회 (무한루프 방지)                   | 없음 (cooldown만)                          |
+| 우선순위    | 먼저 발동 (0.5초)                      | self-driving 미발동 시 2초 후 발동         |
 
 **중복 방지**: self-driving이 0.5초 후 발동하면 → 새 lifecycle:start 이벤트 발생 → §3의 2초 타이머 취소됨. 따라서 두 메커니즘이 동시에 발동하지 않는다.
 
@@ -844,8 +881,8 @@ OpenClaw의 plugin hook 시스템에 `before_tool_call` hook이 있음:
 // 기존 plugin hook 타입
 export type PluginHookBeforeToolCallResult = {
   params?: Record<string, unknown>;
-  block?: boolean;       // ← tool 호출 차단 가능!
-  blockReason?: string;  // ← 차단 사유 반환
+  block?: boolean; // ← tool 호출 차단 가능!
+  blockReason?: string; // ← 차단 사유 반환
 };
 ```
 
@@ -854,44 +891,52 @@ export type PluginHookBeforeToolCallResult = {
 ### 11.3 구현 방법: Plugin vs Direct Interception
 
 **Option A: Plugin Hook** (깔끔하지만 plugin 시스템 필요)
+
 ```typescript
 // stop-guard.plugin.ts
 export const stopGuardPlugin = {
-  hooks: [{
-    hookName: "before_tool_call",
-    handler: async (evt, ctx) => {
-      if (evt.toolName !== "task_complete") return;
-      const task = await findActiveTask(workspaceDir);
-      if (!task?.steps?.length) return;
-      const incomplete = task.steps.filter(s => s.status === "pending" || s.status === "in_progress");
-      if (incomplete.length === 0) return;
-      return {
-        block: true,
-        blockReason: `Cannot complete: ${incomplete.length} steps still incomplete. Complete them first.`,
-      };
-    }
-  }]
+  hooks: [
+    {
+      hookName: "before_tool_call",
+      handler: async (evt, ctx) => {
+        if (evt.toolName !== "task_complete") return;
+        const task = await findActiveTask(workspaceDir);
+        if (!task?.steps?.length) return;
+        const incomplete = task.steps.filter(
+          (s) => s.status === "pending" || s.status === "in_progress",
+        );
+        if (incomplete.length === 0) return;
+        return {
+          block: true,
+          blockReason: `Cannot complete: ${incomplete.length} steps still incomplete. Complete them first.`,
+        };
+      },
+    },
+  ],
 };
 ```
 
 **Option B: Direct Interception** (task-tool.ts 내부에서 직접 처리)
+
 ```typescript
 // task_complete execute 핸들러 내부, complete 처리 전에 추가
 if (task.steps?.length) {
-  const incomplete = task.steps.filter(s => s.status === "pending" || s.status === "in_progress");
+  const incomplete = task.steps.filter((s) => s.status === "pending" || s.status === "in_progress");
   if (incomplete.length > 0) {
     return jsonResult({
       success: false,
       blocked: true,
       error: `❌ STOP GUARD: Cannot complete task — ${incomplete.length} steps remaining`,
-      remainingSteps: incomplete.map(s => `(${s.id}) ${s.content}`),
-      instruction: "Complete all steps first with task_update(action: 'complete_step', step_id: '...'). Or skip them with task_update(action: 'skip_step', step_id: '...')",
+      remainingSteps: incomplete.map((s) => `(${s.id}) ${s.content}`),
+      instruction:
+        "Complete all steps first with task_update(action: 'complete_step', step_id: '...'). Or skip them with task_update(action: 'skip_step', step_id: '...')",
     });
   }
 }
 ```
 
 **선택: Option B (Direct Interception)**
+
 - Plugin 시스템을 쓰면 우아하지만, 현재 목표는 task 도구 내부 동작 수정이므로 Option B가 더 직접적
 - Plugin은 나중에 확장할 때 사용 (외부 플러그인으로 stop guard를 off/on할 때)
 - Option B는 task-tool.ts의 task_complete handler 상단에 guard 코드만 추가하면 됨
@@ -907,17 +952,17 @@ execute: async (_toolCallId, params) => {
   // ─── STOP GUARD ───────────────────────────────────────
   if (task.steps?.length) {
     const incomplete = task.steps.filter(
-      s => s.status === "pending" || s.status === "in_progress"
+      (s) => s.status === "pending" || s.status === "in_progress",
     );
 
     if (incomplete.length > 0) {
       // force_complete 파라미터가 있으면 경고 후 허용
       const forceComplete = readStringParam(params, "force_complete");
-      
+
       if (forceComplete !== "true") {
         // 차단: 미완료 steps가 있으면 task_complete 거부
         task.progress.push(
-          `⚠ task_complete blocked by Stop Guard: ${incomplete.length} steps remaining`
+          `⚠ task_complete blocked by Stop Guard: ${incomplete.length} steps remaining`,
         );
         await writeTask(workspaceDir, task);
 
@@ -925,7 +970,7 @@ execute: async (_toolCallId, params) => {
           success: false,
           blocked_by: "stop_guard",
           error: `Cannot complete task: ${incomplete.length} steps still incomplete`,
-          remaining_steps: incomplete.map(s => ({
+          remaining_steps: incomplete.map((s) => ({
             id: s.id,
             content: s.content,
             status: s.status,
@@ -939,7 +984,7 @@ execute: async (_toolCallId, params) => {
       } else {
         // Force complete 허용, 경고만 기록
         task.progress.push(
-          `⚠ Force completed with ${incomplete.length} steps remaining: ${incomplete.map(s => s.id).join(", ")}`
+          `⚠ Force completed with ${incomplete.length} steps remaining: ${incomplete.map((s) => s.id).join(", ")}`,
         );
       }
     }
@@ -947,7 +992,7 @@ execute: async (_toolCallId, params) => {
   // ─── END STOP GUARD ───────────────────────────────────
 
   // ... 기존 complete 로직 계속 ...
-}
+};
 ```
 
 ### 11.5 task_complete 스키마 확장
@@ -957,9 +1002,11 @@ const TaskCompleteSchema = Type.Object({
   task_id: Type.Optional(Type.String({ description: "Task ID to complete" })),
   summary: Type.Optional(Type.String({ description: "Completion summary" })),
   // NEW
-  force_complete: Type.Optional(Type.String({
-    description: "Set to 'true' to force complete even with incomplete steps. Use sparingly.",
-  })),
+  force_complete: Type.Optional(
+    Type.String({
+      description: "Set to 'true' to force complete even with incomplete steps. Use sparingly.",
+    }),
+  ),
 });
 ```
 
@@ -973,7 +1020,7 @@ const TaskCompleteSchema = Type.Object({
   │    └─ YES ↓
   │
   ├─ 미완료 steps 있음?
-  │    ├─ NO → 기존 동작 (바로 complete)  
+  │    ├─ NO → 기존 동작 (바로 complete)
   │    └─ YES ↓
   │
   ├─ force_complete === "true"?
@@ -1016,15 +1063,15 @@ Turn 2 종료 (lifecycle:end):
 
 ### 12.1 Sisyphus 대비 완성도
 
-| # | 메커니즘 | Sisyphus | prontolab-openclaw | 동등? |
-|---|---------|----------|-------------------|------|
-| 1 | 구조화된 체크리스트 | `todowrite` | `TaskStep[]` (§2) | ✅ |
-| 2 | Idle 감지 → 즉시 재개 | `todo-continuation-enforcer` | Event-Based Continuation (§3) | ✅ |
-| 3 | 자기 구동 루프 | Ralph Loop | Self-Driving Loop (§10) | ✅ |
-| 4 | 조기 종료 차단 | Stop Guard | Stop Guard (§11) | ✅ |
-| 5 | 크로스 세션 상태 | Boulder | TaskFile 파일 기반 (§2.1) | ✅* |
+| #   | 메커니즘              | Sisyphus                     | prontolab-openclaw            | 동등? |
+| --- | --------------------- | ---------------------------- | ----------------------------- | ----- |
+| 1   | 구조화된 체크리스트   | `todowrite`                  | `TaskStep[]` (§2)             | ✅    |
+| 2   | Idle 감지 → 즉시 재개 | `todo-continuation-enforcer` | Event-Based Continuation (§3) | ✅    |
+| 3   | 자기 구동 루프        | Ralph Loop                   | Self-Driving Loop (§10)       | ✅    |
+| 4   | 조기 종료 차단        | Stop Guard                   | Stop Guard (§11)              | ✅    |
+| 5   | 크로스 세션 상태      | Boulder                      | TaskFile 파일 기반 (§2.1)     | ✅\*  |
 
-*\* Boulder의 "컨텍스트 요약"은 없지만, TaskFile이 파일 기반이므로 세션이 끊겨도 steps 상태가 영속됨. OpenClaw의 task 시스템이 이미 영속 저장을 하므로 별도 boulder가 불필요.*
+_\* Boulder의 "컨텍스트 요약"은 없지만, TaskFile이 파일 기반이므로 세션이 끊겨도 steps 상태가 영속됨. OpenClaw의 task 시스템이 이미 영속 저장을 하므로 별도 boulder가 불필요._
 
 ### 12.2 5-Layer Safety Net
 
@@ -1052,37 +1099,37 @@ Layer 4 — Polling Continuation (기존 runner)  [~5분]
 
 ### 12.3 중복 방지
 
-| 발동 순서 | 이벤트 | 결과 |
-|----------|--------|------|
-| Self-Driving (0.5초) 먼저 발동 | → lifecycle:start 발행 | → Event-Based의 2초 타이머 취소 |
-| Event-Based (2초) 발동 | → lifecycle:start 발행 | → Polling runner는 idle 카운터 리셋 |
-| 둘 다 실패 | → 3분간 아무 활동 없음 | → Polling runner가 5분 후 continuation |
+| 발동 순서                      | 이벤트                 | 결과                                   |
+| ------------------------------ | ---------------------- | -------------------------------------- |
+| Self-Driving (0.5초) 먼저 발동 | → lifecycle:start 발행 | → Event-Based의 2초 타이머 취소        |
+| Event-Based (2초) 발동         | → lifecycle:start 발행 | → Polling runner는 idle 카운터 리셋    |
+| 둘 다 실패                     | → 3분간 아무 활동 없음 | → Polling runner가 5분 후 continuation |
 
 ---
 
 ## 13. 수정 대상 파일 (갱신)
 
-| 파일 | 변경 내용 | 규모 | 섹션 |
-|------|----------|------|------|
-| `src/agents/tools/task-tool.ts` | TaskStep 타입, steps 필드, step actions, **Stop Guard**, force_complete | 중 | §2, §11 |
-| `src/infra/task-self-driving.ts` | **신규** — Self-Driving Loop | 소 | §10 |
-| `src/infra/task-step-continuation.ts` | **신규** — Event-Based Continuation | 소 | §3 |
-| `src/infra/task-continuation-runner.ts` | formatContinuationPrompt에 steps 체크리스트 추가 | 소 | §3.7 |
-| `src/gateway/server.impl.ts` | start 호출 추가 (self-driving + step-continuation) | 소 | — |
-| `src/gateway/server-close.ts` | stop 호출 추가 | 소 | — |
-| 각 에이전트 AGENTS.md (11개) | steps 사용 + "멈추지 마" 규칙 | 소 | §6 |
+| 파일                                    | 변경 내용                                                               | 규모 | 섹션    |
+| --------------------------------------- | ----------------------------------------------------------------------- | ---- | ------- |
+| `src/agents/tools/task-tool.ts`         | TaskStep 타입, steps 필드, step actions, **Stop Guard**, force_complete | 중   | §2, §11 |
+| `src/infra/task-self-driving.ts`        | **신규** — Self-Driving Loop                                            | 소   | §10     |
+| `src/infra/task-step-continuation.ts`   | **신규** — Event-Based Continuation                                     | 소   | §3      |
+| `src/infra/task-continuation-runner.ts` | formatContinuationPrompt에 steps 체크리스트 추가                        | 소   | §3.7    |
+| `src/gateway/server.impl.ts`            | start 호출 추가 (self-driving + step-continuation)                      | 소   | —       |
+| `src/gateway/server-close.ts`           | stop 호출 추가                                                          | 소   | —       |
+| 각 에이전트 AGENTS.md (11개)            | steps 사용 + "멈추지 마" 규칙                                           | 소   | §6      |
 
 ### 코드 변경 예상 규모 (갱신)
 
-| 항목 | 줄 수 |
-|------|-------|
-| task-tool.ts (steps + stop guard) | ~200줄 |
-| task-self-driving.ts (신규) | ~150줄 |
-| task-step-continuation.ts (신규) | ~120줄 |
-| task-continuation-runner.ts (prompt 수정) | ~30줄 |
-| server.impl.ts + server-close.ts | ~15줄 |
-| AGENTS.md × 11 | ~20줄 × 11 |
-| **총** | **~735줄** |
+| 항목                                      | 줄 수      |
+| ----------------------------------------- | ---------- |
+| task-tool.ts (steps + stop guard)         | ~200줄     |
+| task-self-driving.ts (신규)               | ~150줄     |
+| task-step-continuation.ts (신규)          | ~120줄     |
+| task-continuation-runner.ts (prompt 수정) | ~30줄      |
+| server.impl.ts + server-close.ts          | ~15줄      |
+| AGENTS.md × 11                            | ~20줄 × 11 |
+| **총**                                    | **~735줄** |
 
 ---
 
@@ -1162,7 +1209,7 @@ interface MonitorTask {
   source?: string;
   created: string;
   lastActivity: string;
-  progress: string[];            // 자유 텍스트 배열
+  progress: string[]; // 자유 텍스트 배열
   blockedReason?: string;
   unblockedBy?: string[];
   unblockedAction?: string;
@@ -1200,15 +1247,15 @@ if (currentSection === "steps") {
   const stepMatch = trimmed.match(/^- \[([x>\ \-])\] \((\w+)\) (.+)$/);
   if (stepMatch) {
     const statusMap: Record<string, MonitorTaskStep["status"]> = {
-      'x': 'done',
-      '>': 'in_progress',
-      ' ': 'pending',
-      '-': 'skipped',
+      x: "done",
+      ">": "in_progress",
+      " ": "pending",
+      "-": "skipped",
     };
     steps.push({
       id: stepMatch[2],
       content: stepMatch[3],
-      status: statusMap[stepMatch[1]] || 'pending',
+      status: statusMap[stepMatch[1]] || "pending",
       order: steps.length + 1,
     });
   }
@@ -1224,13 +1271,16 @@ return {
   // Steps 배열 (없으면 undefined)
   steps: steps.length > 0 ? steps : undefined,
   // Steps 진행 요약 (대시보드 프로그레스 바에 사용)
-  stepsProgress: steps.length > 0 ? {
-    total: steps.length,
-    done: steps.filter(s => s.status === 'done').length,
-    inProgress: steps.filter(s => s.status === 'in_progress').length,
-    pending: steps.filter(s => s.status === 'pending').length,
-    skipped: steps.filter(s => s.status === 'skipped').length,
-  } : undefined,
+  stepsProgress:
+    steps.length > 0
+      ? {
+          total: steps.length,
+          done: steps.filter((s) => s.status === "done").length,
+          inProgress: steps.filter((s) => s.status === "in_progress").length,
+          pending: steps.filter((s) => s.status === "pending").length,
+          skipped: steps.filter((s) => s.status === "skipped").length,
+        }
+      : undefined,
 };
 ```
 
@@ -1266,8 +1316,8 @@ interface WsContinuationEvent {
   timestamp: string;
   data: {
     event: "self_driving_triggered" | "stop_guard_blocked";
-    consecutiveCount?: number;   // self-driving 루프 횟수
-    remainingSteps?: number;     // 미완료 step 수
+    consecutiveCount?: number; // self-driving 루프 횟수
+    remainingSteps?: number; // 미완료 step 수
   };
 }
 ```
@@ -1304,11 +1354,37 @@ OAuth 로그인 구현
   const result = parseTaskFileMd(content, "task_steps_test.md");
 
   expect(result!.steps).toHaveLength(4);
-  expect(result!.steps![0]).toEqual({ id: "s1", content: "기존 auth 구조 파악", status: "done", order: 1 });
-  expect(result!.steps![1]).toEqual({ id: "s2", content: "Google OAuth strategy 추가", status: "in_progress", order: 2 });
-  expect(result!.steps![2]).toEqual({ id: "s3", content: "GitHub OAuth callback 구현", status: "pending", order: 3 });
-  expect(result!.steps![3]).toEqual({ id: "s4", content: "건너뛴 단계", status: "skipped", order: 4 });
-  expect(result!.stepsProgress).toEqual({ total: 4, done: 1, inProgress: 1, pending: 1, skipped: 1 });
+  expect(result!.steps![0]).toEqual({
+    id: "s1",
+    content: "기존 auth 구조 파악",
+    status: "done",
+    order: 1,
+  });
+  expect(result!.steps![1]).toEqual({
+    id: "s2",
+    content: "Google OAuth strategy 추가",
+    status: "in_progress",
+    order: 2,
+  });
+  expect(result!.steps![2]).toEqual({
+    id: "s3",
+    content: "GitHub OAuth callback 구현",
+    status: "pending",
+    order: 3,
+  });
+  expect(result!.steps![3]).toEqual({
+    id: "s4",
+    content: "건너뛴 단계",
+    status: "skipped",
+    order: 4,
+  });
+  expect(result!.stepsProgress).toEqual({
+    total: 4,
+    done: 1,
+    inProgress: 1,
+    pending: 1,
+    skipped: 1,
+  });
 });
 
 it("returns undefined steps for task without Steps section", () => {
@@ -1363,12 +1439,12 @@ type Task = {
   description: string;
   created: string;
   lastActivity: string;
-  progress: string[];            // ← 자유 텍스트만
+  progress: string[]; // ← 자유 텍스트만
   outcome?: { kind: string; summary?: string; reason?: string };
   createdBy?: string;
   assignee?: string;
   dependsOn?: string[];
-  estimatedEffort?: 'small' | 'medium' | 'large';
+  estimatedEffort?: "small" | "medium" | "large";
   startDate?: string;
   dueDate?: string;
   // ❌ steps 없음
@@ -1383,7 +1459,7 @@ type Task = {
 type TaskStep = {
   id: string;
   content: string;
-  status: 'pending' | 'in_progress' | 'done' | 'skipped';
+  status: "pending" | "in_progress" | "done" | "skipped";
   order: number;
 };
 
@@ -1397,8 +1473,8 @@ type StepsProgress = {
 
 type Task = {
   // ... 기존 필드 전부 유지 ...
-  steps?: TaskStep[];              // NEW
-  stepsProgress?: StepsProgress;   // NEW
+  steps?: TaskStep[]; // NEW
+  stepsProgress?: StepsProgress; // NEW
 };
 ```
 
@@ -1456,58 +1532,75 @@ const ActiveTaskCard = ({ task }: { task: TaskWithAgent }) => {
 TaskDetailModal의 스크롤 가능 본문에 Steps 섹션 추가. Progress 타임라인 위에 배치:
 
 ```tsx
-{/* TaskDetailModal 본문 — Steps 체크리스트 */}
-{taskData?.steps && taskData.steps.length > 0 && (
-  <div>
-    <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-      Steps
-      <span className="text-slate-300 normal-case ml-1">
-        ({taskData.steps.filter(s => s.status === 'done').length}/{taskData.steps.length})
-      </span>
-    </div>
-
-    {/* 프로그레스 바 (큰 버전) */}
-    <div className="flex items-center gap-3 mb-3">
-      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-        <div
-          className="h-full bg-emerald-500 rounded-full transition-all duration-500"
-          style={{
-            width: `${((taskData.stepsProgress?.done ?? 0 + (taskData.stepsProgress?.skipped ?? 0)) /
-              (taskData.stepsProgress?.total ?? 1)) * 100}%`,
-          }}
-        />
+{
+  /* TaskDetailModal 본문 — Steps 체크리스트 */
+}
+{
+  taskData?.steps && taskData.steps.length > 0 && (
+    <div>
+      <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+        Steps
+        <span className="text-slate-300 normal-case ml-1">
+          ({taskData.steps.filter((s) => s.status === "done").length}/{taskData.steps.length})
+        </span>
       </div>
-      <span className="text-xs text-slate-500 font-mono">
-        {taskData.stepsProgress?.done ?? 0}/{taskData.stepsProgress?.total ?? 0}
-      </span>
-    </div>
 
-    {/* 체크리스트 */}
-    <div className="space-y-1">
-      {taskData.steps.map(step => {
-        const config = {
-          done:        { bg: 'bg-emerald-50', text: 'text-emerald-700', icon: '✅', extra: '' },
-          in_progress: { bg: 'bg-blue-50',    text: 'text-blue-700 font-medium', icon: '▶️', extra: 'ring-1 ring-blue-200' },
-          pending:     { bg: 'bg-slate-50',    text: 'text-slate-600', icon: '⬜', extra: '' },
-          skipped:     { bg: 'bg-slate-50',    text: 'text-slate-400 line-through', icon: '⏭️', extra: '' },
-        }[step.status];
-
-        return (
+      {/* 프로그레스 바 (큰 버전) */}
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
           <div
-            key={step.id}
-            className={`flex items-center gap-2.5 text-sm px-3 py-2 rounded-lg ${config.bg} ${config.extra}`}
-          >
-            <span className="text-base leading-none">{config.icon}</span>
-            <span className={`flex-1 ${config.text}`}>
-              <span className="text-[10px] font-mono text-slate-400 mr-1.5">({step.id})</span>
-              {step.content}
-            </span>
-          </div>
-        );
-      })}
+            className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+            style={{
+              width: `${
+                ((taskData.stepsProgress?.done ?? 0 + (taskData.stepsProgress?.skipped ?? 0)) /
+                  (taskData.stepsProgress?.total ?? 1)) *
+                100
+              }%`,
+            }}
+          />
+        </div>
+        <span className="text-xs text-slate-500 font-mono">
+          {taskData.stepsProgress?.done ?? 0}/{taskData.stepsProgress?.total ?? 0}
+        </span>
+      </div>
+
+      {/* 체크리스트 */}
+      <div className="space-y-1">
+        {taskData.steps.map((step) => {
+          const config = {
+            done: { bg: "bg-emerald-50", text: "text-emerald-700", icon: "✅", extra: "" },
+            in_progress: {
+              bg: "bg-blue-50",
+              text: "text-blue-700 font-medium",
+              icon: "▶️",
+              extra: "ring-1 ring-blue-200",
+            },
+            pending: { bg: "bg-slate-50", text: "text-slate-600", icon: "⬜", extra: "" },
+            skipped: {
+              bg: "bg-slate-50",
+              text: "text-slate-400 line-through",
+              icon: "⏭️",
+              extra: "",
+            },
+          }[step.status];
+
+          return (
+            <div
+              key={step.id}
+              className={`flex items-center gap-2.5 text-sm px-3 py-2 rounded-lg ${config.bg} ${config.extra}`}
+            >
+              <span className="text-base leading-none">{config.icon}</span>
+              <span className={`flex-1 ${config.text}`}>
+                <span className="text-[10px] font-mono text-slate-400 mr-1.5">({step.id})</span>
+                {step.content}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
-  </div>
-)}
+  );
+}
 ```
 
 ### 16.6 변경: /api/tasks/update — Step Action 지원
@@ -1522,7 +1615,7 @@ export async function POST(request: NextRequest) {
   const { taskId, agentId, progress, action, stepId, stepContent, steps } = body;
 
   if (!taskId || !agentId) {
-    return NextResponse.json({ error: 'taskId and agentId required' }, { status: 400 });
+    return NextResponse.json({ error: "taskId and agentId required" }, { status: 400 });
   }
 
   // 기존: progress 텍스트 전달
@@ -1538,17 +1631,17 @@ export async function POST(request: NextRequest) {
   } else if (progress) {
     toolArgs.progress = progress;
   } else {
-    return NextResponse.json({ error: 'progress or action required' }, { status: 400 });
+    return NextResponse.json({ error: "progress or action required" }, { status: 400 });
   }
 
   const res = await fetch(`${GATEWAY_URL}/tools/invoke`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${GATEWAY_TOKEN}`,
     },
     body: JSON.stringify({
-      tool: 'task_update',
+      tool: "task_update",
       args: toolArgs,
       sessionKey: `agent:${agentId}`,
     }),
@@ -1566,17 +1659,22 @@ export async function POST(request: NextRequest) {
 // TeamStatus 컴포넌트 확장
 // 에이전트별 steps 진행률 요약
 const agentStepsTotal = activeTasks
-  .filter(t => t.agentId === agent.id && t.stepsProgress)
-  .reduce((acc, t) => ({
-    done: acc.done + (t.stepsProgress?.done ?? 0),
-    total: acc.total + (t.stepsProgress?.total ?? 0),
-  }), { done: 0, total: 0 });
+  .filter((t) => t.agentId === agent.id && t.stepsProgress)
+  .reduce(
+    (acc, t) => ({
+      done: acc.done + (t.stepsProgress?.done ?? 0),
+      total: acc.total + (t.stepsProgress?.total ?? 0),
+    }),
+    { done: 0, total: 0 },
+  );
 
-{agentStepsTotal.total > 0 && (
-  <span className="text-[10px] text-slate-400 ml-1">
-    ({agentStepsTotal.done}/{agentStepsTotal.total} steps)
-  </span>
-)}
+{
+  agentStepsTotal.total > 0 && (
+    <span className="text-[10px] text-slate-400 ml-1">
+      ({agentStepsTotal.done}/{agentStepsTotal.total} steps)
+    </span>
+  );
+}
 ```
 
 ### 16.8 변경: Events 페이지 — Self-Driving / Stop Guard 표시 (선택)
@@ -1587,14 +1685,12 @@ const agentStepsTotal = activeTasks
 // Self-Driving 이벤트 카드
 const ContinuationEventCard = ({ event }) => (
   <div className="flex items-center gap-3 px-4 py-2 bg-indigo-50 rounded-lg border border-indigo-100">
-    <span className="text-lg">
-      {event.data.event === 'self_driving_triggered' ? '🔄' : '🛑'}
-    </span>
+    <span className="text-lg">{event.data.event === "self_driving_triggered" ? "🔄" : "🛑"}</span>
     <div className="flex-1">
       <span className="text-sm font-medium text-indigo-700">
-        {event.data.event === 'self_driving_triggered'
+        {event.data.event === "self_driving_triggered"
           ? `Self-Driving #${event.data.consecutiveCount}`
-          : 'Stop Guard 차단'}
+          : "Stop Guard 차단"}
       </span>
       <span className="text-xs text-indigo-500 ml-2">
         {event.agentId} — {event.data.remainingSteps} steps 남음
@@ -1669,41 +1765,41 @@ const ContinuationEventCard = ({ event }) => (
 
 ## 13. 수정 대상 파일 (최종)
 
-| 파일 | 변경 내용 | 규모 | 서비스 |
-|------|----------|------|--------|
-| `src/agents/tools/task-tool.ts` | TaskStep 타입, steps 필드, step actions, Stop Guard, force_complete | 중 | Gateway |
-| `src/infra/task-self-driving.ts` | **신규** — Self-Driving Loop | 소 | Gateway |
-| `src/infra/task-step-continuation.ts` | **신규** — Event-Based Continuation | 소 | Gateway |
-| `src/infra/task-continuation-runner.ts` | formatContinuationPrompt에 steps 체크리스트 추가 | 소 | Gateway |
-| `src/gateway/server.impl.ts` | start 호출 추가 (self-driving + step-continuation) | 소 | Gateway |
-| `src/gateway/server-close.ts` | stop 호출 추가 | 소 | Gateway |
-| 각 에이전트 AGENTS.md (11개) | steps 사용 + "멈추지 마" 규칙 | 소 | Gateway |
-| Task Monitoring Server `parseTaskFileMd` | Steps 섹션 파싱 + API 응답 확장 | 소 | Monitoring |
-| Task Monitoring Server WebSocket | task_step_update, continuation_event 이벤트 추가 | 소 | Monitoring |
-| `src/task-monitor/task-monitor.test.ts` | Steps 파싱 테스트 추가 | 소 | Monitoring |
-| Task Hub `src/app/tasks/page.tsx` | Task 타입 확장, ActiveTaskCard 프로그레스 바, TaskDetailModal 체크리스트 | 중 | Hub |
-| Task Hub `src/app/api/tasks/update/route.ts` | Step action 지원 | 소 | Hub |
-| Task Hub `src/components/TeamStatus.tsx` | Steps 진행률 요약 | 소 | Hub |
-| Task Hub `src/app/events/page.tsx` | Self-Driving/Stop Guard 이벤트 카드 (선택) | 소 | Hub |
+| 파일                                         | 변경 내용                                                                | 규모 | 서비스     |
+| -------------------------------------------- | ------------------------------------------------------------------------ | ---- | ---------- |
+| `src/agents/tools/task-tool.ts`              | TaskStep 타입, steps 필드, step actions, Stop Guard, force_complete      | 중   | Gateway    |
+| `src/infra/task-self-driving.ts`             | **신규** — Self-Driving Loop                                             | 소   | Gateway    |
+| `src/infra/task-step-continuation.ts`        | **신규** — Event-Based Continuation                                      | 소   | Gateway    |
+| `src/infra/task-continuation-runner.ts`      | formatContinuationPrompt에 steps 체크리스트 추가                         | 소   | Gateway    |
+| `src/gateway/server.impl.ts`                 | start 호출 추가 (self-driving + step-continuation)                       | 소   | Gateway    |
+| `src/gateway/server-close.ts`                | stop 호출 추가                                                           | 소   | Gateway    |
+| 각 에이전트 AGENTS.md (11개)                 | steps 사용 + "멈추지 마" 규칙                                            | 소   | Gateway    |
+| Task Monitoring Server `parseTaskFileMd`     | Steps 섹션 파싱 + API 응답 확장                                          | 소   | Monitoring |
+| Task Monitoring Server WebSocket             | task_step_update, continuation_event 이벤트 추가                         | 소   | Monitoring |
+| `src/task-monitor/task-monitor.test.ts`      | Steps 파싱 테스트 추가                                                   | 소   | Monitoring |
+| Task Hub `src/app/tasks/page.tsx`            | Task 타입 확장, ActiveTaskCard 프로그레스 바, TaskDetailModal 체크리스트 | 중   | Hub        |
+| Task Hub `src/app/api/tasks/update/route.ts` | Step action 지원                                                         | 소   | Hub        |
+| Task Hub `src/components/TeamStatus.tsx`     | Steps 진행률 요약                                                        | 소   | Hub        |
+| Task Hub `src/app/events/page.tsx`           | Self-Driving/Stop Guard 이벤트 카드 (선택)                               | 소   | Hub        |
 
 ### 코드 변경 예상 규모 (최종)
 
-| 서비스 | 항목 | 줄 수 |
-|--------|------|-------|
-| **Gateway** | task-tool.ts (steps + stop guard) | ~200줄 |
-| **Gateway** | task-self-driving.ts (신규) | ~150줄 |
-| **Gateway** | task-step-continuation.ts (신규) | ~120줄 |
-| **Gateway** | task-continuation-runner.ts (prompt) | ~30줄 |
-| **Gateway** | server.impl.ts + server-close.ts | ~15줄 |
-| **Gateway** | AGENTS.md × 11 | ~220줄 |
-| **Monitoring** | parseTaskFileMd + API 응답 확장 | ~50줄 |
-| **Monitoring** | WebSocket 이벤트 추가 | ~40줄 |
-| **Monitoring** | 테스트 추가 | ~50줄 |
-| **Hub** | Task 타입 확장 | ~15줄 |
-| **Hub** | ActiveTaskCard + TaskDetailModal | ~150줄 |
-| **Hub** | /api/tasks/update 확장 | ~30줄 |
-| **Hub** | TeamStatus + Events 페이지 | ~60줄 |
-| **총** | | **~1,130줄** |
+| 서비스         | 항목                                 | 줄 수        |
+| -------------- | ------------------------------------ | ------------ |
+| **Gateway**    | task-tool.ts (steps + stop guard)    | ~200줄       |
+| **Gateway**    | task-self-driving.ts (신규)          | ~150줄       |
+| **Gateway**    | task-step-continuation.ts (신규)     | ~120줄       |
+| **Gateway**    | task-continuation-runner.ts (prompt) | ~30줄        |
+| **Gateway**    | server.impl.ts + server-close.ts     | ~15줄        |
+| **Gateway**    | AGENTS.md × 11                       | ~220줄       |
+| **Monitoring** | parseTaskFileMd + API 응답 확장      | ~50줄        |
+| **Monitoring** | WebSocket 이벤트 추가                | ~40줄        |
+| **Monitoring** | 테스트 추가                          | ~50줄        |
+| **Hub**        | Task 타입 확장                       | ~15줄        |
+| **Hub**        | ActiveTaskCard + TaskDetailModal     | ~150줄       |
+| **Hub**        | /api/tasks/update 확장               | ~30줄        |
+| **Hub**        | TeamStatus + Events 페이지           | ~60줄        |
+| **총**         |                                      | **~1,130줄** |
 
 ---
 

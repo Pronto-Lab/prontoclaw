@@ -560,8 +560,6 @@ If a feature is generally useful, consider submitting a PR to upstream:
 
 ---
 
-
-
 ---
 
 ### 9. Task Blocking System (Agent-to-Agent Coordination) ✅
@@ -876,7 +874,9 @@ type TaskOutcome =
 
 ---
 
-### 20. Sisyphus Sub-Agent Orchestration (설계 완료, 미구현) 📐
+### 20. Sisyphus Sub-Agent Orchestration ✅
+
+**Status:** 핵심 구조 반영 완료 및 운영 중 (sub-agent 전용 workspace/AGENTS.md + `allowAgents` + sub-agent task/milestone 도구 차단).
 
 **Purpose:** oh-my-opencode의 Sisyphus 패턴을 prontolab-openclaw 에이전트에 적용하여, 부모 에이전트가 전문 서브에이전트를 spawn하여 작업을 위임하는 orchestration 체계 도입.
 
@@ -884,62 +884,79 @@ type TaskOutcome =
 
 **서브에이전트 4종:**
 
-| 서브에이전트 | agentId | 모델 | 역할 | timeout |
-|--------|---------|------|------|---------|
-| Explorer | `explorer` | sonnet-4-5 | 읽기 전용 탐색 | 120s |
-| Worker-Quick | `worker-quick` | sonnet-4-5 | 단순 수정 | 60s |
-| Worker-Deep | `worker-deep` | opus-4-5 | 복잡한 구현 | 600s |
-| Consultant | `consultant` | opus-4-6 | 아키텍처 상담 | 900s |
+| 서브에이전트 | agentId        | 모델      | 역할           | timeout |
+| ------------ | -------------- | --------- | -------------- | ------- |
+| Explorer     | `explorer`     | codex-5.3 | 읽기 전용 탐색 | 120s    |
+| Worker-Quick | `worker-quick` | codex-5.3 | 단순 수정      | 60s     |
+| Worker-Deep  | `worker-deep`  | codex-5.3 | 복잡한 구현    | 600s    |
+| Consultant   | `consultant`   | codex-5.3 | 아키텍처 상담  | 900s    |
 
 **변경 요약:**
 
-| As-Is | To-Be |
-|-------|-------|
-| sub-agent workspace = 부모와 동일 | 서브에이전트별 독립 workspace |
+| As-Is                                  | To-Be                         |
+| -------------------------------------- | ----------------------------- |
+| sub-agent workspace = 부모와 동일      | 서브에이전트별 독립 workspace |
 | sub-agent가 부모의 전체 AGENTS.md 받음 | 서브에이전트별 전용 AGENTS.md |
-| 카테고리 주입 = task 텍스트에 의존 | agentId로 서브에이전트 선택 |
-| Orchestration 지침 없음 | 부모 AGENTS.md에만 삽입 |
-| task 도구 = sub-agent도 사용 가능 | sub-agent에서 차단 |
+| 카테고리 주입 = task 텍스트에 의존     | agentId로 서브에이전트 선택   |
+| Orchestration 지침 없음                | 부모 AGENTS.md에만 삽입       |
+| task 도구 = sub-agent도 사용 가능      | sub-agent에서 차단            |
 
 **상세 설계 문서:** [`prontolab/`](./prontolab/) 디렉토리 참조
 
-| 문서 | 내용 |
-|------|------|
-| [prontolab/SISYPHUS-DESIGN.md](./prontolab/SISYPHUS-DESIGN.md) | 전체 설계 (배경, As-Is/To-Be, 서브에이전트 정의, Orchestration 패턴) |
-| [prontolab/IMPLEMENTATION-GUIDE.md](./prontolab/IMPLEMENTATION-GUIDE.md) | 단계별 구현 가이드 (Phase 1-4) |
-| [prontolab/REFERENCES.md](./prontolab/REFERENCES.md) | 소스 코드 참조, 설정 스냅샷 |
+| 문서                                                                     | 내용                                                                 |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| [prontolab/SISYPHUS-DESIGN.md](./prontolab/SISYPHUS-DESIGN.md)           | 전체 설계 (배경, As-Is/To-Be, 서브에이전트 정의, Orchestration 패턴) |
+| [prontolab/IMPLEMENTATION-GUIDE.md](./prontolab/IMPLEMENTATION-GUIDE.md) | 단계별 구현 가이드 (Phase 1-4)                                       |
+| [prontolab/REFERENCES.md](./prontolab/REFERENCES.md)                     | 소스 코드 참조, 설정 스냅샷                                          |
+
+**운영 반영 근거:**
+
+- `~/.openclaw/openclaw.json` — `agents.list`에 `explorer`/`worker-quick`/`worker-deep`/`consultant` 등록
+- `~/.openclaw/openclaw.json` — 부모 에이전트 `subagents.allowAgents` 적용
+- `~/.openclaw/openclaw.json` — `tools.subagents.tools.deny`에 task/milestone 도구 차단
+- `~/.openclaw/workspace-{agentId}/AGENTS.md` — 서브에이전트 전용 지침 분리
 
 ---
 
-### 21. Task Steps + Self-Driving + Stop Guard (설계 완료, 미구현) 📐
+### 21. Task Steps + Self-Driving + Stop Guard ✅ (핵심 로직 구현)
+
+**Status:** Gateway + Task Monitor 핵심 로직 구현 완료. Task Hub UI/UX 연동은 별도 저장소/트랙에서 확장.
 
 **Purpose:** 에이전트가 작업을 끝까지 완료하도록 강제하는 Sisyphus 동등 메커니즘. 5-Layer Safety Net으로 에이전트의 조기 종료를 원천 차단.
 
 **Sisyphus 동등성:**
 
-| Sisyphus 메커니즘 | prontolab 구현 | 동등? |
-|----------------|--------------|------|
-| todowrite 체크리스트 | TaskStep[] | ✅ |
-| todo-continuation-enforcer | Event-Based Continuation (2초) | ✅ |
-| Ralph Loop | Self-Driving Loop (0.5초) | ✅ |
-| Stop Guard | task_complete 차단 | ✅ |
-| Boulder (영속 상태) | TaskFile 파일 기반 | ✅ |
+| Sisyphus 메커니즘          | prontolab 구현                 | 동등? |
+| -------------------------- | ------------------------------ | ----- |
+| todowrite 체크리스트       | TaskStep[]                     | ✅    |
+| todo-continuation-enforcer | Event-Based Continuation (2초) | ✅    |
+| Ralph Loop                 | Self-Driving Loop (0.5초)      | ✅    |
+| Stop Guard                 | task_complete 차단             | ✅    |
+| Boulder (영속 상태)        | TaskFile 파일 기반             | ✅    |
 
 **5-Layer Safety Net:**
 
-| Layer | 메커니즘 | 지연 | 역할 |
-|-------|---------|------|------|
-| 0 | AGENTS.md 지침 | — | 에이전트 자발적 협조 |
-| 1 | Stop Guard | 0ms | task_complete + 미완료 steps → ❌ 차단 |
-| 2 | Self-Driving Loop | 0.5초 | lifecycle:end → 즉시 재시작 (강한 prompt) |
-| 3 | Event-Based Continuation | 2초 | Self-Driving 실패 시 fallback |
-| 4 | Polling Continuation (기존) | ~5분 | 최후의 안전망 |
+| Layer | 메커니즘                    | 지연  | 역할                                      |
+| ----- | --------------------------- | ----- | ----------------------------------------- |
+| 0     | AGENTS.md 지침              | —     | 에이전트 자발적 협조                      |
+| 1     | Stop Guard                  | 0ms   | task_complete + 미완료 steps → ❌ 차단    |
+| 2     | Self-Driving Loop           | 0.5초 | lifecycle:end → 즉시 재시작 (강한 prompt) |
+| 3     | Event-Based Continuation    | 2초   | Self-Driving 실패 시 fallback             |
+| 4     | Polling Continuation (기존) | ~5분  | 최후의 안전망                             |
 
-**수정 대상 (3개 서비스):**
-- Gateway: ~735줄 (task-tool.ts, task-self-driving.ts, task-step-continuation.ts, server.impl.ts, AGENTS.md ×11)
-- Task Monitoring Server: ~140줄 (parseTaskFileMd Steps 파싱, API 응답 확장, WebSocket 이벤트)
-- Task Hub: ~255줄 (Task 타입 확장, ActiveTaskCard 프로그레스 바, TaskDetailModal 체크리스트, step action API)
-- **총 ~1,130줄**
+**구현 근거 파일 (현재 리포):**
+
+- `src/agents/tools/task-tool.ts` — `TaskStep` + step action + Stop Guard
+- `src/infra/task-self-driving.ts` — Self-Driving Loop
+- `src/infra/task-step-continuation.ts` — Event-Based Continuation fallback
+- `src/gateway/server.impl.ts` — 런타임 wiring
+- `scripts/task-monitor-server.ts` — step 파싱/응답 확장
+
+**연동 상태:**
+
+- Gateway: 구현 완료
+- Task Monitoring Server: 구현 완료
+- Task Hub: 별도 저장소 연동 항목 (확장 트랙)
 
 **상세 설계 문서:** [prontolab/TASK-STEPS-DESIGN.md](./prontolab/TASK-STEPS-DESIGN.md)
 
@@ -947,10 +964,10 @@ type TaskOutcome =
 
 ## Upstream Merge History
 
-| Date | Version | Commit | Notes |
-|------|---------|--------|-------|
+| Date       | Version    | Commit      | Notes                                                                                                                                           |
+| ---------- | ---------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-02-13 | v2026.2.12 | `375a30a52` | 5개 충돌 해결 (package.json, pnpm-lock.yaml, google.ts, model.ts, schema.ts). voice 패키지 유지, fork config UI 코드 유지, signature 패치 적용. |
 
 ---
 
-_Last updated: 2026-02-13_
+_Last updated: 2026-02-17_
