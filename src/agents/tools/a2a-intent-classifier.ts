@@ -27,32 +27,39 @@ export interface IntentClassification {
 export function classifyMessageIntent(message: string): IntentClassification {
   // 1. Explicit tags (backward-compatible)
   if (/\[NO_REPLY_NEEDED\]|\[NOTIFICATION\]/i.test(message)) {
-    return { intent: "notification", suggestedTurns: 0, confidence: 1.0 };
+    return { intent: notification, suggestedTurns: 0, confidence: 1.0 };
   }
   if (/\[URGENT\]|\[ESCALATION\]/i.test(message)) {
-    return { intent: "escalation", suggestedTurns: 0, confidence: 1.0 };
+    return { intent: escalation, suggestedTurns: 0, confidence: 1.0 };
   }
 
-  // 2. Pattern-based classification
+  // 2. Pattern-based classification (ORDER MATTERS — check broad categories first)
+
   // Result report patterns
   if (
     /\[outcome\]|\[result\]|작업.*완료|결과.*보고|분석.*결과|completed|finished|done/i.test(message)
   ) {
-    return { intent: "result_report", suggestedTurns: 1, confidence: 0.8 };
+    return { intent: result_report, suggestedTurns: 1, confidence: 0.8 };
   }
 
-  // Question patterns
+  // Collaboration patterns — MUST be checked BEFORE question patterns.
+  // Messages that ask for discussion/opinions often contain question words (어떻게)
+  // but the primary intent is collaboration, not a simple question.
+  if (
+    /논의|토론|설계하자|같이|함께|의견.*줘|의견.*들려|의견.*말해|피드백|리뷰|검토|합의|조율|상의|브레인스토밍|let'?s discuss|review together|brainstorm|collaborate|work together|let'?s figure out|what do you think/i.test(
+      message,
+    )
+  ) {
+    return { intent: collaboration, suggestedTurns: -1, confidence: 0.8 };
+  }
+
+  // Question patterns — simple one-shot questions (not discussions)
   if (/\?$|어떻게|어디에|뭐가|확인.*해줘|알려줘|can you|could you|please/i.test(message)) {
-    return { intent: "question", suggestedTurns: 1, confidence: 0.7 };
+    return { intent: question, suggestedTurns: 1, confidence: 0.7 };
   }
 
-  // Collaboration patterns
-  if (/같이.*검토|함께.*논의|의견.*줘|피드백|리뷰|let'?s discuss|review together/i.test(message)) {
-    return { intent: "collaboration", suggestedTurns: -1, confidence: 0.7 };
-  }
-
-  // Default: question (conservative — prevents unnecessary ping-pong)
-  return { intent: "question", suggestedTurns: 1, confidence: 0.5 };
+  // Default: collaboration (prefer multi-turn — agents can always REPLY_SKIP to end early)
+  return { intent: collaboration, suggestedTurns: -1, confidence: 0.5 };
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +156,8 @@ export function calculateSimilarity(a: string, b: string): number {
 export function shouldRunAnnounce(params: {
   announceTarget: { channel: string; to: string } | null;
   latestReply?: string;
+  requesterSessionKey?: string;
+  targetSessionKey?: string;
 }): boolean {
   if (!params.announceTarget) {
     return false;
@@ -158,6 +167,15 @@ export function shouldRunAnnounce(params: {
   }
   if (params.announceTarget.channel === "internal") {
     return false;
+  }
+  // Skip announce for internal agent-to-agent conversations.
+  // Both parties are agents — no need to post results to external channels.
+  if (params.requesterSessionKey && params.targetSessionKey) {
+    const isRequesterAgent = /^agent:[^:]+:(main|a2a:|subagent:)/i.test(params.requesterSessionKey);
+    const isTargetAgent = /^agent:[^:]+:(main|a2a:|subagent:)/i.test(params.targetSessionKey);
+    if (isRequesterAgent && isTargetAgent) {
+      return false;
+    }
   }
   return true;
 }

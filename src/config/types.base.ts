@@ -102,7 +102,7 @@ export type SessionConfig = {
   mainKey?: string;
   sendPolicy?: SessionSendPolicyConfig;
   agentToAgent?: {
-    /** Max ping-pong turns between requester/target (0–10). Default: 5. */
+    /** Max ping-pong turns between requester/target (0–30). Default: 30. */
     maxPingPongTurns?: number;
     /** Enable intent-based automatic early termination. Default: true. */
     autoTerminate?: boolean;

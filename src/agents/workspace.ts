@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { runCommandWithTimeout } from "../process/exec.js";
-import { isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
+import { isA2ASessionKey, isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveWorkspaceTemplateDir } from "./workspace-templates.js";
 
@@ -467,14 +467,28 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
 
 const MINIMAL_BOOTSTRAP_ALLOWLIST = new Set([DEFAULT_AGENTS_FILENAME, DEFAULT_TOOLS_FILENAME]);
 
+// A2A sessions need identity + collaboration context, but NOT heartbeat/boot files
+// which cause agents to respond with HEARTBEAT_OK instead of meaningful replies.
+const A2A_BOOTSTRAP_ALLOWLIST = new Set([
+  DEFAULT_AGENTS_FILENAME,
+  DEFAULT_TOOLS_FILENAME,
+  DEFAULT_IDENTITY_FILENAME,
+]);
+
 export function filterBootstrapFilesForSession(
   files: WorkspaceBootstrapFile[],
   sessionKey?: string,
 ): WorkspaceBootstrapFile[] {
-  if (!sessionKey || (!isSubagentSessionKey(sessionKey) && !isCronSessionKey(sessionKey))) {
+  if (!sessionKey) {
     return files;
   }
-  return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
+  if (isA2ASessionKey(sessionKey)) {
+    return files.filter((file) => A2A_BOOTSTRAP_ALLOWLIST.has(file.name));
+  }
+  if (isSubagentSessionKey(sessionKey) || isCronSessionKey(sessionKey)) {
+    return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
+  }
+  return files;
 }
 
 export async function loadExtraBootstrapFiles(

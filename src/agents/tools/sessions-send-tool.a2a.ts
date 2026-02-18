@@ -480,7 +480,15 @@ export async function runSessionsSendA2AFlow(params: {
 
     // Conditional announce (Design #4) — skip if no target or no reply
     let announced = false;
-    if (announceTarget && shouldRunAnnounce({ announceTarget, latestReply })) {
+    if (
+      announceTarget &&
+      shouldRunAnnounce({
+        announceTarget,
+        latestReply,
+        requesterSessionKey: params.requesterSessionKey,
+        targetSessionKey: params.targetSessionKey,
+      })
+    ) {
       const announcePrompt = buildAgentToAgentAnnounceContext({
         requesterSessionKey: params.requesterSessionKey,
         requesterChannel: params.requesterChannel,
@@ -547,7 +555,12 @@ export async function runSessionsSendA2AFlow(params: {
         actualTurns,
         earlyTermination,
         terminationReason: terminationReason || undefined,
-        announceSkipped: !shouldRunAnnounce({ announceTarget, latestReply }),
+        announceSkipped: !shouldRunAnnounce({
+          announceTarget,
+          latestReply,
+          requesterSessionKey: params.requesterSessionKey,
+          targetSessionKey: params.targetSessionKey,
+        }),
         ...sharedContext,
       },
     });

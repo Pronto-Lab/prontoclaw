@@ -16,7 +16,11 @@ import { resolveChannelCapabilities } from "../../config/channel-capabilities.js
 import { getMachineDisplayName } from "../../infra/machine-name.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { type enqueueCommand, enqueueCommandInLane } from "../../process/command-queue.js";
-import { isCronSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
+import {
+  isA2ASessionKey,
+  isCronSessionKey,
+  isSubagentSessionKey,
+} from "../../routing/session-key.js";
 import { resolveSignalReactionLevel } from "../../signal/reaction-level.js";
 import { resolveTelegramInlineButtonsScope } from "../../telegram/inline-buttons.js";
 import { resolveTelegramReactionLevel } from "../../telegram/reaction-level.js";
@@ -463,7 +467,9 @@ export async function compactEmbeddedPiSessionDirect(
     });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
     const promptMode =
-      isSubagentSessionKey(params.sessionKey) || isCronSessionKey(params.sessionKey)
+      isSubagentSessionKey(params.sessionKey) ||
+      isCronSessionKey(params.sessionKey) ||
+      isA2ASessionKey(params.sessionKey)
         ? "minimal"
         : "full";
     const docsPath = await resolveOpenClawDocsPath({

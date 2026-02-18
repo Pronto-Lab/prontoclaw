@@ -11,6 +11,7 @@ import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import {
+  isA2ASessionKey,
   isCronSessionKey,
   isSubagentSessionKey,
   normalizeAgentId,
@@ -415,7 +416,9 @@ export async function runEmbeddedAttempt(
     });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
     const promptMode =
-      isSubagentSessionKey(params.sessionKey) || isCronSessionKey(params.sessionKey)
+      isSubagentSessionKey(params.sessionKey) ||
+      isCronSessionKey(params.sessionKey) ||
+      isA2ASessionKey(params.sessionKey)
         ? "minimal"
         : "full";
     const docsPath = await resolveOpenClawDocsPath({

@@ -11,8 +11,8 @@ import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 
 const ANNOUNCE_SKIP_TOKEN = "ANNOUNCE_SKIP";
 const REPLY_SKIP_TOKEN = "REPLY_SKIP";
-const DEFAULT_PING_PONG_TURNS = 5;
-const MAX_PING_PONG_TURNS = 10;
+const DEFAULT_PING_PONG_TURNS = 30;
+const MAX_PING_PONG_TURNS = 30;
 
 export type AnnounceTarget = {
   channel: string;
@@ -198,6 +198,12 @@ export function buildAgentToAgentMessageContext(params: {
     params.requesterContextSummary && params.requesterContextSummary.trim()
       ? params.requesterContextSummary
       : undefined,
+    "",
+    "**IMPORTANT**: This is an internal agent-to-agent conversation.",
+    "- Use ONLY sessions_send to communicate with other agents.",
+    "- NEVER use the message tool to send messages to Discord, Telegram, Slack, or any external channel for agent-to-agent communication.",
+    "- If sessions_send times out or fails, report the failure — do NOT fall back to external messaging channels (Discord DM, etc.).",
+    "- Do NOT mention or ping other agents on external channels.",
   ].filter(Boolean);
   return lines.join("\n");
 }
@@ -242,10 +248,15 @@ export function buildAgentToAgentReplyContext(params: {
     "",
     "### Guidelines",
     "- Be concise and focused on the topic",
-    "- If you have nothing substantive to add, reply exactly: REPLY_SKIP",
+    "- If the other agent asked you questions, you MUST answer them — do NOT skip",
+    "- If the other agent proposed something, share your opinion or build on it",
     "- Do NOT repeat what has already been said",
+    "- Only reply REPLY_SKIP when there is genuinely nothing left to discuss (no open questions, no unresolved points)",
+    "- **NEVER use the message tool to send messages to Discord, Telegram, or any external channel during this conversation**",
+    "- **NEVER mention or ping other agents on external channels — this is an internal conversation**",
+    "- If sessions_send times out or fails, do NOT fall back to external messaging channels",
     "",
-    `To end the conversation, reply exactly "${REPLY_SKIP_TOKEN}".`,
+    `To end the conversation when fully resolved, reply exactly "${REPLY_SKIP_TOKEN}".`,
   ].filter(Boolean);
   return lines.join("\n");
 }
@@ -277,6 +288,7 @@ export function buildAgentToAgentAnnounceContext(params: {
     `If you want to remain silent, reply exactly "${ANNOUNCE_SKIP_TOKEN}".`,
     "Any other reply will be posted to the target channel.",
     "After this reply, the agent-to-agent conversation is over.",
+    "**IMPORTANT: Do NOT use the message tool to send messages to Discord or other external channels.**",
   ].filter(Boolean);
   return lines.join("\n");
 }
