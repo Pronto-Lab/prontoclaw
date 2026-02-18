@@ -6,7 +6,7 @@
 ## 개요
 
 에이전트 간 비동기 통신(A2A) 시스템의 설계 및 구현 문서입니다.
-4개의 핵심 설계와 E2E 테스트 결과를 포함합니다.
+4개의 핵심 설계와 E2E 테스트 결과, 그리고 Task-Hub 협업 허브 구현을 포함합니다.
 
 ## 문서 목록
 
@@ -18,6 +18,12 @@
 | [Task-Monitor 실시간성](./task-monitor-realtime.md) | EventCache, MongoDB 동기화, WS 강화         | ✅ 완료 |
 | [재시도 및 에러 복구](./retry-error-recovery.md)    | 에러 분류 체계, 재시도 전략, CircuitBreaker | ✅ 완료 |
 | [핑퐁 최적화](./pingpong-optimization.md)           | 턴 제어, 응답 품질, 의도 분류               | ✅ 완료 |
+
+### 협업 허브 (Phase 9)
+
+| 문서                                        | 설명                                         | 상태    |
+| ------------------------------------------- | -------------------------------------------- | ------- |
+| [Collaboration Hub](./collaboration-hub.md) | 에이전트 지시, 팀 메시징, 대화 개입, AI 요약 | ✅ 완료 |
 
 ### 테스트
 
@@ -46,7 +52,12 @@ graph TB
 
     subgraph TH["Task-Hub (:3102)"]
         CV[Conversations View]
+        MI[MessageInput]
+        SP[SummaryPanel]
         SSE[SSE Bridge]
+        AS[Agent Send API]
+        TS[Team Send API]
+        SUM[Summarize API]
     end
 
     SS --> A2A
@@ -59,6 +70,13 @@ graph TB
     WS -->|bridge| SSE
     SSE --> CV
     API -->|query| MDB
+    MI -->|POST| AS
+    MI -->|POST| TS
+    AS -->|sessions_send| SS
+    TS -->|sessions_send ×N| SS
+    SP -->|POST| SUM
+    SUM -->|fetch| API
+    SUM -->|stream| SP
 ```
 
 ## 관련 문서
