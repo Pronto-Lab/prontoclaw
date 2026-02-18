@@ -2800,12 +2800,26 @@ function setupWebSocket(server: http.Server): WebSocketServer {
   const watcher = chokidar.watch(watchPaths, {
     ignoreInitial: true,
     persistent: true,
-    awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
+    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+    ignored: [
+      // Lock files cause rapid add/unlink storms (15 agents x heartbeat cycle)
+      // that saturate the event loop and hang the HTTP server.
+      /continuation_[^/]+\.lock$/,
+      /\.lock$/,
+      // OS junk
+      /(^|[/\\])\../, // dotfiles
+      /node_modules/,
+    ],
   });
 
   watcher.on("all", (event, filePath) => {
     const relativePath = path.relative(OPENCLAW_DIR, filePath);
     const basename = path.basename(filePath);
+
+    // Skip lock files — defense in depth (also excluded via chokidar ignored)
+    if (basename.endsWith(".lock")) {
+      return;
+    }
 
     // Handle global (non-workspace) files first
     const isTeamState = basename === "team-state.json";
