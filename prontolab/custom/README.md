@@ -29,3 +29,4 @@ Included:
 - [09-coordination-invariants-tests.md](./improvements/09-coordination-invariants-tests.md) — 조정 불변성 테스트
 - [10-cross-plane-unification.md](./improvements/10-cross-plane-unification.md) — 크로스 플레인 통합
 - [11-subagent-task-lifecycle.md](./improvements/11-subagent-task-lifecycle.md) — 서브에이전트-Task 통합 라이프사이클
+- [12-task-enforcement-bypass.md](./improvements/12-task-enforcement-bypass.md) — Task Enforcement Bypass (stale task file 우회 + A2A 프롬프트 공백)

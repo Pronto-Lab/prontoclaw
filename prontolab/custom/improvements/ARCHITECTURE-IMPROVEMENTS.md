@@ -36,6 +36,7 @@
 | 9 | 조정 불변량 테스트 스위트 | 🟡 중간 | L (1-2일) | 🟡 중간 | [09-coordination-invariants-tests.md](./09-coordination-invariants-tests.md) |
 | 10 | Discord A2A 크로스플레인 통합 | 🟢 낮음 | M-L (1-2일) | 🟢 낮음 | [10-cross-plane-unification.md](./10-cross-plane-unification.md) |
 | 11 | 서브에이전트-Task 통합 라이프사이클 | 🔴 높음 | XL (3일+) | 🔴 높음 | [11-subagent-task-lifecycle.md](./11-subagent-task-lifecycle.md) |
+| 12 | Task Enforcement Bypass | 🔴 높음 | M (1일) | 🔴 높음 | [12-task-enforcement-bypass.md](./12-task-enforcement-bypass.md) |
 
 **총 노력 추정**: XL (전체 클린하게 수행 시 약 4-5주)
 
@@ -56,6 +57,7 @@ graph TD
     I9["#9 조정 테스트<br/>(L, 🟡)"]
     I10["#10 크로스플레인 통합<br/>(M-L, 🟢)"]
     I11["#11 서브에이전트-Task 통합<br/>(XL, 🔴)"]
+    I12["#12 Task Enforcement Bypass<br/>(M, 🔴)"]
 
     I1 -->|"인덱스 활용"| I2
     I5 -->|"서비스 구조 필요"| I6
@@ -70,12 +72,15 @@ graph TD
     I11 -->|"페이로드 포함"| I8
     I11 -->|"불변량 추가"| I9
     I11 -->|"내구성 보존"| I2
+    I12 -->|"정확한 task 상태"| I11
+    I12 -->|"불변량 추가"| I9
+    I12 -->|"continuation 정확도"| I4
 
     classDef high fill:#ff6b6b,stroke:#c92a2a,color:#fff
     classDef medium fill:#ffd43b,stroke:#f59f00,color:#000
     classDef low fill:#69db7c,stroke:#2b8a3e,color:#000
 
-    class I1,I2,I11 high
+    class I1,I2,I11,I12 high
     class I3,I4,I5,I6,I7,I9 medium
     class I8,I10 low
 ```
@@ -95,6 +100,7 @@ graph TD
 | #9 조정 테스트 | #2, #7 (테스트 대상) | 없음 |
 | #10 크로스플레인 | #1, #8 (기반) | 없음 |
 | #11 서브에이전트-Task 통합 | 없음 (독립) | #2 (내구성), #4 (상태머신), #8 (페이로드), #9 (테스트) |
+| #12 Task Enforcement Bypass | 없음 (독립) | #4 (continuation 정확도), #9 (불변량), #11 (task 상태 정확도) |
 
 ---
 
