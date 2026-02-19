@@ -36,7 +36,7 @@
 | 9 | 조정 불변량 테스트 스위트 | 🟡 중간 | L (1-2일) | 🟡 중간 | [09-coordination-invariants-tests.md](./09-coordination-invariants-tests.md) |
 | 10 | Discord A2A 크로스플레인 통합 | 🟢 낮음 | M-L (1-2일) | 🟢 낮음 | [10-cross-plane-unification.md](./10-cross-plane-unification.md) |
 | 11 | 서브에이전트-Task 통합 라이프사이클 | 🔴 높음 | XL (3일+) | 🔴 높음 | [11-subagent-task-lifecycle.md](./11-subagent-task-lifecycle.md) |
-| 12 | Task Enforcement Bypass | 🔴 높음 | M (1일) | 🔴 높음 | [12-task-enforcement-bypass.md](./12-task-enforcement-bypass.md) |
+| 12 | Task Enforcement Bypass 수정 | 🔴 높음 | M (0.5-1일) | 🔴 높음 | [12-task-enforcement-bypass.md](./12-task-enforcement-bypass.md) || 12 | Task Enforcement Bypass | 🔴 높음 | M (1일) | 🔴 높음 | [12-task-enforcement-bypass.md](./12-task-enforcement-bypass.md) |
 
 **총 노력 추정**: XL (전체 클린하게 수행 시 약 4-5주)
 

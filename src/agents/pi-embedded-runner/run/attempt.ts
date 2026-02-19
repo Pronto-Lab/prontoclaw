@@ -11,8 +11,6 @@ import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import {
-  isA2ASessionKey,
-  isCronSessionKey,
   isSubagentSessionKey,
   normalizeAgentId,
 } from "../../../routing/session-key.js";
@@ -423,12 +421,9 @@ export async function runEmbeddedAttempt(
       },
     });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
-    const promptMode =
-      isSubagentSessionKey(params.sessionKey) ||
-      isCronSessionKey(params.sessionKey) ||
-      isA2ASessionKey(params.sessionKey)
-        ? "minimal"
-        : "full";
+    // Only subagent sessions get "minimal" promptMode (they lack task tools).
+    // A2A and cron sessions have task tools and need task tracking instructions.
+    const promptMode = isSubagentSessionKey(params.sessionKey) ? "minimal" : "full";
     const docsPath = await resolveOpenClawDocsPath({
       workspaceDir: effectiveWorkspace,
       argv1: process.argv[1],

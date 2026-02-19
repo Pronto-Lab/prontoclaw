@@ -196,11 +196,32 @@ function normalizeSafeText(value?: string | null): string | undefined {
   return maskConversationTitleOrPreview(normalized);
 }
 
+function deriveDeterministicTitleSource(
+  entry: SessionEntry | undefined,
+  firstUserMessage?: string | null,
+): string | undefined {
+  if (entry?.displayName?.trim()) {
+    return entry.displayName.trim();
+  }
+
+  if (entry?.subject?.trim()) {
+    return entry.subject.trim();
+  }
+
+  if (firstUserMessage?.trim()) {
+    const normalized = firstUserMessage.replace(/\s+/g, " ").trim();
+    return truncateTitle(normalized, DERIVED_TITLE_MAX_LEN);
+  }
+
+  return undefined;
+}
+
 export function deriveDeterministicSessionTitle(
   entry: SessionEntry | undefined,
   firstUserMessage?: string | null,
 ): string {
-  return normalizeSafeText(deriveSessionTitle(entry, firstUserMessage)) ?? SESSION_TITLE_FALLBACK;
+  return normalizeSafeText(deriveDeterministicTitleSource(entry, firstUserMessage)) ??
+    SESSION_TITLE_FALLBACK;
 }
 
 export function deriveDeterministicSessionPreview(params: {

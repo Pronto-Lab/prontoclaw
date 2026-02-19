@@ -4,8 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_MAX_CONCURRENT,
   DEFAULT_SUBAGENT_MAX_CONCURRENT,
+  DEFAULT_A2A_MAX_CONCURRENT_FLOWS,
+  DEFAULT_A2A_QUEUE_TIMEOUT_MS,
   resolveAgentMaxConcurrent,
   resolveSubagentMaxConcurrent,
+  resolveA2AConcurrencyConfig,
 } from "./agent-limits.js";
 import { loadConfig } from "./config.js";
 import { withTempHome } from "./test-helpers.js";
@@ -60,6 +63,95 @@ describe("agent concurrency defaults", () => {
 
       expect(cfg.agents?.defaults?.maxConcurrent).toBe(DEFAULT_AGENT_MAX_CONCURRENT);
       expect(cfg.agents?.defaults?.subagents?.maxConcurrent).toBe(DEFAULT_SUBAGENT_MAX_CONCURRENT);
+    });
+  });
+
+  // ─── A2A Concurrency Config ───
+
+  describe("resolveA2AConcurrencyConfig", () => {
+    it("resolves defaults when unset", () => {
+      const result = resolveA2AConcurrencyConfig({});
+      expect(result.maxConcurrentFlows).toBe(DEFAULT_A2A_MAX_CONCURRENT_FLOWS);
+      expect(result.queueTimeoutMs).toBe(DEFAULT_A2A_QUEUE_TIMEOUT_MS);
+    });
+
+    it("resolves defaults when a2aConcurrency is undefined", () => {
+      const cfg = { agents: { defaults: {} } };
+      const result = resolveA2AConcurrencyConfig(cfg);
+      expect(result.maxConcurrentFlows).toBe(3);
+      expect(result.queueTimeoutMs).toBe(30_000);
+    });
+
+    it("accepts valid custom values", () => {
+      const cfg = {
+        agents: {
+          defaults: {
+            a2aConcurrency: {
+              maxConcurrentFlows: 5,
+              queueTimeoutMs: 60_000,
+            },
+          },
+        },
+      };
+      const result = resolveA2AConcurrencyConfig(cfg);
+      expect(result.maxConcurrentFlows).toBe(5);
+      expect(result.queueTimeoutMs).toBe(60_000);
+    });
+
+    it("clamps maxConcurrentFlows to at least 1", () => {
+      const cfg = {
+        agents: {
+          defaults: {
+            a2aConcurrency: { maxConcurrentFlows: 0 },
+          },
+        },
+      };
+      const result = resolveA2AConcurrencyConfig(cfg);
+      expect(result.maxConcurrentFlows).toBe(1);
+    });
+
+    it("clamps queueTimeoutMs to at least 1000", () => {
+      const cfg = {
+        agents: {
+          defaults: {
+            a2aConcurrency: { queueTimeoutMs: 100 },
+          },
+        },
+      };
+      const result = resolveA2AConcurrencyConfig(cfg);
+      expect(result.queueTimeoutMs).toBe(1000);
+    });
+
+    it("ignores non-numeric values and uses defaults", () => {
+      const cfg = {
+        agents: {
+          defaults: {
+            a2aConcurrency: {
+              maxConcurrentFlows: "invalid" as unknown as number,
+              queueTimeoutMs: NaN,
+            },
+          },
+        },
+      };
+      const result = resolveA2AConcurrencyConfig(cfg);
+      expect(result.maxConcurrentFlows).toBe(DEFAULT_A2A_MAX_CONCURRENT_FLOWS);
+      expect(result.queueTimeoutMs).toBe(DEFAULT_A2A_QUEUE_TIMEOUT_MS);
+    });
+
+    it("floors fractional values", () => {
+      const cfg = {
+        agents: {
+          defaults: {
+            a2aConcurrency: {
+              maxConcurrentFlows: 2.7,
+              queueTimeoutMs: 15_500.9,
+            },
+          },
+        },
+      };
+      const result = resolveA2AConcurrencyConfig(cfg);
+      expect(result.maxConcurrentFlows).toBe(2);
+      expect(result.queueTimeoutMs).toBe(15_500);
     });
   });
 });

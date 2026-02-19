@@ -2,8 +2,15 @@ import { Type } from "@sinclair/typebox";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import type { AnyAgentTool } from "./common.js";
 import { optionalStringEnum } from "../schema/typebox.js";
+import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../agent-scope.js";
+import { loadConfig } from "../../config/config.js";
 import { spawnSubagentDirect } from "../subagent-spawn.js";
 import { jsonResult, readStringParam } from "./common.js";
+import { createDelegation } from "./task-delegation-manager.js";
+import { appendDelegationToTask } from "./task-delegation-persistence.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
+
+const log = createSubsystemLogger("sessions-spawn-tool");
 
 const SessionsSpawnToolSchema = Type.Object({
   task: Type.String(),
@@ -108,6 +115,45 @@ export function createSessionsSpawnTool(opts?: {
           requesterAgentIdOverride: opts?.requesterAgentIdOverride,
         },
       );
+
+      // Wire delegation into task file when taskId is present and spawn succeeded
+      if (
+        taskIdParam &&
+        result.status === "accepted" &&
+        typeof result.runId === "string" &&
+        typeof result.childSessionKey === "string"
+      ) {
+        try {
+          const cfg = loadConfig();
+          const agentId = resolveSessionAgentId({ sessionKey: opts?.agentSessionKey, config: cfg });
+          const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+          const requestedAgentIdNorm = requestedAgentId || "default";
+
+          const { delegation, event } = createDelegation({
+            taskId: taskIdParam,
+            runId: result.runId,
+            targetAgentId: requestedAgentIdNorm,
+            targetSessionKey: result.childSessionKey,
+            task,
+            label: label || undefined,
+          });
+
+          const persisted = await appendDelegationToTask(
+            workspaceDir,
+            taskIdParam,
+            delegation,
+            event,
+          );
+          if (persisted) {
+            log.info?.(
+              `Delegation ${delegation.delegationId} created for task ${taskIdParam} → run ${result.runId}`,
+            );
+          }
+        } catch (err) {
+          // Best-effort: delegation tracking should not break spawn
+          log.error?.(`Failed to create delegation for task ${taskIdParam}: ${String(err)}`);
+        }
+      }
 
       return jsonResult(result);
     },

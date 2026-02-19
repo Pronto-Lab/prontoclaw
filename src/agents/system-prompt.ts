@@ -448,6 +448,14 @@ export function buildAgentSystemPrompt(params: {
           "For a multi-scope request: split into multiple tasks, update each as you progress, and complete each task when done.",
           "Before write/edit/exec, ensure at least one relevant active task exists.",
           "",
+          "## Subagent Delegation Tracking",
+          "When delegating work to subagents via sessions_spawn:",
+          "1. Create a task first with task_start, then pass taskId to sessions_spawn.",
+          "2. The delegation is automatically tracked in the task file.",
+          "3. When the subagent completes, use task_verify to accept or reject the result.",
+          "4. If rejected, use task_verify(action='retry') to re-run, or handle manually.",
+          "5. Complete the task with task_complete after all delegations are settled.",
+          "",
         ]),
     ...(isMinimal
       ? []

@@ -69,6 +69,7 @@ const DEFAULT_SUBAGENT_TOOL_DENY = [
   "task_resume",
   "task_backlog_add",
   "task_pick_backlog",
+  "task_verify",
   "milestone_list",
   "milestone_create",
   "milestone_add_item",

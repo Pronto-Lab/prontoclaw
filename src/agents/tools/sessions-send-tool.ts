@@ -1,10 +1,8 @@
 import { Type } from "@sinclair/typebox";
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { AnyAgentTool } from "./common.js";
 import { loadConfig } from "../../config/config.js";
-import { resolveStateDir } from "../../config/paths.js";
+import { getA2AConversationId } from "../../infra/events/a2a-index.js";
 import { callGateway } from "../../gateway/call.js";
 import {
   isSubagentSessionKey,
@@ -28,8 +26,10 @@ import {
   stripToolMessages,
 } from "./sessions-helpers.js";
 import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
-import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
+import { createAndStartFlow } from "./a2a-job-orchestrator.js";
 import { readCurrentTaskId, readTask } from "./task-tool.js";
+import { parseA2APayload } from "./a2a-payload-parser.js";
+import type { A2APayload } from "./a2a-payload-types.js";
 
 const SessionsSendToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
@@ -42,6 +42,14 @@ const SessionsSendToolSchema = Type.Object({
   depth: Type.Optional(Type.Number({ minimum: 0 })),
   hop: Type.Optional(Type.Number({ minimum: 0 })),
   message: Type.String(),
+  payloadJson: Type.Optional(
+    Type.String({
+      description:
+        "Optional structured payload (JSON). " +
+        "One of: task_delegation, status_report, question, answer. " +
+        "When provided, intent classification is more accurate and events include the payload type.",
+    }),
+  ),
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
 });
 
@@ -67,9 +75,6 @@ function normalizeRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
-const A2A_CONVERSATION_EVENT_TYPES = new Set(["a2a.send", "a2a.response", "a2a.complete"]);
-const A2A_CONVERSATION_ROLE = "conversation.main";
-const A2A_EVENT_LOG_SCAN_LIMIT = 4000;
 const a2aConversationIdCache = new Map<string, string>();
 
 function buildConversationRouteKey(params: {
@@ -85,90 +90,6 @@ function buildConversationRouteKey(params: {
     .toSorted()
     .join("|");
   return `${workSessionId}::${pair}`;
-}
-
-async function readLatestConversationIdFromEventLog(params: {
-  workSessionId: string;
-  requesterAgentId: string;
-  targetAgentId: string;
-}): Promise<string | undefined> {
-  try {
-    const stateDir = resolveStateDir();
-    const logPath = path.join(stateDir, "logs", "coordination-events.ndjson");
-    const raw = await fs.readFile(logPath, "utf-8");
-    const lines = raw.split("\n");
-    const targetPair = [
-      normalizeAgentId(params.requesterAgentId),
-      normalizeAgentId(params.targetAgentId),
-    ]
-      .toSorted()
-      .join("|");
-
-    let scanned = 0;
-    for (let i = lines.length - 1; i >= 0 && scanned < A2A_EVENT_LOG_SCAN_LIMIT; i -= 1) {
-      const line = lines[i]?.trim();
-      if (!line) {
-        continue;
-      }
-      scanned += 1;
-
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const record = normalizeRecord(parsed);
-      if (!record) {
-        continue;
-      }
-
-      const type = normalizeOptionalString(record.type);
-      if (!type || !A2A_CONVERSATION_EVENT_TYPES.has(type)) {
-        continue;
-      }
-
-      const data = normalizeRecord(record.data);
-      if (!data) {
-        continue;
-      }
-
-      const eventRole =
-        normalizeOptionalString(data.eventRole) ?? normalizeOptionalString(record.eventRole);
-      if (eventRole !== A2A_CONVERSATION_ROLE) {
-        continue;
-      }
-
-      const eventWorkSessionId = normalizeOptionalString(data.workSessionId);
-      if (eventWorkSessionId !== params.workSessionId) {
-        continue;
-      }
-
-      const conversationId = normalizeOptionalString(data.conversationId);
-      if (!conversationId) {
-        continue;
-      }
-
-      const fromAgent = normalizeAgentId(
-        normalizeOptionalString(data.fromAgent) ??
-          normalizeOptionalString(data.senderAgentId) ??
-          normalizeOptionalString(record.agentId),
-      );
-      const toAgent = normalizeAgentId(
-        normalizeOptionalString(data.toAgent) ?? normalizeOptionalString(data.targetAgentId),
-      );
-      const pair = [fromAgent, toAgent].toSorted().join("|");
-      if (pair !== targetPair) {
-        continue;
-      }
-
-      return conversationId;
-    }
-  } catch {
-    // Best-effort continuity. If logs are unavailable, fallback to new conversation id.
-  }
-
-  return undefined;
 }
 
 async function resolveA2AConversationId(params: {
@@ -211,12 +132,8 @@ async function resolveA2AConversationId(params: {
     return cached;
   }
 
-  const fromLog = await readLatestConversationIdFromEventLog({
-    workSessionId: params.workSessionId!,
-    requesterAgentId: params.requesterAgentId,
-    targetAgentId: params.targetAgentId,
-  });
-  return cacheConversationId(fromLog);
+  const fromIndex = await getA2AConversationId(routeKey);
+  return cacheConversationId(fromIndex);
 }
 
 async function resolveSendWorkSessionContext(params: {
@@ -280,6 +197,8 @@ export function createSessionsSendTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const message = readStringParam(params, "message", { required: true });
+      const rawPayloadJson = typeof params.payloadJson === "string" ? params.payloadJson.trim() : undefined;
+      const parsedPayload: A2APayload | null = rawPayloadJson ? parseA2APayload(rawPayloadJson) : null;
       const taskIdParam = normalizeOptionalString(readStringParam(params, "taskId"));
       const explicitWorkSessionId = normalizeOptionalString(
         readStringParam(params, "workSessionId"),
@@ -529,6 +448,7 @@ export function createSessionsSendTool(opts?: {
         requesterChannel: opts?.agentChannel,
         targetSessionKey: displayKey,
         config: cfg,
+        payload: parsedPayload,
       });
       const sendParams = {
         message,
@@ -550,10 +470,13 @@ export function createSessionsSendTool(opts?: {
       const maxPingPongTurns = resolvePingPongTurns(cfg);
       const delivery = { status: "pending", mode: "announce" as const };
       const startA2AFlow = (roundOneReply?: string, waitRunId?: string) => {
-        void runSessionsSendA2AFlow({
+        void createAndStartFlow({
+          jobId: runId,
           targetSessionKey: effectiveTargetKey,
           displayKey,
           message,
+          payloadType: parsedPayload?.type,
+          payloadJson: parsedPayload ? rawPayloadJson : undefined,
           announceTimeoutMs,
           maxPingPongTurns,
           requesterSessionKey,
@@ -682,6 +605,7 @@ export function createSessionsSendTool(opts?: {
         workSessionId,
         conversationId,
         delivery,
+        payloadType: parsedPayload?.type,
       });
     },
   };

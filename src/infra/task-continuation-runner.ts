@@ -513,11 +513,28 @@ async function checkAgentForContinuation(
             });
             return true;
           } catch (error) {
-            freshTask.status = "backlog";
-            freshTask.progress.pop();
-            await writeTask(workspaceDir, freshTask);
+            const latestTask = await readTask(workspaceDir, freshTask.id);
 
-            log.warn("Failed to notify agent of backlog pickup", {
+            if (!latestTask) {
+              log.warn("Failed to notify agent of backlog pickup; task already removed", {
+                agentId,
+                taskId: freshTask.id,
+                error: String(error),
+              });
+              return false;
+            }
+
+            if (latestTask.status !== "in_progress") {
+              log.warn("Failed to notify agent of backlog pickup; task state already changed", {
+                agentId,
+                taskId: freshTask.id,
+                latestStatus: latestTask.status,
+                error: String(error),
+              });
+              return false;
+            }
+
+            log.warn("Failed to notify agent of backlog pickup; keeping task in_progress", {
               agentId,
               taskId: freshTask.id,
               error: String(error),

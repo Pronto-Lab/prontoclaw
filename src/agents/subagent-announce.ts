@@ -32,6 +32,9 @@ import {
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
+import { resolveAgentWorkspaceDir } from "./agent-scope.js";
+import { updateDelegation } from "./tools/task-delegation-manager.js";
+import { readDelegationByRunId, updateDelegationInTask } from "./tools/task-delegation-persistence.js";
 
 type ToolResultMessage = {
   role?: unknown;
@@ -793,6 +796,69 @@ export async function runSubagentAnnounceFlow(params: {
     });
 
     // Build instructional message for main agent
+    // Update delegation status in task file when taskId is present
+    if (params.taskId) {
+      try {
+        const requesterAgentIdResolved = toAgent;
+        const cfg = loadConfig();
+        const workDir = resolveAgentWorkspaceDir(cfg, requesterAgentIdResolved);
+        const existingDelegation = await readDelegationByRunId(
+          workDir,
+          params.taskId,
+          params.childRunId,
+        );
+
+        if (existingDelegation) {
+          // Determine target delegation status from outcome
+          const targetStatus =
+            outcome.status === "ok" ? "completed" as const :
+            outcome.status === "timeout" ? "failed" as const :
+            outcome.status === "error" ? "failed" as const :
+            "completed" as const;
+
+          // The delegation may still be in "spawned" state (lifecycle "start"
+          // event is not wired to delegation tracking). Transition through
+          // "running" first if needed, since spawned -> completed is invalid.
+          let current = existingDelegation;
+          if (current.status === "spawned" && targetStatus === "completed") {
+            const runningResult = updateDelegation(current, { status: "running" });
+            if (runningResult.ok) {
+              await updateDelegationInTask(
+                workDir,
+                params.taskId,
+                runningResult.delegation,
+                runningResult.event,
+              );
+              current = runningResult.delegation;
+            }
+          }
+
+          const updateResult = updateDelegation(current, {
+            status: targetStatus,
+            resultSnapshot: reply ? {
+              content: reply.slice(0, 10_000),
+              outcomeStatus: outcome.status,
+            } : undefined,
+            error: outcome.status === "error" ? (outcome.error || "unknown error") : undefined,
+          });
+
+          if (updateResult.ok) {
+            await updateDelegationInTask(
+              workDir,
+              params.taskId,
+              updateResult.delegation,
+              updateResult.event,
+            );
+          }
+        }
+      } catch (delegErr) {
+        // Best-effort: delegation tracking should not break announce flow
+        defaultRuntime.error?.(
+          `Failed to update delegation for task ${params.taskId}: ${String(delegErr)}`,
+        );
+      }
+    }
+
     const announceType = params.announceType ?? "subagent task";
     const taskLabel = params.label || params.task || "task";
     const announceSessionId = childSessionId || "unknown";

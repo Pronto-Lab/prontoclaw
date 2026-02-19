@@ -86,14 +86,38 @@ describe("task-enforcer", () => {
   });
 
   describe("disk recovery", () => {
-    it("recovers state from disk when task files exist", async () => {
+    it("recovers state from disk when task file matches session", async () => {
       vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
-      vi.mocked(fs.readFile).mockResolvedValue("**Status:** in_progress");
+      // Task file has matching session key
+      vi.mocked(fs.readFile).mockResolvedValue(
+        "- **Status:** in_progress\n- **Created By Session:** test-session"
+      );
 
       const result = await taskEnforcerHandler(createEvent("write"), createContext());
 
-      // Should allow because recovered from disk
+      // Should allow because recovered from disk with matching session
       expect(result?.block).not.toBe(true);
+    });
+
+    it("blocks when task file exists but from different session", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      // Task file has DIFFERENT session key
+      vi.mocked(fs.readFile).mockResolvedValue(
+        "- **Status:** in_progress\n- **Created By Session:** old-session"
+      );
+
+      const result = await taskEnforcerHandler(createEvent("write"), createContext());
+      expect(result?.block).toBe(true);
+    });
+
+    it("blocks when task file has no session metadata", async () => {
+      vi.mocked(fs.readdir).mockResolvedValue(["task_abc123.md"] as never);
+      // Legacy task file without session metadata
+      vi.mocked(fs.readFile).mockResolvedValue("- **Status:** in_progress");
+
+      const result = await taskEnforcerHandler(createEvent("write"), createContext());
+      // Should block — legacy files without session metadata don't bypass
+      expect(result?.block).toBe(true);
     });
 
     it("blocks when no task files on disk", async () => {

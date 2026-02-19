@@ -11,6 +11,15 @@ import {
 import { resolveAgentSessionDirs } from "../agents/session-dirs.js";
 import { cleanStaleLockFiles } from "../agents/session-write-lock.js";
 import { resolveStateDir } from "../config/paths.js";
+import { startA2AIndex } from "../infra/events/a2a-index.js";
+import { initA2AConcurrencyGate } from "../agents/a2a-concurrency.js";
+import { resolveA2AConcurrencyConfig } from "../config/agent-limits.js";
+import { initA2AJobManager } from "../agents/tools/a2a-job-manager.js";
+import { A2AJobReaper } from "../agents/tools/a2a-job-reaper.js";
+import { resumeFlows } from "../agents/tools/a2a-job-orchestrator.js";
+import { cleanupStaleTasks } from "../plugins/core-hooks/task-enforcer.js";
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { normalizeAgentId } from "../routing/session-key.js";
 import { startDmRetryScheduler } from "../discord/dm-retry/scheduler.js";
 import { startGmailWatcher } from "../hooks/gmail-watcher.js";
 import {
@@ -47,8 +56,9 @@ export async function startGatewaySidecars(params: {
   logChannels: { info: (msg: string) => void; error: (msg: string) => void };
   logBrowser: { error: (msg: string) => void };
 }) {
+  const stateDir = resolveStateDir(process.env);
+
   try {
-    const stateDir = resolveStateDir(process.env);
     const sessionDirs = await resolveAgentSessionDirs(stateDir);
     for (const sessionsDir of sessionDirs) {
       await cleanStaleLockFiles({
@@ -60,6 +70,51 @@ export async function startGatewaySidecars(params: {
     }
   } catch (err) {
     params.log.warn(`session lock cleanup failed on startup: ${String(err)}`);
+  }
+
+  // Clean up stale task files (in_progress/pending for >24h → abandoned).
+  // Prevents task enforcement bypass via orphaned in-progress tasks.
+  try {
+    const cfg = params.cfg;
+    const agentList = cfg.agents?.list ?? [];
+    const defaultAgentId = resolveDefaultAgentId(cfg);
+    const agentIds = new Set<string>();
+    agentIds.add(normalizeAgentId(defaultAgentId));
+    for (const entry of agentList) {
+      if (entry?.id) agentIds.add(normalizeAgentId(entry.id));
+    }
+    let totalCleaned = 0;
+    for (const agentId of agentIds) {
+      const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+      totalCleaned += await cleanupStaleTasks(workspaceDir, agentId);
+    }
+    if (totalCleaned > 0) {
+      params.log.warn(`cleaned up ${totalCleaned} stale task file(s) on startup`);
+    }
+  } catch (err) {
+    params.log.warn(`stale task cleanup failed on startup: ${String(err)}`);
+  }
+
+  // Start A2A conversation index (O(1) conversationId lookup, replaces NDJSON scan).
+  try {
+    startA2AIndex(stateDir);
+    initA2AConcurrencyGate(resolveA2AConcurrencyConfig(params.cfg));
+
+    // Initialize A2A Job Manager (durable persistence for A2A flows)
+    const jobManager = initA2AJobManager(stateDir);
+    await jobManager.init();
+
+    // Run reaper on startup: abandon stale jobs, reset others for resume
+    const reaper = new A2AJobReaper(jobManager);
+    await reaper.runOnStartup();
+
+    // Resume any PENDING jobs from previous gateway session
+    const resumable = await reaper.getResumableJobs();
+    if (resumable.length > 0) {
+      void resumeFlows(resumable);
+    }
+  } catch (err) {
+    params.log.warn(`a2a subsystem failed to start: ${String(err)}`);
   }
 
   // Start OpenClaw browser control server (unless disabled via config).

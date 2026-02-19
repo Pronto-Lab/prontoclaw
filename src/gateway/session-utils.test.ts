@@ -325,6 +325,16 @@ describe("deterministic title/preview fallback", () => {
     expect(deriveDeterministicSessionTitle(entry, null)).toBe("새 대화");
   });
 
+  test("does not fall back to session id prefix for deterministic title", () => {
+    const entry = {
+      sessionId: "abcd1234-5678-90ef-ghij-klmnopqrstuv",
+      updatedAt: new Date("2026-02-18T00:00:00Z").getTime(),
+      displayName: "   ",
+      subject: "   ",
+    } as SessionEntry;
+    expect(deriveDeterministicSessionTitle(entry, null)).toBe("새 대화");
+  });
+
   test("uses safe preview fallback when no preview inputs exist", () => {
     expect(
       deriveDeterministicSessionPreview({
@@ -518,6 +528,28 @@ describe("listSessionsFromStore search", () => {
   test("applies deterministic title/preview fallback when transcript is missing", () => {
     const store: Record<string, SessionEntry> = {
       "agent:main:empty-session": {
+        updatedAt: Date.now(),
+        displayName: "   ",
+        subject: "   ",
+      } as SessionEntry,
+    };
+
+    const result = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/does-not-exist/sessions.json",
+      store,
+      opts: { includeDerivedTitles: true, includeLastMessage: true },
+    });
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]?.derivedTitle).toBe("새 대화");
+    expect(result.sessions[0]?.lastMessagePreview).toBe("안전 텍스트");
+  });
+
+  test("uses deterministic fallback instead of session id prefix when transcript is missing", () => {
+    const store: Record<string, SessionEntry> = {
+      "agent:main:id-only-session": {
+        sessionId: "abcd1234-5678-90ef-ghij-klmnopqrstuv",
         updatedAt: Date.now(),
         displayName: "   ",
         subject: "   ",

@@ -222,6 +222,56 @@ describe("M4 - isAgentActivelyProcessing (indirect)", () => {
   });
 });
 
+describe("Backlog auto-pick failure handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetAgentStates();
+    mockFindActiveTask.mockResolvedValue(null);
+    mockFindPendingTasks.mockResolvedValue([]);
+    mockFindPendingApprovalTasks.mockResolvedValue([]);
+    mockFindBlockedTasks.mockResolvedValue([]);
+    mockGetQueueSize.mockReturnValue(0);
+  });
+
+  it("keeps task in_progress when backlog pickup notify fails", async () => {
+    const backlogTask = {
+      id: "task_backlog1",
+      status: "backlog",
+      priority: "high",
+      description: "Backlog task",
+      created: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+      lastActivity: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+      progress: ["Added to backlog"],
+    };
+
+    mockFindPickableBacklogTask.mockResolvedValue(backlogTask);
+    mockReadTask
+      .mockResolvedValueOnce(backlogTask)
+      .mockResolvedValueOnce({
+        ...backlogTask,
+        status: "in_progress",
+        progress: [
+          "Added to backlog",
+          "Auto-picked from backlog by continuation runner",
+        ],
+      });
+    mockAgentCommand.mockRejectedValueOnce(new Error("notify failed"));
+
+    const runner = startTaskContinuationRunner({ cfg: testConfig });
+    await runner.checkNow();
+    runner.stop();
+
+    expect(mockWriteTask).toHaveBeenCalledTimes(1);
+    expect(mockWriteTask).toHaveBeenCalledWith(
+      "/workspace/test",
+      expect.objectContaining({
+        id: "task_backlog1",
+        status: "in_progress",
+      }),
+    );
+  });
+});
+
 // Since the zombie tests require mocking node:fs/promises which conflicts with the real fs
 // operations in the file, and since we already tested reassignCount roundtrip in task-tool.pipeline.test.ts,
 // lets focus on what we can test cleanly:

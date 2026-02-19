@@ -10,7 +10,7 @@ import {
   buildAgentToAgentMessageContext,
   resolvePingPongTurns,
 } from "../../agents/tools/sessions-send-helpers.js";
-import { runSessionsSendA2AFlow } from "../../agents/tools/sessions-send-tool.a2a.js";
+import { createAndStartFlow } from "../../agents/tools/a2a-job-orchestrator.js";
 import { resolveChunkMode } from "../../auto-reply/chunk.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { formatInboundEnvelope, resolveEnvelopeFormatOptions } from "../../auto-reply/envelope.js";
@@ -431,7 +431,8 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         const runId =
           typeof response?.runId === "string" && response.runId ? response.runId : idempotencyKey;
 
-        void runSessionsSendA2AFlow({
+        void createAndStartFlow({
+          jobId: runId,
           targetSessionKey,
           displayKey: targetSessionKey,
           message: cleanMessage || text,

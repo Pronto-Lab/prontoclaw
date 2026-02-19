@@ -105,10 +105,21 @@ function getSessionKey(ctx: PluginHookToolContext): string | null {
 /**
  * Check if there are active task files in the workspace's tasks/ directory.
  * This recovers state after gateway restart.
+ *
+ * When sessionKey is provided, only considers task files that were created by that
+ * specific session (via the "Created By Session" metadata field). This prevents
+ * stale task files from previous sessions from bypassing enforcement in new sessions.
+ * Task files without session metadata are ignored (migration period: they will be
+ * cleaned up by stale task cleanup).
  */
-async function hasActiveTaskFiles(workspaceDir: string, agentId?: string): Promise<boolean> {
-  if (agentId) {
-    const cached = getCachedActiveTaskResult(agentId);
+async function hasActiveTaskFiles(
+  workspaceDir: string,
+  agentId?: string,
+  sessionKey?: string,
+): Promise<boolean> {
+  const cacheKey = sessionKey ? `${agentId}:${sessionKey}` : agentId;
+  if (cacheKey) {
+    const cached = getCachedActiveTaskResult(cacheKey);
     if (cached !== null) {
       return cached;
     }
@@ -119,8 +130,8 @@ async function hasActiveTaskFiles(workspaceDir: string, agentId?: string): Promi
     // Check if any task_*.md files exist
     const hasTaskFiles = files.some((f) => f.startsWith("task_") && f.endsWith(".md"));
     if (!hasTaskFiles) {
-      if (agentId) {
-        setCachedActiveTaskResult(agentId, false);
+      if (cacheKey) {
+        setCachedActiveTaskResult(cacheKey, false);
       }
       return false;
     }
@@ -131,27 +142,95 @@ async function hasActiveTaskFiles(workspaceDir: string, agentId?: string): Promi
       }
       try {
         const content = await fs.readFile(path.join(tasksDir, file), "utf-8");
-        if (
+        const isActive =
           content.includes("**Status:** in_progress") ||
           content.includes("**Status:** pending") ||
-          content.includes("**Status:** pending_approval")
-        ) {
-          if (agentId) {
-            setCachedActiveTaskResult(agentId, true);
-          }
-          return true;
+          content.includes("**Status:** pending_approval");
+        if (!isActive) {
+          continue;
         }
+
+        // Session-scoped check: only match files created by this session
+        if (sessionKey) {
+          const sessionMatch = content.match(
+            /\*\*Created By Session:\*\*\s*(.+)/,
+          );
+          if (sessionMatch && sessionMatch[1].trim() === sessionKey) {
+            if (cacheKey) {
+              setCachedActiveTaskResult(cacheKey, true);
+            }
+            return true;
+          }
+          // File has no session metadata or different session — skip
+          continue;
+        }
+
+        // No session key filter — legacy behavior (agent-wide check)
+        if (cacheKey) {
+          setCachedActiveTaskResult(cacheKey, true);
+        }
+        return true;
       } catch {
         continue;
       }
     }
-    if (agentId) {
-      setCachedActiveTaskResult(agentId, false);
+    if (cacheKey) {
+      setCachedActiveTaskResult(cacheKey, false);
     }
     return false;
   } catch {
     return false;
   }
+}
+
+const STALE_TASK_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Clean up stale task files that have been in_progress/pending for longer than
+ * the threshold. Marks them as "abandoned" to prevent enforcement bypass.
+ */
+export async function cleanupStaleTasks(
+  workspaceDir: string,
+  agentId?: string,
+): Promise<number> {
+  const tasksDir = path.join(workspaceDir, "tasks");
+  let cleaned = 0;
+  try {
+    const files = await fs.readdir(tasksDir);
+    const now = Date.now();
+    for (const file of files) {
+      if (!file.startsWith("task_") || !file.endsWith(".md")) {
+        continue;
+      }
+      try {
+        const filePath = path.join(tasksDir, file);
+        const stat = await fs.stat(filePath);
+        if (now - stat.mtimeMs < STALE_TASK_THRESHOLD_MS) {
+          continue;
+        }
+        const content = await fs.readFile(filePath, "utf-8");
+        if (
+          content.includes("**Status:** in_progress") ||
+          content.includes("**Status:** pending")
+        ) {
+          const updated = content
+            .replace("**Status:** in_progress", "**Status:** abandoned")
+            .replace("**Status:** pending", "**Status:** abandoned");
+          await fs.writeFile(filePath, updated, "utf-8");
+          cleaned++;
+          log.info("Cleaned up stale task file", { agentId, file });
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // tasks dir doesn't exist — nothing to clean
+  }
+  if (agentId) {
+    invalidateActiveTaskCache(agentId);
+  }
+  return cleaned;
 }
 
 export async function taskEnforcerHandler(
@@ -215,7 +294,7 @@ export async function taskEnforcerHandler(
       const cfg = loadConfig();
       const workspaceDir = resolveAgentWorkspaceDir(cfg, ctx.agentId);
       if (workspaceDir) {
-        const hasTasksOnDisk = await hasActiveTaskFiles(workspaceDir, ctx.agentId);
+        const hasTasksOnDisk = await hasActiveTaskFiles(workspaceDir, ctx.agentId, ctx.sessionKey);
         if (hasTasksOnDisk) {
           // Recover state: mark session as having an active task
           taskStartedSessions.set(sessionKey, Date.now());

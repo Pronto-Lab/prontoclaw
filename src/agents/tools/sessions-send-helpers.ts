@@ -7,6 +7,8 @@ import { normalizeChannelId as normalizeChatChannelId } from "../../channels/reg
 import { callGateway } from "../../gateway/call.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolveAgentConfig } from "../agent-scope.js";
+import type { A2APayload } from "./a2a-payload-types.js";
+import { buildPayloadSummary } from "./a2a-payload-parser.js";
 import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 
 const ANNOUNCE_SKIP_TOKEN = "ANNOUNCE_SKIP";
@@ -177,6 +179,7 @@ export function buildAgentToAgentMessageContext(params: {
   targetSessionKey: string;
   config?: OpenClawConfig;
   requesterContextSummary?: string;
+  payload?: A2APayload | null;
 }) {
   const requesterAgentId = params.requesterSessionKey
     ? resolveAgentIdFromSessionKey(params.requesterSessionKey)
@@ -195,6 +198,12 @@ export function buildAgentToAgentMessageContext(params: {
       : undefined,
     params.requesterChannel ? `From channel: ${params.requesterChannel}.` : undefined,
     `To: ${targetLabel}, session: ${params.targetSessionKey}.`,
+    params.payload
+      ? `
+--- Structured Payload (${params.payload.type}) ---
+${buildPayloadSummary(params.payload)}
+---`
+      : undefined,
     params.requesterContextSummary && params.requesterContextSummary.trim()
       ? params.requesterContextSummary
       : undefined,

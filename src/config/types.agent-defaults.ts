@@ -267,6 +267,13 @@ export type AgentDefaultsConfig = {
     /** Max concurrent nested (A2A) runs. Default: 8. */
     maxConcurrent?: number;
   };
+  /** A2A concurrency gate settings (per-agent semaphore for A2A ping-pong flows). */
+  a2aConcurrency?: {
+    /** Max concurrent A2A flows per agent. Default: 3. */
+    maxConcurrentFlows?: number;
+    /** Queue timeout in ms for waiting flows. Default: 30000. */
+    queueTimeoutMs?: number;
+  };
   /** Optional sandbox settings for non-main sessions. */
   sandbox?: {
     /** Enable sandboxing for sessions. */

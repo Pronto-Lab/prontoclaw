@@ -5,6 +5,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { emit } from "../../infra/events/bus.js";
 import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { getA2AConcurrencyGate } from "../a2a-concurrency.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import { classifyA2AError, calculateBackoffMs } from "./a2a-error-classification.js";
 import {
@@ -13,6 +14,8 @@ import {
   shouldTerminatePingPong,
   shouldRunAnnounce,
 } from "./a2a-intent-classifier.js";
+import { mapPayloadTypeToMessageIntent } from "./a2a-payload-parser.js";
+import type { A2APayloadType } from "./a2a-payload-types.js";
 import { readLatestAssistantReply, runAgentStep } from "./agent-step.js";
 import { resolveAnnounceTarget } from "./sessions-announce-target.js";
 import {
@@ -116,6 +119,16 @@ export async function runSessionsSendA2AFlow(params: {
   depth?: number;
   hop?: number;
   skipPingPong?: boolean;
+  /** Resume from this turn (0 = start from beginning). Used by A2AJobManager for restart recovery. */
+  startTurn?: number;
+  /** Abort signal — allows external cancellation by A2AJobManager */
+  signal?: AbortSignal;
+  /** Called after each ping-pong turn completes. Used by A2AJobManager to persist progress. */
+  onTurnComplete?: (turn: number) => Promise<void>;
+  /** Structured payload type (when provided by sender). */
+  payloadType?: A2APayloadType;
+  /** Raw structured payload JSON (when provided by sender). */
+  payloadJson?: string;
 }) {
   const conversationId = params.conversationId ?? crypto.randomUUID();
   const runContextId = params.waitRunId ?? "unknown";
@@ -148,11 +161,19 @@ export async function runSessionsSendA2AFlow(params: {
       runId: runContextId,
       conversationId,
       eventRole,
+      payloadType: params.payloadType,
+      payloadJson: params.payloadJson,
       fromSessionType,
       toSessionType,
       ...sharedContext,
     },
   });
+
+  // Acquire concurrency permit for the target agent (throttles if over limit)
+  const concurrencyGate = getA2AConcurrencyGate();
+  if (concurrencyGate) {
+    await concurrencyGate.acquire(toAgent, conversationId);
+  }
 
   try {
     let primaryReply = params.roundOneReply;
@@ -359,7 +380,10 @@ export async function runSessionsSendA2AFlow(params: {
     const targetChannel = announceTarget?.channel ?? "unknown";
 
     // Intent-based ping-pong optimization (Design #4)
-    const intentResult = classifyMessageIntent(params.message);
+    // When a structured payload is present, derive intent directly without LLM inference.
+    const intentResult = params.payloadType
+      ? { intent: mapPayloadTypeToMessageIntent(params.payloadType), suggestedTurns: -1 as number, confidence: 1.0 }
+      : classifyMessageIntent(params.message);
     const effectiveTurns = resolveEffectivePingPongTurns({
       configMaxTurns: params.maxPingPongTurns,
       classifiedIntent: intentResult,
@@ -380,6 +404,12 @@ export async function runSessionsSendA2AFlow(params: {
       let nextSessionKey = params.targetSessionKey;
       let incomingMessage = latestReply;
       for (let turn = 1; turn <= effectiveTurns; turn += 1) {
+        // Abort signal check — external cancellation by A2AJobManager
+        if (params.signal?.aborted) {
+          earlyTermination = true;
+          terminationReason = "aborted";
+          break;
+        }
         const currentRole =
           currentSessionKey === params.requesterSessionKey ? "requester" : "target";
         const previousTurnSummary =
@@ -436,6 +466,18 @@ export async function runSessionsSendA2AFlow(params: {
         }
 
         actualTurns = turn;
+
+        // Notify JobManager of turn progress (for durable persistence)
+        if (params.onTurnComplete) {
+          try {
+            await params.onTurnComplete(turn);
+          } catch (cbErr) {
+            log.debug("onTurnComplete callback error (non-fatal)", {
+              turn,
+              error: cbErr instanceof Error ? cbErr.message : String(cbErr),
+            });
+          }
+        }
 
         // Emit a2a.response event
         const responseFromSessionType = sessionTypeFromSessionKey(currentSessionKey);
@@ -569,5 +611,9 @@ export async function runSessionsSendA2AFlow(params: {
       runId: runContextId,
       error: formatErrorMessage(err),
     });
+  } finally {
+    if (concurrencyGate) {
+      concurrencyGate.release(toAgent, conversationId);
+    }
   }
 }
