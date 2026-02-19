@@ -27,10 +27,10 @@ export interface IntentClassification {
 export function classifyMessageIntent(message: string): IntentClassification {
   // 1. Explicit tags (backward-compatible)
   if (/\[NO_REPLY_NEEDED\]|\[NOTIFICATION\]/i.test(message)) {
-    return { intent: notification, suggestedTurns: 0, confidence: 1.0 };
+    return { intent: "notification", suggestedTurns: 0, confidence: 1.0 };
   }
   if (/\[URGENT\]|\[ESCALATION\]/i.test(message)) {
-    return { intent: escalation, suggestedTurns: 0, confidence: 1.0 };
+    return { intent: "escalation", suggestedTurns: 0, confidence: 1.0 };
   }
 
   // 2. Pattern-based classification (ORDER MATTERS — check broad categories first)
@@ -39,7 +39,7 @@ export function classifyMessageIntent(message: string): IntentClassification {
   if (
     /\[outcome\]|\[result\]|작업.*완료|결과.*보고|분석.*결과|completed|finished|done/i.test(message)
   ) {
-    return { intent: result_report, suggestedTurns: 1, confidence: 0.8 };
+    return { intent: "result_report", suggestedTurns: 1, confidence: 0.8 };
   }
 
   // Collaboration patterns — MUST be checked BEFORE question patterns.
@@ -50,16 +50,16 @@ export function classifyMessageIntent(message: string): IntentClassification {
       message,
     )
   ) {
-    return { intent: collaboration, suggestedTurns: -1, confidence: 0.8 };
+    return { intent: "collaboration", suggestedTurns: -1, confidence: 0.8 };
   }
 
   // Question patterns — simple one-shot questions (not discussions)
   if (/\?$|어떻게|어디에|뭐가|확인.*해줘|알려줘|can you|could you|please/i.test(message)) {
-    return { intent: question, suggestedTurns: 1, confidence: 0.7 };
+    return { intent: "question", suggestedTurns: 1, confidence: 0.7 };
   }
 
   // Default: collaboration (prefer multi-turn — agents can always REPLY_SKIP to end early)
-  return { intent: collaboration, suggestedTurns: -1, confidence: 0.5 };
+  return { intent: "collaboration", suggestedTurns: -1, confidence: 0.5 };
 }
 
 // ---------------------------------------------------------------------------
