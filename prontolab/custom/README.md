@@ -28,3 +28,4 @@ Included:
 - [08-structured-handoff.md](./improvements/08-structured-handoff.md) — 구조화된 핸드오프 프로토콜
 - [09-coordination-invariants-tests.md](./improvements/09-coordination-invariants-tests.md) — 조정 불변성 테스트
 - [10-cross-plane-unification.md](./improvements/10-cross-plane-unification.md) — 크로스 플레인 통합
+- [11-subagent-task-lifecycle.md](./improvements/11-subagent-task-lifecycle.md) — 서브에이전트-Task 통합 라이프사이클
