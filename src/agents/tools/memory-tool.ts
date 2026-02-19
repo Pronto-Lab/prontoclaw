@@ -186,6 +186,7 @@ export function createMemorySearchTool(options: {
           mode: citationsMode,
           sessionKey: options.agentSessionKey,
         });
+        let searchMode: string | undefined;
         for (const targetId of targetIds) {
           const { manager, error } = await getMemorySearchManager({
             cfg,
@@ -207,6 +208,10 @@ export function createMemorySearchTool(options: {
               model: status.model,
               fallback: status.fallback,
             };
+          }
+          const statusCustom = status.custom as { searchMode?: string } | undefined;
+          if (!searchMode && statusCustom?.searchMode) {
+            searchMode = statusCustom.searchMode;
           }
           const decorated = decorateCitations(rawResults, includeCitations);
           const resolved = resolveMemoryBackendConfig({ cfg, agentId: targetId });
@@ -234,6 +239,7 @@ export function createMemorySearchTool(options: {
           results: limited,
           ...firstStatus,
           citations: citationsMode,
+          mode: searchMode,
           ...(errors.length > 0 ? { errors } : {}),
         });
       } catch (err) {

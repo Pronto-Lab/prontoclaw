@@ -1,6 +1,7 @@
 import type { ChannelOutboundAdapter, ChannelOutboundContext } from "../types.js";
 import { sendMessageDiscord, sendPollDiscord } from "../../../discord/send.js";
 import { sendDiscordWebhook } from "../../../discord/send.webhook.js";
+import { normalizeDiscordOutboundTarget } from "../normalize/discord.js";
 
 function resolveAgentWebhook(ctx: ChannelOutboundContext): {
   webhookUrl: string;
@@ -32,6 +33,7 @@ export const discordOutbound: ChannelOutboundAdapter = {
   chunker: null,
   textChunkLimit: 2000,
   pollMaxOptions: 10,
+  resolveTarget: ({ to }) => normalizeDiscordOutboundTarget(to),
   sendText: async (ctx) => {
     const { to, text, accountId, deps, replyToId, silent } = ctx;
 
@@ -44,7 +46,6 @@ export const discordOutbound: ChannelOutboundAdapter = {
       });
       return { channel: "discord", ...result };
     }
-
     const send = deps?.sendDiscord ?? sendMessageDiscord;
     const result = await send(to, text, {
       verbose: false,

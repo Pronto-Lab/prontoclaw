@@ -26,6 +26,7 @@ vi.mock("../agent-scope.js", () => ({
       allowAgents: ["*"],
     },
   })),
+  resolveAgentModelPrimary: vi.fn(() => undefined),
   resolveAgentWorkspaceDir: vi.fn(() => "/tmp/workspace-planner"),
 }));
 
@@ -39,6 +40,7 @@ vi.mock("../subagent-announce.js", () => ({
 
 const mockRegisterSubagentRun = vi.fn();
 vi.mock("../subagent-registry.js", () => ({
+  countActiveRunsForSession: vi.fn().mockReturnValue(0),
   registerSubagentRun: (...args: unknown[]) => mockRegisterSubagentRun(...args),
 }));
 
@@ -55,7 +57,9 @@ describe("sessions_spawn collaboration events", () => {
   });
 
   it("emits spawn + send + spawn_result(accepted) with shared conversationId", async () => {
-    mockCallGateway.mockResolvedValueOnce({ runId: "run-123" });
+    mockCallGateway.mockImplementation(async (request: { method?: string }) =>
+      request?.method === "agent" ? { runId: "run-123" } : {},
+    );
 
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:planner:main",
@@ -127,7 +131,12 @@ describe("sessions_spawn collaboration events", () => {
   });
 
   it("emits spawn_result(error) when child run dispatch fails", async () => {
-    mockCallGateway.mockRejectedValueOnce(new Error("gateway unavailable"));
+    mockCallGateway.mockImplementation(async (request: { method?: string }) => {
+      if (request?.method === "agent") {
+        throw new Error("gateway unavailable");
+      }
+      return {};
+    });
 
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:planner:main",

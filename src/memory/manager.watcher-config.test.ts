@@ -2,10 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MemoryIndexManager } from "./index.js";
-
-type GetMemorySearchManager = typeof import("./index.js").getMemorySearchManager;
-type TestCfg = Parameters<GetMemorySearchManager>[0]["cfg"];
+import type { OpenClawConfig } from "../config/config.js";
+import { getMemorySearchManager, type MemoryIndexManager } from "./index.js";
 
 const { watchMock } = vi.hoisted(() => ({
   watchMock: vi.fn(() => ({
@@ -54,7 +52,6 @@ describe("memory watcher config", () => {
   });
 
   it("watches markdown globs and ignores dependency directories", async () => {
-    const { getMemorySearchManager } = await import("./index.js");
     workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-watch-"));
     extraDir = path.join(workspaceDir, "extra");
     await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
@@ -76,25 +73,26 @@ describe("memory watcher config", () => {
         },
         list: [{ id: "main", default: true }],
       },
-    } satisfies TestCfg;
+    } as OpenClawConfig;
 
     const result = await getMemorySearchManager({ cfg, agentId: "main" });
     expect(result.manager).not.toBeNull();
     if (!result.manager) {
       throw new Error("manager missing");
     }
-    manager = result.manager as MemoryIndexManager;
+    manager = result.manager as unknown as MemoryIndexManager;
 
     expect(watchMock).toHaveBeenCalledTimes(1);
-    const call = watchMock.mock.calls[0] as unknown;
-    const [watchedPaths, options] = call as [string[], Record<string, unknown>];
+    const [watchedPaths, options] = watchMock.mock.calls[0] as unknown as [
+      string[],
+      Record<string, unknown>,
+    ];
     expect(watchedPaths).toEqual(
       expect.arrayContaining([
         path.join(workspaceDir, "MEMORY.md"),
         path.join(workspaceDir, "memory.md"),
-        path.join(workspaceDir, "memory"),
-        path.join(workspaceDir, "task-history"),
-        extraDir,
+        path.join(workspaceDir, "memory", "**", "*.md"),
+        path.join(extraDir, "**", "*.md"),
       ]),
     );
     expect(options.ignoreInitial).toBe(true);
