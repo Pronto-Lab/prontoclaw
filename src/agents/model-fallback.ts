@@ -271,6 +271,8 @@ export async function runWithModelFallback<T>(params: {
   const attempts: FallbackAttempt[] = [];
   let lastError: unknown;
 
+  const hasFallbackCandidates = candidates.length > 1;
+
   for (let i = 0; i < candidates.length; i += 1) {
     const candidate = candidates[i];
     if (authStore) {
@@ -285,7 +287,7 @@ export async function runWithModelFallback<T>(params: {
         // All profiles for this provider are in cooldown.
         // However, cooldown may have been caused by a specific model family
         // (e.g., Claude 429). If this candidate is a *different* model family,
-        // the quota might be independent — allow the attempt instead of skipping.
+        // the quota might be independent - allow the attempt instead of skipping.
         const candidateFamily = extractModelFamily(candidate.model);
         const failedFamilies = attempts
           .filter((a) => a.provider === candidate.provider && a.reason === "rate_limit")
@@ -294,17 +296,32 @@ export async function runWithModelFallback<T>(params: {
           failedFamilies.length > 0 && failedFamilies.includes(candidateFamily);
 
         if (isSameFamilyAsFailed || failedFamilies.length === 0) {
-          // Same model family as a previous rate-limited failure, or no prior
-          // rate-limit failures recorded (cooldown from a previous session) — skip.
-          attempts.push({
-            provider: candidate.provider,
-            model: candidate.model,
-            error: `Provider ${candidate.provider} is in cooldown (all profiles unavailable)`,
-            reason: "rate_limit",
+          // Same model family or no prior rate-limit failures.
+          // Probe primary model if cooldown expiry is close.
+          const now = Date.now();
+          const probeThrottleKey = resolveProbeThrottleKey(candidate.provider, params.agentDir);
+          const shouldProbe = shouldProbePrimaryDuringCooldown({
+            isPrimary: i === 0,
+            hasFallbackCandidates,
+            now,
+            throttleKey: probeThrottleKey,
+            authStore,
+            profileIds,
           });
-          continue;
+          if (!shouldProbe) {
+            // Skip without attempting
+            attempts.push({
+              provider: candidate.provider,
+              model: candidate.model,
+              error: `Provider ${candidate.provider} is in cooldown (all profiles unavailable)`,
+              reason: "rate_limit",
+            });
+            continue;
+          }
+          // Primary model probe: attempt despite cooldown to detect recovery.
+          lastProbeAttempt.set(probeThrottleKey, now);
         }
-        // Different model family — cooldown likely doesn't apply; attempt anyway.
+        // Different model family - cooldown likely does not apply; attempt anyway.
       }
     }
     const isCrossFamilyAttempt =

@@ -234,6 +234,7 @@ export function createMemorySearchTool(options: {
           results: limited,
           ...firstStatus,
           citations: citationsMode,
+          mode: searchMode,
           ...(errors.length > 0 ? { errors } : {}),
         });
       } catch (err) {
