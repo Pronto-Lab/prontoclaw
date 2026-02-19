@@ -2,9 +2,15 @@ import crypto from "node:crypto";
 import { formatThinkingLevels, normalizeThinkLevel } from "../auto-reply/thinking.js";
 import { loadConfig } from "../config/config.js";
 import { callGateway } from "../gateway/call.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import { emit } from "../infra/events/bus.js";
+import { EVENT_TYPES } from "../infra/events/schemas.js";
+import {
+  isSubagentSessionKey,
+  normalizeAgentId,
+  parseAgentSessionKey,
+} from "../routing/session-key.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
-import { resolveAgentConfig } from "./agent-scope.js";
+import { resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveDefaultModelForAgent } from "./model-selection.js";
 import { buildSubagentSystemPrompt } from "./subagent-announce.js";
@@ -16,6 +22,7 @@ import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
 } from "./tools/sessions-helpers.js";
+import { readCurrentTaskId, readTask } from "./tools/task-tool.js";
 
 export type SpawnSubagentParams = {
   task: string;
@@ -26,6 +33,11 @@ export type SpawnSubagentParams = {
   runTimeoutSeconds?: number;
   cleanup?: "delete" | "keep";
   expectsCompletionMessage?: boolean;
+  taskId?: string;
+  workSessionId?: string;
+  parentConversationId?: string;
+  depth?: number;
+  hop?: number;
 };
 
 export type SpawnSubagentContext = {
@@ -51,6 +63,10 @@ export type SpawnSubagentResult = {
   modelApplied?: boolean;
   warning?: string;
   error?: string;
+  conversationId?: string;
+  taskId?: string;
+  workSessionId?: string;
+  replyPreview?: string;
 };
 
 export function splitModelRef(ref?: string) {
@@ -66,6 +82,53 @@ export function splitModelRef(ref?: string) {
     return { provider, model };
   }
   return { provider: undefined, model: trimmed };
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function normalizeNonNegativeInt(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.floor(value);
+}
+
+async function resolveSpawnWorkSessionContext(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  requesterAgentId: string;
+  requestedTaskId?: string;
+  explicitWorkSessionId?: string;
+}): Promise<{ workSessionId: string; taskId?: string }> {
+  const explicitWorkSessionId = normalizeOptionalString(params.explicitWorkSessionId);
+  let taskId = normalizeOptionalString(params.requestedTaskId);
+  if (explicitWorkSessionId) {
+    return { workSessionId: explicitWorkSessionId, taskId };
+  }
+  const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.requesterAgentId);
+  const readTaskWorkSessionId = async (candidateTaskId?: string): Promise<string | undefined> => {
+    if (!candidateTaskId) return undefined;
+    try {
+      const linkedTask = await readTask(workspaceDir, candidateTaskId);
+      return normalizeOptionalString(linkedTask?.workSessionId);
+    } catch {
+      return undefined;
+    }
+  };
+  const fromRequestedTask = await readTaskWorkSessionId(taskId);
+  if (fromRequestedTask) return { workSessionId: fromRequestedTask, taskId };
+  try {
+    const currentTaskId = await readCurrentTaskId(workspaceDir);
+    if (currentTaskId) {
+      taskId = taskId ?? currentTaskId;
+      const fromCurrentTask = await readTaskWorkSessionId(currentTaskId);
+      if (fromCurrentTask) return { workSessionId: fromCurrentTask, taskId };
+    }
+  } catch {
+    // ignore task context resolution errors
+  }
+  return { workSessionId: `ws_${crypto.randomUUID()}`, taskId };
 }
 
 export function normalizeModelSelection(value: unknown): string | undefined {
@@ -122,6 +185,8 @@ export async function spawnSubagentDirect(
     alias,
     mainKey,
   });
+  const isRequesterSubagentSession =
+    typeof ctx.agentSessionKey === "string" && isSubagentSessionKey(ctx.agentSessionKey);
 
   const callerDepth = getSubagentDepthFromSessionStore(requesterInternalKey, { cfg });
   const maxSpawnDepth = cfg.agents?.defaults?.subagents?.maxSpawnDepth ?? 1;
@@ -164,6 +229,58 @@ export async function spawnSubagentDirect(
   }
   const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`;
   const childDepth = callerDepth + 1;
+  const { workSessionId, taskId } = await resolveSpawnWorkSessionContext({
+    cfg,
+    requesterAgentId,
+    requestedTaskId: normalizeOptionalString(params.taskId),
+    explicitWorkSessionId: normalizeOptionalString(params.workSessionId),
+  });
+  const parentConversationId = normalizeOptionalString(params.parentConversationId);
+  const conversationId = parentConversationId ?? crypto.randomUUID();
+  const depthValue =
+    normalizeNonNegativeInt(params.depth) ?? (isRequesterSubagentSession ? callerDepth : 0);
+  const hopValue = normalizeNonNegativeInt(params.hop) ?? 0;
+  const spawnRequestPreview = task.slice(0, 200);
+
+  emit({
+    type: EVENT_TYPES.A2A_SPAWN,
+    agentId: requesterAgentId,
+    ts: Date.now(),
+    data: {
+      fromAgent: requesterAgentId,
+      toAgent: targetAgentId,
+      targetSessionKey: childSessionKey,
+      message: spawnRequestPreview,
+      replyPreview: spawnRequestPreview,
+      conversationId,
+      parentConversationId,
+      taskId,
+      workSessionId,
+      depth: depthValue,
+      hop: hopValue,
+      label: label || undefined,
+    },
+  });
+
+  emit({
+    type: EVENT_TYPES.A2A_SEND,
+    agentId: requesterAgentId,
+    ts: Date.now(),
+    data: {
+      fromAgent: requesterAgentId,
+      toAgent: targetAgentId,
+      targetSessionKey: childSessionKey,
+      message: spawnRequestPreview,
+      replyPreview: spawnRequestPreview,
+      conversationId,
+      parentConversationId,
+      taskId,
+      workSessionId,
+      depth: depthValue,
+      hop: hopValue,
+    },
+  });
+
   const spawnedByKey = requesterInternalKey;
   const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
   const runtimeDefaultModel = resolveDefaultModelForAgent({
@@ -204,10 +321,33 @@ export async function spawnSubagentDirect(
   } catch (err) {
     const messageText =
       err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+    emit({
+      type: EVENT_TYPES.A2A_SPAWN_RESULT,
+      agentId: requesterAgentId,
+      ts: Date.now(),
+      data: {
+        fromAgent: requesterAgentId,
+        toAgent: targetAgentId,
+        targetSessionKey: childSessionKey,
+        conversationId,
+        parentConversationId,
+        taskId,
+        workSessionId,
+        depth: depthValue,
+        hop: hopValue,
+        status: "error",
+        error: messageText,
+        replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+      },
+    });
     return {
       status: "error",
       error: messageText,
       childSessionKey,
+      conversationId,
+      taskId,
+      workSessionId,
+      replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
     };
   }
 
@@ -225,11 +365,34 @@ export async function spawnSubagentDirect(
       const recoverable =
         messageText.includes("invalid model") || messageText.includes("model not allowed");
       if (!recoverable) {
-        return {
-          status: "error",
-          error: messageText,
-          childSessionKey,
-        };
+        emit({
+      type: EVENT_TYPES.A2A_SPAWN_RESULT,
+      agentId: requesterAgentId,
+      ts: Date.now(),
+      data: {
+        fromAgent: requesterAgentId,
+        toAgent: targetAgentId,
+        targetSessionKey: childSessionKey,
+        conversationId,
+        parentConversationId,
+        taskId,
+        workSessionId,
+        depth: depthValue,
+        hop: hopValue,
+        status: "error",
+        error: messageText,
+        replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+      },
+    });
+    return {
+      status: "error",
+      error: messageText,
+      childSessionKey,
+      conversationId,
+      taskId,
+      workSessionId,
+      replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+    };
       }
       modelWarning = messageText;
     }
@@ -247,11 +410,34 @@ export async function spawnSubagentDirect(
     } catch (err) {
       const messageText =
         err instanceof Error ? err.message : typeof err === "string" ? err : "error";
-      return {
+      emit({
+      type: EVENT_TYPES.A2A_SPAWN_RESULT,
+      agentId: requesterAgentId,
+      ts: Date.now(),
+      data: {
+        fromAgent: requesterAgentId,
+        toAgent: targetAgentId,
+        targetSessionKey: childSessionKey,
+        conversationId,
+        parentConversationId,
+        taskId,
+        workSessionId,
+        depth: depthValue,
+        hop: hopValue,
         status: "error",
         error: messageText,
-        childSessionKey,
-      };
+        replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+      },
+    });
+    return {
+      status: "error",
+      error: messageText,
+      childSessionKey,
+      conversationId,
+      taskId,
+      workSessionId,
+      replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+    };
     }
   }
   const childSystemPrompt = buildSubagentSystemPrompt({
@@ -274,7 +460,7 @@ export async function spawnSubagentDirect(
     const response = await callGateway<{ runId: string }>({
       method: "agent",
       params: {
-        message: childTaskMessage,
+        message: task,
         sessionKey: childSessionKey,
         channel: requesterOrigin?.channel,
         to: requesterOrigin?.to ?? undefined,
@@ -300,11 +486,35 @@ export async function spawnSubagentDirect(
   } catch (err) {
     const messageText =
       err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+    emit({
+      type: EVENT_TYPES.A2A_SPAWN_RESULT,
+      agentId: requesterAgentId,
+      ts: Date.now(),
+      data: {
+        fromAgent: requesterAgentId,
+        toAgent: targetAgentId,
+        targetSessionKey: childSessionKey,
+        conversationId,
+        parentConversationId,
+        taskId,
+        workSessionId,
+        depth: depthValue,
+        hop: hopValue,
+        status: "error",
+        error: messageText,
+        replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
+        runId: childRunId,
+      },
+    });
     return {
       status: "error",
       error: messageText,
       childSessionKey,
       runId: childRunId,
+      conversationId,
+      taskId,
+      workSessionId,
+      replyPreview: `spawn failed: ${messageText}`.slice(0, 200),
     };
   }
 
@@ -320,6 +530,35 @@ export async function spawnSubagentDirect(
     model: resolvedModel,
     runTimeoutSeconds,
     expectsCompletionMessage: params.expectsCompletionMessage === true,
+    conversationId,
+    parentConversationId,
+    taskId,
+    workSessionId,
+    depth: depthValue,
+    hop: hopValue,
+    requesterAgentId,
+    targetAgentId,
+  });
+
+  emit({
+    type: EVENT_TYPES.A2A_SPAWN_RESULT,
+    agentId: requesterAgentId,
+    ts: Date.now(),
+    data: {
+      fromAgent: requesterAgentId,
+      toAgent: targetAgentId,
+      targetSessionKey: childSessionKey,
+      conversationId,
+      parentConversationId,
+      taskId,
+      workSessionId,
+      depth: depthValue,
+      hop: hopValue,
+      runId: childRunId,
+      status: "accepted",
+      label: label || undefined,
+      replyPreview: `spawn accepted · run ${childRunId}`.slice(0, 200),
+    },
   });
 
   return {
@@ -329,5 +568,9 @@ export async function spawnSubagentDirect(
     note: SUBAGENT_SPAWN_ACCEPTED_NOTE,
     modelApplied: resolvedModel ? modelApplied : undefined,
     warning: modelWarning,
+    conversationId,
+    taskId,
+    workSessionId,
+    replyPreview: `spawn accepted · run ${childRunId}`.slice(0, 200),
   };
 }

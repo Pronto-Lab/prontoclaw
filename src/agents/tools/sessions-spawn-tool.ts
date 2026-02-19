@@ -15,6 +15,11 @@ const SessionsSpawnToolSchema = Type.Object({
   // Back-compat: older callers used timeoutSeconds for this tool.
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
   cleanup: optionalStringEnum(["delete", "keep"] as const),
+  taskId: Type.Optional(Type.String()),
+  workSessionId: Type.Optional(Type.String()),
+  parentConversationId: Type.Optional(Type.String()),
+  depth: Type.Optional(Type.Number({ minimum: 0 })),
+  hop: Type.Optional(Type.Number({ minimum: 0 })),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -56,6 +61,24 @@ export function createSessionsSpawnTool(opts?: {
         typeof timeoutSecondsCandidate === "number" && Number.isFinite(timeoutSecondsCandidate)
           ? Math.max(0, Math.floor(timeoutSecondsCandidate))
           : undefined;
+      const taskIdParam =
+        typeof params.taskId === "string" ? params.taskId.trim() || undefined : undefined;
+      const explicitWorkSessionId =
+        typeof params.workSessionId === "string"
+          ? params.workSessionId.trim() || undefined
+          : undefined;
+      const parentConversationId =
+        typeof params.parentConversationId === "string"
+          ? params.parentConversationId.trim() || undefined
+          : undefined;
+      const depth =
+        typeof params.depth === "number" && Number.isFinite(params.depth) && params.depth >= 0
+          ? Math.floor(params.depth)
+          : undefined;
+      const hop =
+        typeof params.hop === "number" && Number.isFinite(params.hop) && params.hop >= 0
+          ? Math.floor(params.hop)
+          : undefined;
 
       const result = await spawnSubagentDirect(
         {
@@ -67,6 +90,11 @@ export function createSessionsSpawnTool(opts?: {
           runTimeoutSeconds,
           cleanup,
           expectsCompletionMessage: true,
+          taskId: taskIdParam,
+          workSessionId: explicitWorkSessionId,
+          parentConversationId,
+          depth,
+          hop,
         },
         {
           agentSessionKey: opts?.agentSessionKey,
