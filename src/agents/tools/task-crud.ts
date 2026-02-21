@@ -1,6 +1,5 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
-import type { AnyAgentTool } from "./common.js";
 import { emit } from "../../infra/events/bus.js";
 import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { retryAsync } from "../../infra/retry.js";
@@ -8,6 +7,7 @@ import { acquireTaskLock } from "../../infra/task-lock.js";
 import { disableAgentManagedMode, enableAgentManagedMode } from "../../infra/task-tracker.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId, listAgentIds } from "../agent-scope.js";
+import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
   type TaskFile,
@@ -27,7 +27,6 @@ import {
   hasActiveTasks,
 } from "./task-file-io.js";
 import { checkStopGuard } from "./task-stop-guard.js";
-import { summarizeStepCounts } from "./task-steps.js";
 
 const log = createSubsystemLogger("task-tool");
 const TaskStartSchema = Type.Object({
@@ -874,7 +873,6 @@ export function createTaskCancelTool(options: {
           disableAgentManagedMode(agentId);
         }
 
-        // Reverse-sync: update milestone item to "done" if linked
         if (task.milestoneId && task.milestoneItemId) {
           const hubUrl = process.env.TASK_HUB_URL || "http://localhost:3102";
           try {
@@ -888,7 +886,7 @@ export function createTaskCancelTool(options: {
                       "Content-Type": "application/json",
                       Cookie: "task-hub-session=authenticated",
                     },
-                    body: JSON.stringify({ status: "done" }),
+                    body: JSON.stringify({ status: "cancelled" }),
                   },
                 );
                 if (!resp.ok) {
