@@ -15,7 +15,36 @@ vi.mock("../../infra/events/schemas.js", () => ({
     A2A_SEND: "a2a.send",
     A2A_RESPONSE: "a2a.response",
     A2A_COMPLETE: "a2a.complete",
+    A2A_RETRY: "a2a.retry",
   },
+}));
+
+const { MockA2AConcurrencyError, mockAcquire, mockRelease, mockGetA2AConcurrencyGate } = vi.hoisted(
+  () => {
+    class HoistedA2AConcurrencyError extends Error {
+      constructor(
+        public readonly agentId: string,
+        public readonly flowId: string,
+        public readonly activeCount: number,
+        public readonly queueTimeoutMs: number,
+      ) {
+        super("A2A concurrency limit exceeded");
+        this.name = "A2AConcurrencyError";
+      }
+    }
+
+    return {
+      MockA2AConcurrencyError: HoistedA2AConcurrencyError,
+      mockAcquire: vi.fn(),
+      mockRelease: vi.fn(),
+      mockGetA2AConcurrencyGate: vi.fn(),
+    };
+  },
+);
+
+vi.mock("../a2a-concurrency.js", () => ({
+  A2AConcurrencyError: MockA2AConcurrencyError,
+  getA2AConcurrencyGate: (...args: unknown[]) => mockGetA2AConcurrencyGate(...args),
 }));
 
 const mockRunAgentStep = vi.fn();
@@ -88,10 +117,38 @@ function eventFromCall(call: unknown[]): EmittedEvent {
 describe("M1 - skipPingPong in A2A flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetA2AConcurrencyGate.mockReturnValue(null);
     // Default: announce step returns some text
     mockRunAgentStep.mockResolvedValue({ reply: "announce result", ok: true });
     // Default: callGateway for announce delivery succeeds
     mockCallGateway.mockResolvedValue(undefined);
+  });
+
+  it("handles concurrency gate timeout as blocked outcome without throwing", async () => {
+    mockGetA2AConcurrencyGate.mockReturnValue({
+      acquire: (...args: unknown[]) => mockAcquire(...args),
+      release: (...args: unknown[]) => mockRelease(...args),
+    });
+    mockAcquire.mockRejectedValue(new MockA2AConcurrencyError("target", "flow-1", 3, 30_000));
+    mockRelease.mockReturnValue(undefined);
+
+    await expect(
+      runSessionsSendA2AFlow(baseParams({ skipPingPong: true })),
+    ).resolves.toBeUndefined();
+
+    expect(mockRunAgentStep).not.toHaveBeenCalled();
+
+    const responseEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.response");
+    expect(responseEvent).toBeDefined();
+    expect(responseEvent?.data?.outcome).toBe("blocked");
+
+    const completeEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.complete");
+    expect(completeEvent).toBeDefined();
+    expect(completeEvent?.data?.concurrencyBlocked).toBe(true);
   });
 
   it("explicit skipPingPong=true skips ping-pong loop", async () => {
@@ -143,6 +200,29 @@ describe("M1 - skipPingPong in A2A flow", () => {
 
     // 3 ping-pong turns + 1 announce = 4 calls
     expect(mockRunAgentStep.mock.calls.length).toBe(4);
+  });
+
+  it("uses per-turn timeout for ping-pong and keeps announce timeout", async () => {
+    mockRunAgentStep
+      .mockResolvedValueOnce({ reply: "reply-turn-1", ok: true })
+      .mockResolvedValueOnce({ reply: "announce result", ok: true });
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        skipPingPong: false,
+        maxPingPongTurns: 1,
+        message: "normal conversation",
+        announceTimeoutMs: 43210,
+        requesterSessionKey: "ext:requester",
+      }),
+    );
+
+    const pingPongCall = mockRunAgentStep.mock.calls[0]?.[0];
+    const announceCall = mockRunAgentStep.mock.calls[1]?.[0];
+
+    expect(pingPongCall.timeoutMs).toBe(120_000);
+    expect(announceCall.message).toBe("Agent-to-agent announce step.");
+    expect(announceCall.timeoutMs).toBe(43_210);
   });
 
   it("announce always runs even with skipPingPong", async () => {

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { initA2AJobManager, getA2AJobManager, resetA2AJobManager } from "./a2a-job-manager.js";
 
 // Mock the flow execution
@@ -19,10 +19,17 @@ vi.mock("../../logging/subsystem.js", () => ({
   }),
 }));
 
+vi.mock("../../infra/events/bus.js", () => ({
+  emit: vi.fn(),
+}));
+
+import { emit } from "../../infra/events/bus.js";
+import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createAndStartFlow, resumeFlows } from "./a2a-job-orchestrator.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
 const mockedRunFlow = vi.mocked(runSessionsSendA2AFlow);
+const mockedEmit = vi.mocked(emit);
 
 describe("A2A Job Orchestrator", () => {
   let tmpDir: string;
@@ -33,6 +40,7 @@ describe("A2A Job Orchestrator", () => {
     await manager.init();
     mockedRunFlow.mockReset();
     mockedRunFlow.mockResolvedValue(undefined);
+    mockedEmit.mockReset();
   });
 
   afterEach(async () => {
@@ -99,6 +107,9 @@ describe("A2A Job Orchestrator", () => {
     it("marks job as FAILED when flow throws", async () => {
       mockedRunFlow.mockRejectedValueOnce(new Error("Connection lost"));
 
+      const manager = getA2AJobManager()!;
+      const failJobSpy = vi.spyOn(manager, "failJob");
+
       await createAndStartFlow({
         jobId: "test-fail",
         targetSessionKey: "agent:worker:main",
@@ -106,15 +117,41 @@ describe("A2A Job Orchestrator", () => {
         message: "Do work",
         announceTimeoutMs: 60000,
         maxPingPongTurns: 3,
+        requesterSessionKey: "agent:requester:main",
+        conversationId: "conv-fail",
+        taskId: "task-fail",
+        workSessionId: "ws-fail",
       });
 
       // Wait for async error handling
       await new Promise((r) => setTimeout(r, 100));
 
-      const manager = getA2AJobManager()!;
       const job = await manager.readJob("test-fail");
       expect(job!.status).toBe("FAILED");
       expect(job!.lastError).toBe("Connection lost");
+
+      expect(mockedEmit).toHaveBeenCalledTimes(1);
+      expect(mockedEmit).toHaveBeenCalledWith({
+        type: EVENT_TYPES.A2A_COMPLETE,
+        agentId: "requester",
+        ts: expect.any(Number),
+        data: {
+          fromAgent: "requester",
+          toAgent: "worker",
+          announced: false,
+          targetSessionKey: "agent:worker:main",
+          conversationId: "conv-fail",
+          outcome: "failed",
+          error: "Connection lost",
+          taskId: "task-fail",
+          workSessionId: "ws-fail",
+        },
+      });
+
+      expect(failJobSpy).toHaveBeenCalledWith("test-fail", "Connection lost");
+      expect(failJobSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        mockedEmit.mock.invocationCallOrder[0],
+      );
     });
 
     it("falls back to direct flow when manager not initialized", async () => {

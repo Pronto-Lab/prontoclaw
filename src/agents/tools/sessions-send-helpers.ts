@@ -1,14 +1,14 @@
-import type { OpenClawConfig } from "../../config/config.js";
 import {
   getChannelPlugin,
   normalizeChannelId as normalizeAnyChannelId,
 } from "../../channels/plugins/index.js";
 import { normalizeChannelId as normalizeChatChannelId } from "../../channels/registry.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import { callGateway } from "../../gateway/call.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { resolveAgentConfig } from "../agent-scope.js";
-import type { A2APayload } from "./a2a-payload-types.js";
 import { buildPayloadSummary } from "./a2a-payload-parser.js";
+import type { A2APayload } from "./a2a-payload-types.js";
 import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 
 const ANNOUNCE_SKIP_TOKEN = "ANNOUNCE_SKIP";
@@ -302,12 +302,26 @@ export function buildAgentToAgentAnnounceContext(params: {
   return lines.join("\n");
 }
 
+function isSkipToken(text: string | undefined, token: string): boolean {
+  const normalized = (text ?? "").trim().toUpperCase();
+  if (!normalized) {
+    return false;
+  }
+  if (normalized === token) {
+    return true;
+  }
+  if (normalized.startsWith(token + ".") || normalized.startsWith(token + " ")) {
+    return true;
+  }
+  return false;
+}
+
 export function isAnnounceSkip(text?: string) {
-  return (text ?? "").trim() === ANNOUNCE_SKIP_TOKEN;
+  return isSkipToken(text, ANNOUNCE_SKIP_TOKEN);
 }
 
 export function isReplySkip(text?: string) {
-  return (text ?? "").trim() === REPLY_SKIP_TOKEN;
+  return isSkipToken(text, REPLY_SKIP_TOKEN);
 }
 
 export function resolvePingPongTurns(cfg?: OpenClawConfig) {

@@ -21,6 +21,12 @@ describe("classifyMessageIntent", () => {
     expect(result.suggestedTurns).toBe(0);
   });
 
+  it("detects Korean forwarding/sharing notification patterns", () => {
+    expect(classifyMessageIntent("전달합니다").intent).toBe("notification");
+    expect(classifyMessageIntent("공유합니다").intent).toBe("notification");
+    expect(classifyMessageIntent("알림: 서버 재시작").intent).toBe("notification");
+  });
+
   it("detects [URGENT] as escalation", () => {
     const result = classifyMessageIntent("[URGENT] Server is down!");
     expect(result.intent).toBe("escalation");
@@ -36,14 +42,35 @@ describe("classifyMessageIntent", () => {
   it("detects result report patterns", () => {
     expect(classifyMessageIntent("작업을 완료했습니다").intent).toBe("result_report");
     expect(classifyMessageIntent("[outcome] success").intent).toBe("result_report");
-    expect(classifyMessageIntent("분석 결과를 공유합니다").intent).toBe("result_report");
+    expect(classifyMessageIntent("분석 결과를 보고합니다").intent).toBe("result_report");
     expect(classifyMessageIntent("Task completed successfully").intent).toBe("result_report");
   });
 
   it("detects question patterns", () => {
     expect(classifyMessageIntent("이 코드 어떻게 작동해?").intent).toBe("question");
     expect(classifyMessageIntent("Can you help me with this?").intent).toBe("question");
-    expect(classifyMessageIntent("확인해줘").intent).toBe("question");
+  });
+
+  it("detects request patterns", () => {
+    const review = classifyMessageIntent("이 코드 검토해줘");
+    expect(review.intent).toBe("request");
+    expect(review.suggestedTurns).toBe(3);
+
+    const handleIt = classifyMessageIntent("이거 처리해주세요");
+    expect(handleIt.intent).toBe("request");
+    expect(handleIt.suggestedTurns).toBe(3);
+
+    const analyze = classifyMessageIntent("분석해줘");
+    expect(analyze.intent).toBe("request");
+    expect(analyze.suggestedTurns).toBe(3);
+
+    const ask = classifyMessageIntent("부탁드립니다");
+    expect(ask.intent).toBe("request");
+    expect(ask.suggestedTurns).toBe(3);
+
+    const confirm = classifyMessageIntent("확인해줘");
+    expect(confirm.intent).toBe("request");
+    expect(confirm.suggestedTurns).toBe(3);
   });
 
   it("detects collaboration patterns", () => {
@@ -58,9 +85,9 @@ describe("classifyMessageIntent", () => {
     expect(result.suggestedTurns).toBe(-1);
   });
 
-  it("defaults to question for ambiguous messages", () => {
+  it("defaults to collaboration for ambiguous messages", () => {
     const result = classifyMessageIntent("Here is some information about X");
-    expect(result.intent).toBe("question");
+    expect(result.intent).toBe("collaboration");
     expect(result.confidence).toBe(0.5);
   });
 });

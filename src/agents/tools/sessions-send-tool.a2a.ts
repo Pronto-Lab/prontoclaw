@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
-import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { callGateway } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { emit } from "../../infra/events/bus.js";
 import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { getA2AConcurrencyGate } from "../a2a-concurrency.js";
+import type { GatewayMessageChannel } from "../../utils/message-channel.js";
+import { A2AConcurrencyError, getA2AConcurrencyGate } from "../a2a-concurrency.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import { classifyA2AError, calculateBackoffMs } from "./a2a-error-classification.js";
 import {
@@ -26,6 +26,9 @@ import {
 } from "./sessions-send-helpers.js";
 
 const log = createSubsystemLogger("agents/sessions-send");
+
+/** Per-turn timeout for ping-pong replies (shorter than initial wait). */
+const PING_PONG_TURN_TIMEOUT_MS = 120_000;
 
 function extractAgentId(sessionKey: string): string {
   const parts = sessionKey.split(":");
@@ -172,7 +175,43 @@ export async function runSessionsSendA2AFlow(params: {
   // Acquire concurrency permit for the target agent (throttles if over limit)
   const concurrencyGate = getA2AConcurrencyGate();
   if (concurrencyGate) {
-    await concurrencyGate.acquire(toAgent, conversationId);
+    try {
+      await concurrencyGate.acquire(toAgent, conversationId);
+    } catch (err) {
+      if (err instanceof A2AConcurrencyError) {
+        const blockedMessage = `[outcome] blocked: 동시 처리 한도 초과 (agent: ${toAgent})`;
+        emit({
+          type: EVENT_TYPES.A2A_RESPONSE,
+          agentId: toAgent,
+          ts: Date.now(),
+          data: {
+            fromAgent,
+            toAgent,
+            message: blockedMessage,
+            replyPreview: blockedMessage.slice(0, 200),
+            outcome: "blocked",
+            conversationId,
+            ...sharedContext,
+          },
+        });
+        emit({
+          type: EVENT_TYPES.A2A_COMPLETE,
+          agentId: fromAgent,
+          ts: Date.now(),
+          data: {
+            fromAgent,
+            toAgent,
+            announced: false,
+            targetSessionKey: params.targetSessionKey,
+            conversationId,
+            concurrencyBlocked: true,
+            ...sharedContext,
+          },
+        });
+        return;
+      }
+      throw err;
+    }
   }
 
   try {
@@ -382,7 +421,11 @@ export async function runSessionsSendA2AFlow(params: {
     // Intent-based ping-pong optimization (Design #4)
     // When a structured payload is present, derive intent directly without LLM inference.
     const intentResult = params.payloadType
-      ? { intent: mapPayloadTypeToMessageIntent(params.payloadType), suggestedTurns: -1 as number, confidence: 1.0 }
+      ? {
+          intent: mapPayloadTypeToMessageIntent(params.payloadType),
+          suggestedTurns: -1 as number,
+          confidence: 1.0,
+        }
       : classifyMessageIntent(params.message);
     const effectiveTurns = resolveEffectivePingPongTurns({
       configMaxTurns: params.maxPingPongTurns,
@@ -432,7 +475,7 @@ export async function runSessionsSendA2AFlow(params: {
           sessionKey: currentSessionKey,
           message: incomingMessage,
           extraSystemPrompt: replyPrompt,
-          timeoutMs: params.announceTimeoutMs,
+          timeoutMs: PING_PONG_TURN_TIMEOUT_MS,
           lane: AGENT_LANE_NESTED,
           sourceSessionKey: nextSessionKey,
           sourceChannel:

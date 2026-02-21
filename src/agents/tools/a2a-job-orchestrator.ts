@@ -10,11 +10,14 @@
  * 2. resumeFlows() — called by reaper on gateway restart to resume PENDING jobs
  */
 
+import { emit } from "../../infra/events/bus.js";
+import { EVENT_TYPES } from "../../infra/events/schemas.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { getA2AJobManager } from "./a2a-job-manager.js";
 import type { A2AJobRecord } from "./a2a-job-manager.js";
-import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 import type { A2APayloadType } from "./a2a-payload-types.js";
+import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
 const log = createSubsystemLogger("a2a-job-orchestrator");
 
@@ -80,7 +83,14 @@ export async function createAndStartFlow(params: CreateA2AJobFlowParams): Promis
   });
 
   // Start the flow (non-blocking)
-  void startJobFlow(job, params.requesterChannel, params.roundOneReply, params.waitRunId, params.payloadType, params.payloadJson);
+  void startJobFlow(
+    job,
+    params.requesterChannel,
+    params.roundOneReply,
+    params.waitRunId,
+    params.payloadType,
+    params.payloadJson,
+  );
 
   return job.jobId;
 }
@@ -117,7 +127,9 @@ async function startJobFlow(
   payloadJson?: string,
 ): Promise<void> {
   const manager = getA2AJobManager();
-  if (!manager) return;
+  if (!manager) {
+    return;
+  }
 
   const abort = new AbortController();
 
@@ -157,6 +169,25 @@ async function startJobFlow(
     const errorMsg = err instanceof Error ? err.message : String(err);
     await manager.failJob(job.jobId, errorMsg);
     log.warn("A2A job flow failed", { jobId: job.jobId, error: errorMsg });
+
+    const failFromAgent = resolveAgentIdFromSessionKey(job.requesterSessionKey);
+    const failToAgent = resolveAgentIdFromSessionKey(job.targetSessionKey);
+    emit({
+      type: EVENT_TYPES.A2A_COMPLETE,
+      agentId: failFromAgent,
+      ts: Date.now(),
+      data: {
+        fromAgent: failFromAgent,
+        toAgent: failToAgent,
+        announced: false,
+        targetSessionKey: job.targetSessionKey,
+        conversationId: job.conversationId,
+        outcome: "failed",
+        error: errorMsg,
+        taskId: job.taskId,
+        workSessionId: job.workSessionId,
+      },
+    });
   }
 }
 
