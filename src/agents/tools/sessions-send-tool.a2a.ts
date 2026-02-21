@@ -87,22 +87,22 @@ function buildNoReplyOutcomeMessage(params: {
     typeof params.waitError === "string" && params.waitError.trim() ? params.waitError.trim() : "";
 
   if (reasonFromError) {
-    return `[outcome] blocked: 응답을 받지 못했습니다 (${reasonFromError})`;
+    return `[outcome] no_reply: 메시지가 전달되었으나 응답을 수신하지 못했습니다 (${reasonFromError})`;
   }
 
   if (params.waitStatus === "not_found") {
-    return "[outcome] blocked: 응답을 받지 못했습니다 (실행 상태를 찾을 수 없음)";
+    return "[outcome] no_reply: 메시지가 전달되었으나 응답을 수신하지 못했습니다 (실행 상태를 찾을 수 없음)";
   }
 
   if (params.waitStatus === "error") {
-    return "[outcome] blocked: 응답을 받지 못했습니다 (실행 오류)";
+    return "[outcome] no_reply: 메시지가 전달되었으나 응답을 수신하지 못했습니다 (실행 오류)";
   }
 
   if (params.maxWaitExceeded || params.waitStatus === "timeout") {
-    return `[outcome] blocked: 응답을 받지 못했습니다 (대기 시간 ${Math.floor(params.maxWaitMs / 1000)}초 초과)`;
+    return `[outcome] no_reply: 메시지가 전달되었으나 응답을 수신하지 못했습니다 (대기 시간 ${Math.floor(params.maxWaitMs / 1000)}초 초과)`;
   }
 
-  return "[outcome] blocked: 응답을 받지 못했습니다";
+  return "[outcome] no_reply: 메시지가 전달되었으나 응답을 수신하지 못했습니다";
 }
 
 export async function runSessionsSendA2AFlow(params: {
@@ -356,7 +356,7 @@ export async function runSessionsSendA2AFlow(params: {
           toAgent: fromAgent,
           message: noReplyMessage,
           replyPreview: toA2AReplyPreview(noReplyMessage),
-          outcome: "blocked",
+          outcome: "no_reply",
           waitStatus,
           waitError,
           conversationId,

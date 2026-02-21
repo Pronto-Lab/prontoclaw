@@ -349,7 +349,8 @@ describe("M1 - skipPingPong in A2A flow", () => {
     expect(responseEvents).toHaveLength(1);
     const timeoutMessage = responseEvents[0]?.data?.message;
     expect(typeof timeoutMessage).toBe("string");
-    expect(timeoutMessage).toContain("응답을 받지 못했습니다");
+    expect(timeoutMessage).toContain("메시지가 전달되었으나 응답을 수신하지 못했습니다");
+    expect(responseEvents[0]?.data?.outcome).toBe("no_reply");
 
     const completeEvent = mockEmit.mock.calls
       .map((c: unknown[]) => eventFromCall(c))
@@ -376,5 +377,6 @@ describe("M1 - skipPingPong in A2A flow", () => {
     const errorMessage = responseEvents[0]?.data?.message;
     expect(typeof errorMessage).toBe("string");
     expect(errorMessage).toContain("rate limit");
+    expect(responseEvents[0]?.data?.outcome).toBe("no_reply");
   });
 });
