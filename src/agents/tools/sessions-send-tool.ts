@@ -1,9 +1,8 @@
-import { Type } from "@sinclair/typebox";
 import crypto from "node:crypto";
-import type { AnyAgentTool } from "./common.js";
+import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../../config/config.js";
-import { getA2AConversationId } from "../../infra/events/a2a-index.js";
 import { callGateway } from "../../gateway/call.js";
+import { getA2AConversationId } from "../../infra/events/a2a-index.js";
 import {
   isSubagentSessionKey,
   normalizeAgentId,
@@ -16,6 +15,10 @@ import {
 } from "../../utils/message-channel.js";
 import { resolveAgentWorkspaceDir } from "../agent-scope.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
+import { createAndStartFlow } from "./a2a-job-orchestrator.js";
+import { parseA2APayload } from "./a2a-payload-parser.js";
+import type { A2APayload } from "./a2a-payload-types.js";
+import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
   createAgentToAgentPolicy,
@@ -26,10 +29,7 @@ import {
   stripToolMessages,
 } from "./sessions-helpers.js";
 import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
-import { createAndStartFlow } from "./a2a-job-orchestrator.js";
 import { readCurrentTaskId, readTask } from "./task-tool.js";
-import { parseA2APayload } from "./a2a-payload-parser.js";
-import type { A2APayload } from "./a2a-payload-types.js";
 
 const SessionsSendToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
@@ -66,13 +66,6 @@ function normalizeNonNegativeInt(value: unknown): number | undefined {
     return undefined;
   }
   return Math.floor(value);
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
 }
 
 const a2aConversationIdCache = new Map<string, string>();
@@ -197,8 +190,11 @@ export function createSessionsSendTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const message = readStringParam(params, "message", { required: true });
-      const rawPayloadJson = typeof params.payloadJson === "string" ? params.payloadJson.trim() : undefined;
-      const parsedPayload: A2APayload | null = rawPayloadJson ? parseA2APayload(rawPayloadJson) : null;
+      const rawPayloadJson =
+        typeof params.payloadJson === "string" ? params.payloadJson.trim() : undefined;
+      const parsedPayload: A2APayload | null = rawPayloadJson
+        ? parseA2APayload(rawPayloadJson)
+        : null;
       const taskIdParam = normalizeOptionalString(readStringParam(params, "taskId"));
       const explicitWorkSessionId = normalizeOptionalString(
         readStringParam(params, "workSessionId"),
@@ -334,6 +330,10 @@ export function createSessionsSendTool(opts?: {
           });
         }
         sessionKey = resolvedKey;
+      }
+
+      if (!sessionKey && labelAgentIdParam) {
+        sessionKey = `agent:${normalizeAgentId(labelAgentIdParam)}:main`;
       }
 
       if (!sessionKey) {
