@@ -10,8 +10,10 @@ import {
 } from "../agents/model-selection.js";
 import { resolveAgentSessionDirs } from "../agents/session-dirs.js";
 import { cleanStaleLockFiles } from "../agents/session-write-lock.js";
+import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { startA2AIndex } from "../infra/events/a2a-index.js";
+import { startEventLog } from "../infra/events/event-log.js";
 import { initA2AConcurrencyGate } from "../agents/a2a-concurrency.js";
 import { resolveA2AConcurrencyConfig } from "../config/agent-limits.js";
 import { initA2AJobManager } from "../agents/tools/a2a-job-manager.js";
@@ -98,6 +100,9 @@ export async function startGatewaySidecars(params: {
   // Start A2A conversation index (O(1) conversationId lookup, replaces NDJSON scan).
   try {
     startA2AIndex(stateDir);
+
+    // Start coordination event log writer (appends events to coordination-events.ndjson).
+    startEventLog(path.join(stateDir, "logs"));
     initA2AConcurrencyGate(resolveA2AConcurrencyConfig(params.cfg));
 
     // Initialize A2A Job Manager (durable persistence for A2A flows)
