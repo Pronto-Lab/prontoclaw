@@ -340,7 +340,7 @@ export function createSessionsSendTool(opts?: {
         return jsonResult({
           runId: crypto.randomUUID(),
           status: "error",
-          error: "Either sessionKey or label is required",
+          error: "Either sessionKey, label, or agentId is required",
         });
       }
       const resolvedSession = await resolveSessionReference({

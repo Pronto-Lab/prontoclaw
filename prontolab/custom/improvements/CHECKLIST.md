@@ -125,6 +125,7 @@
   - [x] 호출 시점은 세션 시작 시 (`attempt.ts`에서 호출 가능 — 현재 export만)
 - [x] **검증**: 20 tests pass, 98 관련 tests pass, tsc --noEmit 에러 없음
 - [x] **문서화**: 구현 내용을 `prontolab/custom/`에 기록 완료
+
 ---
 
 ## Phase 2: 심화 개선
@@ -156,7 +157,7 @@
   - [x] `server-startup.ts`: `initA2AJobManager()` + `A2AJobReaper.runOnStartup()` + `resumeFlows()`
   - [x] `stateDir` function scope로 이동 (기존 try 블록 스코프 버그 수정)
 - [x] Phase 7: 검증 및 문서화
-  - [x] 43 tests 전체 통과 (27 manager + 8 reaper + 8 orchestrator)
+  - [x] 45 tests 전체 통과 (27 manager + 9 reaper + 9 orchestrator)
   - [x] TypeScript `--noEmit` — 변경 파일 에러 없음
   - [x] 기존 A2A 테스트 회귀 없음 (pre-existing 6 failures 동일)
 - [x] **검증**: Gateway 재시작 후 진행 중이던 A2A 대화가 자동 복구
@@ -229,12 +230,12 @@
 > **잔여 차이 (기록용)**: 두 경로가 createAndStartFlow를 공유하지만,
 > 그 앞단의 전처리에 다음 차이가 존재한다:
 >
-> | 관심사 | sessions_send | Discord DM relay |
-> |--------|--------------|------------------|
-> | A2A 정책 검사 (sessions-access.ts) | ✅ sessions-helpers.ts 경유 | ❌ 미적용 |
-> | payloadType / payloadJson 전달 | ✅ | ❌ |
-> | taskId / workSessionId / depth 전달 | ✅ | ❌ |
-> | 대화 연속성 메타데이터 | ✅ conversationId + parentConversationId | ✅ conversationId만 |
+> | 관심사                              | sessions_send                            | Discord DM relay    |
+> | ----------------------------------- | ---------------------------------------- | ------------------- |
+> | A2A 정책 검사 (sessions-access.ts)  | ✅ sessions-helpers.ts 경유              | ❌ 미적용           |
+> | payloadType / payloadJson 전달      | ✅                                       | ❌                  |
+> | taskId / workSessionId / depth 전달 | ✅                                       | ❌                  |
+> | 대화 연속성 메타데이터              | ✅ conversationId + parentConversationId | ✅ conversationId만 |
 >
 > 이 차이가 의도적인지(sibling bot은 정책 검사 불필요) 누락인지는
 > 향후 A2A 정책을 강화할 때 재검토 필요.
@@ -245,7 +246,7 @@
   - [x] TC-05: Gateway 재시작 후 task 상태 보존 (delegation 포함 write→re-read, 3 tests)
   - [x] TC-06: A2A 내구성 복구 시나리오 (JobManager 재인스턴스화, Reaper stale→ABANDONED, 3 tests)
   - [x] TC-07: 동시성 제한 동작 시나리오 (maxConcurrentFlows 준수, 큐잉, 타임아웃, 에이전트 독립, 4 tests)
-- [x] **검증**: 전체 조정 불변량 테스트 22개 통과 (387ms)
+- [x] **검증**: 전체 조정 불변량 테스트 31개 통과
 - [x] **문서화**: 구현 내용을 `prontolab/custom/`에 기록 완료
 
 ### #11 서브에이전트-Task 통합 라이프사이클 (🔴 높음, XL) — [설계 문서](./11-subagent-task-lifecycle.md) | [구현 기록](./11-subagent-task-lifecycle-impl.md)
@@ -284,32 +285,32 @@
 - [ ] 아키텍처 부채 점수 재측정 (목표: ≤45/100)
 - [ ] 2x 에이전트 부하 테스트 통과
 - [ ] upstream sync 충돌 없음 확인
-- [x] 모든 개선안의 구현 내용이 `prontolab/custom/`에 문서화 완료 (11개 *-impl.md 파일)
+- [x] 모든 개선안의 구현 내용이 `prontolab/custom/`에 문서화 완료 (11개 \*-impl.md 파일)
 
 ---
 
 ## 변경 이력
 
-| 날짜 | 변경 |
-|------|------|
-| 2026-02-19 | 체크리스트 초기 작성 |
-| 2026-02-19 | 각 개선안에 설계 문서 링크 + 문서화 항목 추가 |
-| 2026-02-19 | #12 Task Enforcement Bypass 추가 (Phase 1) |
-| 2026-02-19 | #7 Phase 1-2 완료 (a2a-concurrency.ts + A2A 플로우 통합, 14 tests) |
-| 2026-02-19 | #5 Phase 1 완료 (server-init-config/diagnostics/control-ui 추출, 737→632 LOC, 80→57 imports) |
-| 2026-02-19 | #3 Phase 1-3 완료 (task-file-io.ts + task-stop-guard.ts 추출, 147 tests) |
-| 2026-02-19 | #9 기본 완료 (coordination-invariants.test.ts — TC-01~04, 12 tests) |
-| 2026-02-19 | #12 완료 (createdBySessionKey + session-scoped disk check + A2A prompt fix + cleanupStaleTasks) |
-| 2026-02-19 | #2 완료 (A2AJobManager + Reaper + Orchestrator + fire-and-forget 교체 + gateway startup, 43 tests) |
-| 2026-02-19 | #4 Phase 1 완료 (continuation-state-machine.ts — 순수 결정 함수 + 56 tests) |
-| 2026-02-19 | #6 N/A 처리 (설계 문서 전제 불일치 — GatewayRequestContext가 이미 DI 패턴 구현) |
-| 2026-02-19 | #8 완료 (a2a-payload-types + parser + sessions_send payloadJson + A2A flow 통합, 42 tests) |
-| 2026-02-19 | #10 N/A 처리 (#2에서 createAndStartFlow 도입으로 두 경로 이미 통합) |
-| 2026-02-19 | #11 Phase 1 완료 (task-delegation-types + manager + 110 tests) |
-| 2026-02-19 | #11 Phase 2-5 완료 (persistence + spawn/announce integration + task_verify + system prompt, 216 tests) |
-| 2026-02-19 | #9 Phase 3 완료 (TC-05~07 추가: task persistence, A2A job durability, concurrency gate, 22 tests 전체 통과) |
-| 2026-02-19 | #12 Follow-up: cleanupStaleTasks() 를 server-startup.ts에 연결 (게이트웨이 시작 시 전 에이전트 stale task 자동 정리) |
-| 2026-02-19 | #7 Follow-up: agents.defaults.a2aConcurrency 설정 스키마 + resolver + server-startup 연결 (7 tests) |
-| 2026-02-19 | #3 Phase 4-5 완료 (task-crud.ts 932 LOC + task-blocking.ts 603 LOC + task-steps.ts 21 LOC + task-tool.ts → 45 LOC facade, 72 tests 통과) |
+| 날짜       | 변경                                                                                                                                                                 |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-02-19 | 체크리스트 초기 작성                                                                                                                                                 |
+| 2026-02-19 | 각 개선안에 설계 문서 링크 + 문서화 항목 추가                                                                                                                        |
+| 2026-02-19 | #12 Task Enforcement Bypass 추가 (Phase 1)                                                                                                                           |
+| 2026-02-19 | #7 Phase 1-2 완료 (a2a-concurrency.ts + A2A 플로우 통합, 14 tests)                                                                                                   |
+| 2026-02-19 | #5 Phase 1 완료 (server-init-config/diagnostics/control-ui 추출, 737→632 LOC, 80→57 imports)                                                                         |
+| 2026-02-19 | #3 Phase 1-3 완료 (task-file-io.ts + task-stop-guard.ts 추출, 147 tests)                                                                                             |
+| 2026-02-19 | #9 기본 완료 (coordination-invariants.test.ts — TC-01~04, 12 tests)                                                                                                  |
+| 2026-02-19 | #12 완료 (createdBySessionKey + session-scoped disk check + A2A prompt fix + cleanupStaleTasks)                                                                      |
+| 2026-02-19 | #2 완료 (A2AJobManager + Reaper + Orchestrator + fire-and-forget 교체 + gateway startup, 43 tests)                                                                   |
+| 2026-02-19 | #4 Phase 1 완료 (continuation-state-machine.ts — 순수 결정 함수 + 56 tests)                                                                                          |
+| 2026-02-19 | #6 N/A 처리 (설계 문서 전제 불일치 — GatewayRequestContext가 이미 DI 패턴 구현)                                                                                      |
+| 2026-02-19 | #8 완료 (a2a-payload-types + parser + sessions_send payloadJson + A2A flow 통합, 42 tests)                                                                           |
+| 2026-02-19 | #10 N/A 처리 (#2에서 createAndStartFlow 도입으로 두 경로 이미 통합)                                                                                                  |
+| 2026-02-19 | #11 Phase 1 완료 (task-delegation-types + manager + 110 tests)                                                                                                       |
+| 2026-02-19 | #11 Phase 2-5 완료 (persistence + spawn/announce integration + task_verify + system prompt, 216 tests)                                                               |
+| 2026-02-19 | #9 Phase 3 완료 (TC-05~07 추가: task persistence, A2A job durability, concurrency gate, 31 tests 전체 통과)                                                          |
+| 2026-02-19 | #12 Follow-up: cleanupStaleTasks() 를 server-startup.ts에 연결 (게이트웨이 시작 시 전 에이전트 stale task 자동 정리)                                                 |
+| 2026-02-19 | #7 Follow-up: agents.defaults.a2aConcurrency 설정 스키마 + resolver + server-startup 연결 (7 tests)                                                                  |
+| 2026-02-19 | #3 Phase 4-5 완료 (task-crud.ts 932 LOC + task-blocking.ts 603 LOC + task-steps.ts 21 LOC + task-tool.ts → 45 LOC facade, 72 tests 통과)                             |
 | 2026-02-20 | #5 Phase 2-4 완료 (server-init-registry 51 LOC + server-init-events 139 LOC + server-init-cron 30 LOC, server.impl.ts 737→565 LOC, ~80→48 imports, 46/47 tests pass) |
-| 2026-02-20 | 전체 완료 게이트 업데이트: 10/13 구현 완료, 2 N/A, 1 Phase 1만 (Phase 2-5 보류). 1,514 tests pass, 0 regressions. |
+| 2026-02-20 | 전체 완료 게이트 업데이트: 10/13 구현 완료, 2 N/A, 1 Phase 1만 (Phase 2-5 보류). 1,514 tests pass, 0 regressions.                                                    |
