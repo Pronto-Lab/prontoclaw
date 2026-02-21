@@ -21,7 +21,7 @@ import { cleanupStaleTasks } from "../plugins/core-hooks/task-enforcer.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { startDmRetryScheduler } from "../discord/dm-retry/scheduler.js";
-import { startGmailWatcher } from "../hooks/gmail-watcher.js";
+import { startGmailWatcherWithLogs } from "../hooks/gmail-watcher-lifecycle.js";
 import {
   clearInternalHooks,
   createInternalHookEvent,
@@ -126,22 +126,10 @@ export async function startGatewaySidecars(params: {
   }
 
   // Start Gmail watcher if configured (hooks.gmail.account).
-  if (!isTruthyEnvValue(process.env.OPENCLAW_SKIP_GMAIL_WATCHER)) {
-    try {
-      const gmailResult = await startGmailWatcher(params.cfg);
-      if (gmailResult.started) {
-        params.logHooks.info("gmail watcher started");
-      } else if (
-        gmailResult.reason &&
-        gmailResult.reason !== "hooks not enabled" &&
-        gmailResult.reason !== "no gmail account configured"
-      ) {
-        params.logHooks.warn(`gmail watcher not started: ${gmailResult.reason}`);
-      }
-    } catch (err) {
-      params.logHooks.error(`gmail watcher failed to start: ${String(err)}`);
-    }
-  }
+  await startGmailWatcherWithLogs({
+    cfg: params.cfg,
+    log: params.logHooks,
+  });
 
   // Validate hooks.gmail.model if configured.
   if (params.cfg.hooks?.gmail?.model) {

@@ -48,6 +48,11 @@ export { sendDiscordWebhook } from "./send.webhook.js";
 export type { DiscordWebhookSendOpts } from "./send.webhook.js";
 export {
   fetchChannelPermissionsDiscord,
+  hasAllGuildPermissionsDiscord,
+  hasAnyGuildPermissionDiscord,
+  fetchMemberGuildPermissionsDiscord,
+} from "./send.permissions.js";
+export {
   fetchReactionsDiscord,
   reactMessageDiscord,
   removeOwnReactionsDiscord,

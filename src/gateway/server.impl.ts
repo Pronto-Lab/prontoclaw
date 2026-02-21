@@ -5,6 +5,7 @@ import type { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
 import { createDefaultDeps } from "../cli/deps.js";
+import { isRestartEnabled } from "../config/commands.js";
 import {
   CONFIG_PATH,
   isNixMode,
@@ -23,6 +24,11 @@ import { runOnboardingWizard } from "../wizard/onboarding.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
 import { startGatewayConfigReloader } from "./config-reload.js";
+import type { ControlUiRootState } from "./control-ui.js";
+import {
+  GATEWAY_EVENT_UPDATE_AVAILABLE,
+  type GatewayUpdateAvailableEventPayload,
+} from "./events.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
 import { createChannelManager } from "./server-channels.js";
 import { createGatewayCloseHandler } from "./server-close.js";
@@ -50,6 +56,7 @@ import {
   refreshGatewayHealthSnapshot,
 } from "./server/health-state.js";
 import { loadGatewayTlsRuntime } from "./server/tls.js";
+import { ensureGatewayStartupAuth } from "./startup-auth.js";
 
 export { __resetModelCatalogCacheForTest } from "./server-model-catalog.js";
 
@@ -437,7 +444,15 @@ export async function startGatewayServer(
     isNixMode,
   });
   if (!minimalTestGateway) {
-    scheduleGatewayUpdateCheck({ cfg: cfgAtStart, log, isNixMode });
+    scheduleGatewayUpdateCheck({
+      cfg: cfgAtStart,
+      log,
+      isNixMode,
+      onUpdateAvailableChange: (updateAvailable) => {
+        const payload: GatewayUpdateAvailableEventPayload = { updateAvailable };
+        broadcast(GATEWAY_EVENT_UPDATE_AVAILABLE, payload, { dropIfSlow: true });
+      },
+    });
   }
   const tailscaleCleanup = minimalTestGateway
     ? null

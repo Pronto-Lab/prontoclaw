@@ -3,6 +3,8 @@ import { resolveAnnounceTargetFromKey } from "../agents/tools/sessions-send-help
 import { normalizeChannelId } from "../channels/plugins/index.js";
 import { agentCommand } from "../commands/agent.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
+import { parseSessionThreadInfo } from "../config/sessions/delivery-info.js";
+import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
 import {
   consumeRestartSentinel,
@@ -37,26 +39,16 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
     return;
   }
 
-  // Extract topic/thread ID from sessionKey (supports both :topic: and :thread:)
-  // Telegram uses :topic:, other platforms use :thread:
-  const topicIndex = sessionKey.lastIndexOf(":topic:");
-  const threadIndex = sessionKey.lastIndexOf(":thread:");
-  const markerIndex = Math.max(topicIndex, threadIndex);
-  const marker = topicIndex > threadIndex ? ":topic:" : ":thread:";
-
-  const baseSessionKey = markerIndex === -1 ? sessionKey : sessionKey.slice(0, markerIndex);
-  const threadIdRaw =
-    markerIndex === -1 ? undefined : sessionKey.slice(markerIndex + marker.length);
-  const sessionThreadId = threadIdRaw?.trim() || undefined;
+  const { baseSessionKey, threadId: sessionThreadId } = parseSessionThreadInfo(sessionKey);
 
   const { cfg, entry } = loadSessionEntry(sessionKey);
-  const parsedTarget = resolveAnnounceTargetFromKey(baseSessionKey);
+  const parsedTarget = resolveAnnounceTargetFromKey(baseSessionKey ?? sessionKey);
 
   // Prefer delivery context from sentinel (captured at restart) over session store
   // Handles race condition where store wasn't flushed before restart
   const sentinelContext = payload.deliveryContext;
   let sessionDeliveryContext = deliveryContextFromSession(entry);
-  if (!sessionDeliveryContext && markerIndex !== -1 && baseSessionKey) {
+  if (!sessionDeliveryContext && baseSessionKey && baseSessionKey !== sessionKey) {
     const { entry: baseEntry } = loadSessionEntry(baseSessionKey);
     sessionDeliveryContext = deliveryContextFromSession(baseEntry);
   }
