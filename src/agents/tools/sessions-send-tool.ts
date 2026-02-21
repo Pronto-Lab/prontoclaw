@@ -589,12 +589,12 @@ export function createSessionsSendTool(opts?: {
 
       const history = await callGateway<{ messages: Array<unknown> }>({
         method: "chat.history",
-        params: { sessionKey: resolvedKey, limit: 50 },
+        params: { sessionKey: effectiveTargetKey, limit: 50 },
       });
       const filtered = stripToolMessages(Array.isArray(history?.messages) ? history.messages : []);
       const last = filtered.length > 0 ? filtered[filtered.length - 1] : undefined;
       const reply = last ? extractAssistantText(last) : undefined;
-      startA2AFlow(reply ?? undefined);
+      startA2AFlow(reply ?? undefined, runId);
 
       return jsonResult({
         runId,
