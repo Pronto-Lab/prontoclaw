@@ -2,10 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { acquireTaskLock } from "../../infra/task-lock.js";
-import type { TaskDelegation, DelegationEvent, DelegationSummary } from "./task-delegation-types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import type {
+  TaskDelegation,
+  DelegationEvent,
+  DelegationSummary,
+} from "./task-delegation-types.js";
 
-const log = createSubsystemLogger("task-file-io");
+const _log = createSubsystemLogger("task-file-io");
 
 const TASKS_DIR = "tasks";
 const TASK_HISTORY_DIR = "task-history";
@@ -81,6 +85,7 @@ export interface TaskFile {
   reassignCount?: number; // Zombie recovery: number of times task was auto-reassigned
   createdBySessionKey?: string; // Session key that created this task (for enforcement scope)
   steps?: TaskStep[];
+  simple?: boolean;
   /** Terminal outcome when task reaches completed/cancelled/interrupted. */
   outcome?: TaskOutcome;
   /** Subagent delegations linked to this task. */
@@ -160,6 +165,9 @@ export function formatTaskFileMd(task: TaskFile): string {
   }
   if (task.createdBySessionKey) {
     lines.push(`- **Created By Session:** ${task.createdBySessionKey}`);
+  }
+  if (task.simple) {
+    lines.push(`- **Simple:** true`);
   }
 
   lines.push("", "## Description", task.description, "");
@@ -288,6 +296,7 @@ export function parseTaskFileMd(content: string, filename: string): TaskFile | n
   let milestoneItemId: string | undefined;
   let reassignCount: number | undefined;
   let createdBySessionKey: string | undefined;
+  let simple: boolean | undefined;
   let outcome: TaskOutcome | undefined;
   let delegations: TaskDelegation[] | undefined;
   let delegationEvents: DelegationEvent[] | undefined;
@@ -353,6 +362,10 @@ export function parseTaskFileMd(content: string, filename: string): TaskFile | n
       const createdBySessionMatch = trimmed.match(/^-?\s*\*\*Created By Session:\*\*\s*(.+)$/);
       if (createdBySessionMatch) {
         createdBySessionKey = createdBySessionMatch[1].trim() || undefined;
+      }
+      const simpleMatch = trimmed.match(/^-?\s*\*\*Simple:\*\*\s*(.+)$/);
+      if (simpleMatch) {
+        simple = simpleMatch[1].trim() === "true";
       }
     } else if (currentSection === "description") {
       description = description ? `${description}\n${trimmed}` : trimmed;
@@ -466,6 +479,7 @@ export function parseTaskFileMd(content: string, filename: string): TaskFile | n
     lastActivity: lastActivity || created,
     progress,
     steps: steps.length > 0 ? steps : undefined,
+    simple,
     blockedReason,
     unblockedBy,
     unblockedAction,
@@ -486,7 +500,8 @@ export function parseTaskFileMd(content: string, filename: string): TaskFile | n
     createdBySessionKey,
     outcome,
     delegations: delegations && delegations.length > 0 ? delegations : undefined,
-    delegationEvents: delegationEvents && delegationEvents.length > 0 ? delegationEvents : undefined,
+    delegationEvents:
+      delegationEvents && delegationEvents.length > 0 ? delegationEvents : undefined,
     delegationSummary,
   };
 }
@@ -848,4 +863,3 @@ export async function isAgentUsingTaskTools(workspaceDir: string): Promise<boole
     return false;
   }
 }
-

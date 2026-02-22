@@ -1,7 +1,7 @@
-import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { findActiveTask, type TaskFile, type TaskStep } from "../agents/tools/task-tool.js";
 import { agentCommand } from "../commands/agent.js";
+import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { resolveAgentBoundAccountId } from "../routing/bindings.js";
@@ -12,11 +12,13 @@ import { onAgentEvent, type AgentEventPayload } from "./agent-events.js";
 const log = createSubsystemLogger("task-self-driving");
 
 const SELF_DRIVING_DELAY_MS = 500;
-const MAX_CONSECUTIVE_CONTINUATIONS = 20;
+const MAX_CONSECUTIVE_CONTINUATIONS = 50;
 const COOLDOWN_RESET_MS = 60_000;
 // [PRONTO-CUSTOM] Failure detection: track stalled steps
 const MAX_STALLS_ON_SAME_STEP = 3;
 const MAX_ZERO_PROGRESS_RUNS = 5;
+const ESCALATION_RE_INTERVAL = 5;
+const MAX_STEPS_MISSING_PROMPTS = 3;
 
 interface SelfDrivingState {
   consecutiveCount: number;
@@ -28,7 +30,7 @@ interface SelfDrivingState {
   sameStepCount: number;
   lastDoneCount: number;
   zeroProgressCount: number;
-  escalated: boolean;
+  stepsMissingCount: number;
 }
 
 const agentState = new Map<string, SelfDrivingState>();
@@ -133,6 +135,31 @@ function formatEscalationPrompt(
   return lines.join("\n");
 }
 
+function formatStepsMissingPrompt(task: TaskFile, attempt: number): string {
+  const lines = [
+    `[SYSTEM — STEPS REQUIRED (${attempt}/${MAX_STEPS_MISSING_PROMPTS})]`,
+    ``,
+    `Task "${task.description}" is NOT marked as simple but has NO steps defined.`,
+    ``,
+    `You MUST define steps for this task using task_update(action: "set_steps", steps: [...]).`,
+    ``,
+    `Example:`,
+    `task_update({`,
+    `  action: "set_steps",`,
+    `  steps: [`,
+    `    { content: "Analyze current code" },`,
+    `    { content: "Implement changes" },`,
+    `    { content: "Test and verify" }`,
+    `  ]`,
+    `})`,
+    ``,
+    `Steps provide visibility into your progress through Task Hub.`,
+    `Define 2-6 concrete steps that cover the work needed.`,
+  ];
+
+  return lines.join("\n");
+}
+
 async function checkAndSelfDrive(
   cfg: OpenClawConfig,
   agentId: string,
@@ -148,7 +175,43 @@ async function checkAndSelfDrive(
     return false;
   }
   if (!activeTask.steps?.length) {
-    return false;
+    if (activeTask.simple) {
+      return false;
+    }
+    if (state.stepsMissingCount >= MAX_STEPS_MISSING_PROMPTS) {
+      log.debug("Max steps-missing prompts reached, skipping", { agentId });
+      return false;
+    }
+    state.stepsMissingCount++;
+    state.consecutiveCount++;
+    state.lastContinuationTs = Date.now();
+
+    const prompt = formatStepsMissingPrompt(activeTask, state.stepsMissingCount);
+    log.info("Prompting agent to define steps", {
+      agentId,
+      taskId: activeTask.id,
+      stepsMissingCount: state.stepsMissingCount,
+    });
+
+    try {
+      const accountId = resolveAgentBoundAccountId(
+        cfg,
+        agentId,
+        cfg.agents?.defaults?.taskContinuation?.channel ?? "discord",
+      );
+      await agentCommand({
+        message: prompt,
+        agentId,
+        accountId,
+        deliver: false,
+      });
+      state.lastAttemptSucceeded = true;
+      return true;
+    } catch (error) {
+      state.lastAttemptSucceeded = false;
+      log.warn("Steps-missing prompt failed", { agentId, error: String(error) });
+      return false;
+    }
   }
 
   const incomplete = activeTask.steps.filter(
@@ -189,29 +252,31 @@ async function checkAndSelfDrive(
   state.consecutiveCount++;
   state.lastContinuationTs = Date.now();
 
-  // [PRONTO-CUSTOM] Escalation: 2+ consecutive failures on same step → 3 choices
   let prompt: string;
-  if (!state.escalated && state.sameStepCount >= MAX_STALLS_ON_SAME_STEP) {
+  const shouldEscalateStalled =
+    state.sameStepCount >= MAX_STALLS_ON_SAME_STEP &&
+    (state.sameStepCount === MAX_STALLS_ON_SAME_STEP ||
+      (state.sameStepCount - MAX_STALLS_ON_SAME_STEP) % ESCALATION_RE_INTERVAL === 0);
+  const shouldEscalateZero =
+    state.zeroProgressCount >= MAX_ZERO_PROGRESS_RUNS &&
+    (state.zeroProgressCount === MAX_ZERO_PROGRESS_RUNS ||
+      (state.zeroProgressCount - MAX_ZERO_PROGRESS_RUNS) % ESCALATION_RE_INTERVAL === 0);
+
+  if (shouldEscalateStalled) {
     log.warn("Self-driving escalation: stalled on same step", {
       agentId,
       stepId: currentStepId,
       sameStepCount: state.sameStepCount,
     });
     prompt = formatEscalationPrompt(activeTask, state, "stalled_step");
-    state.escalated = true; // Only escalate once per step
-  } else if (!state.escalated && state.zeroProgressCount >= MAX_ZERO_PROGRESS_RUNS) {
+  } else if (shouldEscalateZero) {
     log.warn("Self-driving escalation: zero progress", {
       agentId,
       zeroProgressCount: state.zeroProgressCount,
     });
     prompt = formatEscalationPrompt(activeTask, state, "zero_progress");
-    state.escalated = true;
   } else {
     prompt = formatSelfDrivingPrompt(activeTask, incomplete, currentStep, state);
-    // Reset escalation flag if step changed (progress was made)
-    if (currentStepId !== state.lastStepId) {
-      state.escalated = false;
-    }
   }
 
   log.info("Self-driving continuation", {
@@ -290,7 +355,7 @@ export function startTaskSelfDriving(opts: { cfg: OpenClawConfig }): TaskSelfDri
         sameStepCount: existing?.sameStepCount ?? 0,
         lastDoneCount: existing?.lastDoneCount ?? 0,
         zeroProgressCount: existing?.zeroProgressCount ?? 0,
-        escalated: existing?.escalated ?? false,
+        stepsMissingCount: existing?.stepsMissingCount ?? 0,
       };
 
       if (Date.now() - state.lastContinuationTs > COOLDOWN_RESET_MS) {
@@ -298,7 +363,7 @@ export function startTaskSelfDriving(opts: { cfg: OpenClawConfig }): TaskSelfDri
         // Also reset failure tracking on cooldown
         state.sameStepCount = 0;
         state.zeroProgressCount = 0;
-        state.escalated = false;
+        state.stepsMissingCount = 0;
       }
 
       if (state.consecutiveCount >= MAX_CONSECUTIVE_CONTINUATIONS) {

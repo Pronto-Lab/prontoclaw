@@ -34,6 +34,15 @@ const TaskStartSchema = Type.Object({
   context: Type.Optional(Type.String()),
   priority: Type.Optional(Type.String()),
   requires_approval: Type.Optional(Type.Boolean()),
+  simple: Type.Optional(Type.Boolean()),
+  steps: Type.Optional(
+    Type.Array(
+      Type.Object({
+        content: Type.String(),
+        status: Type.Optional(Type.String()),
+      }),
+    ),
+  ),
 });
 
 const TaskUpdateSchema = Type.Object({
@@ -102,6 +111,11 @@ export function createTaskStartTool(options: {
         ? (priorityRaw as TaskPriority)
         : "medium";
       const requiresApproval = (params as Record<string, unknown>).requires_approval === true;
+      const simple = (params as Record<string, unknown>).simple === true;
+      const rawSteps = (params as Record<string, unknown>).steps;
+      const stepsInput = Array.isArray(rawSteps)
+        ? (rawSteps as Array<{ content: string; status?: string }>)
+        : undefined;
 
       const now = new Date().toISOString();
       const taskId = generateTaskId();
@@ -124,6 +138,17 @@ export function createTaskStartTool(options: {
         workSessionId,
         createdBySessionKey: options.agentSessionKey,
         progress: [initialProgress],
+        simple: simple || undefined,
+        steps: stepsInput
+          ? stepsInput.map((s, i) => ({
+              id: `s${i + 1}`,
+              content: s.content,
+              status: (i === 0 && !requiresApproval
+                ? "in_progress"
+                : s.status || "pending") as TaskStepStatus,
+              order: i + 1,
+            }))
+          : undefined,
       };
 
       await writeTask(workspaceDir, newTask);
@@ -151,6 +176,8 @@ export function createTaskStartTool(options: {
         priority,
         workSessionId,
         totalActiveTasks: allTasks.length,
+        simple: simple || undefined,
+        stepsCount: stepsInput?.length,
       });
     },
   };

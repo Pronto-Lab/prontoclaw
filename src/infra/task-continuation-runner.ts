@@ -1,8 +1,7 @@
 import { openSync, readSync, closeSync, fstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { OpenClawConfig } from "../config/config.js";
-import { resolveStateDir } from "../config/paths.js";
+import { callGateway } from "../../gateway/call.js";
 import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
@@ -21,6 +20,8 @@ import {
 } from "../agents/tools/task-tool.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import { agentCommand } from "../commands/agent.js";
+import type { OpenClawConfig } from "../config/config.js";
+import { resolveStateDir } from "../config/paths.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize, getActiveTaskCount } from "../process/command-queue.js";
 // CommandLane import removed - using agent-specific lanes
@@ -651,14 +652,39 @@ async function checkAgentForContinuation(
         });
 
         if (consecutiveFailures >= MAX_CONTEXT_OVERFLOW_RETRIES) {
-          log.error(
-            "Agent session permanently stuck in context overflow - manual /reset or /new required",
+          log.warn(
+            "Agent session hit context overflow limit - attempting automatic session reset",
             {
               agentId,
               taskId: activeTask.id,
               consecutiveFailures,
             },
           );
+
+          try {
+            await callGateway({
+              method: "sessions.reset",
+              params: { key: `agent:${agentId}:main`, reason: "context_overflow_auto_reset" },
+            });
+            log.info("Auto-reset agent session after context overflow", {
+              agentId,
+              taskId: activeTask.id,
+            });
+
+            agentStates.set(agentId, {
+              lastContinuationSentMs: nowMs,
+              lastTaskId: activeTask.id,
+              backoffUntilMs: nowMs + BACKOFF_MS.context_overflow,
+              consecutiveFailures: 0,
+              lastFailureReason: "context_overflow",
+            });
+          } catch (resetError) {
+            log.error("Failed to auto-reset agent session after context overflow", {
+              agentId,
+              taskId: activeTask.id,
+              error: String(resetError),
+            });
+          }
         } else {
           log.warn("Agent session hit context overflow after continuation prompt", {
             agentId,

@@ -1,14 +1,14 @@
-import type { OpenClawConfig } from "../config/config.js";
-import type { TaskSelfDrivingHandle } from "./task-self-driving.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { findActiveTask, type TaskFile, type TaskStep } from "../agents/tools/task-tool.js";
 import { agentCommand } from "../commands/agent.js";
+import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { resolveAgentBoundAccountId } from "../routing/bindings.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { onAgentEvent, type AgentEventPayload } from "./agent-events.js";
+import type { TaskSelfDrivingHandle } from "./task-self-driving.js";
 
 const log = createSubsystemLogger("task-step-continuation");
 
@@ -87,6 +87,9 @@ async function checkAndContinue(
   }
 
   if (activeTask.status !== "in_progress") {
+    return;
+  }
+  if (activeTask.simple) {
     return;
   }
   if (!activeTask.steps?.length) {
