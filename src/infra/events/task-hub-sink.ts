@@ -21,6 +21,7 @@ interface TaskHubPayload {
   topicId: string;
   conversationId?: string;
   severity: "info";
+  senderAgentId: string;
 }
 
 function buildPayload(event: CoordinationEvent): TaskHubPayload | null {
@@ -41,20 +42,16 @@ function buildPayload(event: CoordinationEvent): TaskHubPayload | null {
   }
 
   const fromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
-  const toAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
+  const _toAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
   const message = typeof data.message === "string" ? data.message : "";
-
-  const label =
-    event.type === EVENT_TYPES.A2A_SEND
-      ? `[${fromAgent} → ${toAgent}]`
-      : `[${toAgent} ← ${fromAgent}]`;
 
   return {
     agentId: fromAgent,
-    message: `${label} ${message}`.slice(0, 4000),
+    message: message.slice(0, 4000),
     topicId,
     conversationId: typeof data.conversationId === "string" ? data.conversationId : undefined,
     severity: "info",
+    senderAgentId: fromAgent,
   };
 }
 
