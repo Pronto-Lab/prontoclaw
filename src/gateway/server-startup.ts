@@ -1,6 +1,5 @@
-import type { CliDeps } from "../cli/deps.js";
-import type { loadConfig } from "../config/config.js";
-import type { loadOpenClawPlugins } from "../plugins/loader.js";
+import { initA2AConcurrencyGate } from "../agents/a2a-concurrency.js";
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { loadModelCatalog } from "../agents/model-catalog.js";
 import {
@@ -11,17 +10,14 @@ import {
 import { resolveAgentSessionDirs } from "../agents/session-dirs.js";
 import { cleanStaleLockFiles } from "../agents/session-write-lock.js";
 import path from "node:path";
-import { resolveStateDir } from "../config/paths.js";
-import { startA2AIndex } from "../infra/events/a2a-index.js";
 import { startEventLog } from "../infra/events/event-log.js";
-import { initA2AConcurrencyGate } from "../agents/a2a-concurrency.js";
-import { resolveA2AConcurrencyConfig } from "../config/agent-limits.js";
 import { initA2AJobManager } from "../agents/tools/a2a-job-manager.js";
-import { A2AJobReaper } from "../agents/tools/a2a-job-reaper.js";
 import { resumeFlows } from "../agents/tools/a2a-job-orchestrator.js";
-import { cleanupStaleTasks } from "../plugins/core-hooks/task-enforcer.js";
-import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
-import { normalizeAgentId } from "../routing/session-key.js";
+import { A2AJobReaper } from "../agents/tools/a2a-job-reaper.js";
+import type { CliDeps } from "../cli/deps.js";
+import { resolveA2AConcurrencyConfig } from "../config/agent-limits.js";
+import type { loadConfig } from "../config/config.js";
+import { resolveStateDir } from "../config/paths.js";
 import { startDmRetryScheduler } from "../discord/dm-retry/scheduler.js";
 import { startGmailWatcherWithLogs } from "../hooks/gmail-watcher-lifecycle.js";
 import {
@@ -31,9 +27,14 @@ import {
 } from "../hooks/internal-hooks.js";
 import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
+import { startA2AIndex } from "../infra/events/a2a-index.js";
+import { startTaskHubSink } from "../infra/events/task-hub-sink.js";
 import { scheduleTaskContinuation } from "../infra/task-continuation.js";
 import { startTaskTracker } from "../infra/task-tracker.js";
+import { cleanupStaleTasks } from "../plugins/core-hooks/task-enforcer.js";
+import type { loadOpenClawPlugins } from "../plugins/loader.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
+import { normalizeAgentId } from "../routing/session-key.js";
 import { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import {
   scheduleRestartSentinelWake,
@@ -83,7 +84,9 @@ export async function startGatewaySidecars(params: {
     const agentIds = new Set<string>();
     agentIds.add(normalizeAgentId(defaultAgentId));
     for (const entry of agentList) {
-      if (entry?.id) agentIds.add(normalizeAgentId(entry.id));
+      if (entry?.id) {
+        agentIds.add(normalizeAgentId(entry.id));
+      }
     }
     let totalCleaned = 0;
     for (const agentId of agentIds) {
@@ -122,6 +125,11 @@ export async function startGatewaySidecars(params: {
     params.log.warn(`a2a subsystem failed to start: ${String(err)}`);
   }
 
+  try {
+    startTaskHubSink();
+  } catch (err) {
+    params.log.warn(`task-hub sink failed to start: ${String(err)}`);
+  }
   // Start OpenClaw browser control server (unless disabled via config).
   let browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> = null;
   try {

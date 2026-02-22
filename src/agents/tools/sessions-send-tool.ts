@@ -51,6 +51,7 @@ const SessionsSendToolSchema = Type.Object({
     }),
   ),
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+  topicId: Type.Optional(Type.String()),
 });
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -207,6 +208,7 @@ export function createSessionsSendTool(opts?: {
       );
       const depth = normalizeNonNegativeInt(params.depth);
       const hop = normalizeNonNegativeInt(params.hop);
+      const topicIdParam = normalizeOptionalString(readStringParam(params, "topicId"));
       const cfg = loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = cfg.agents?.defaults?.sandbox?.sessionToolsVisibility ?? "spawned";
@@ -489,6 +491,7 @@ export function createSessionsSendTool(opts?: {
           parentConversationId,
           depth: depthValue,
           hop: hopValue,
+          topicId: topicIdParam,
         });
       };
 

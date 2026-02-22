@@ -44,6 +44,8 @@ export interface CreateA2AJobFlowParams {
   payloadType?: A2APayloadType;
   /** Raw structured payload JSON from sender. */
   payloadJson?: string;
+  /** Topic channel ID for dashboard routing. */
+  topicId?: string;
 }
 
 /**
@@ -90,6 +92,7 @@ export async function createAndStartFlow(params: CreateA2AJobFlowParams): Promis
     params.waitRunId,
     params.payloadType,
     params.payloadJson,
+    params.topicId,
   );
 
   return job.jobId;
@@ -125,6 +128,7 @@ async function startJobFlow(
   waitRunId?: string,
   payloadType?: A2APayloadType,
   payloadJson?: string,
+  topicId?: string,
 ): Promise<void> {
   const manager = getA2AJobManager();
   if (!manager) {
@@ -157,6 +161,7 @@ async function startJobFlow(
       startTurn: job.currentTurn,
       payloadType,
       payloadJson,
+      topicId,
       signal: abort.signal,
       onTurnComplete: async (turn: number) => {
         await manager.recordTurnProgress(job.jobId, turn);
@@ -212,5 +217,6 @@ function runFlowDirect(params: CreateA2AJobFlowParams): Promise<void> {
     skipPingPong: params.skipPingPong,
     payloadType: params.payloadType,
     payloadJson: params.payloadJson,
+    topicId: params.topicId,
   });
 }

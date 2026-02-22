@@ -132,6 +132,8 @@ export async function runSessionsSendA2AFlow(params: {
   payloadType?: A2APayloadType;
   /** Raw structured payload JSON (when provided by sender). */
   payloadJson?: string;
+  /** Topic channel ID for dashboard routing. */
+  topicId?: string;
 }) {
   const conversationId = params.conversationId ?? crypto.randomUUID();
   const runContextId = params.waitRunId ?? "unknown";
@@ -148,6 +150,7 @@ export async function runSessionsSendA2AFlow(params: {
     parentConversationId: params.parentConversationId,
     depth: params.depth,
     hop: params.hop,
+    topicId: params.topicId,
   };
 
   // Emit a2a.send immediately so conversation streams can render outbound intent,
