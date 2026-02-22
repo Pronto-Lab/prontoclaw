@@ -167,18 +167,14 @@ describe("startTaskSelfDriving", () => {
     handle.stop();
   });
 
-  it("does not trigger for task without steps", async () => {
-    vi.mocked(findActiveTask).mockResolvedValue(makeTask({ steps: [] }));
-
+  it("does not trigger for simple task without steps", async () => {
+    vi.mocked(findActiveTask).mockResolvedValue(makeTask({ steps: [], simple: true }));
     const handle = startTaskSelfDriving({
       cfg: { agents: { defaults: {} } } as OpenClawConfig,
     });
-
     const listener = getListener();
     fireEnd(listener);
-
     await vi.advanceTimersByTimeAsync(600);
-
     expect(agentCommand).not.toHaveBeenCalled();
     handle.stop();
   });
@@ -279,29 +275,30 @@ describe("startTaskSelfDriving", () => {
     handle.stop();
   });
 
-  it("escalates only once per stuck step (subsequent calls use normal prompt)", async () => {
+  it("re-escalates at intervals after first escalation", async () => {
     vi.mocked(findActiveTask).mockResolvedValue(makeTask());
-
     const handle = startTaskSelfDriving({
       cfg: { agents: { defaults: {} } } as OpenClawConfig,
     });
 
     const listener = getListener();
 
-    // Trigger 4 times on same step
-    for (let i = 0; i < 4; i++) {
+    // Trigger 9 times on same step
+    for (let i = 0; i < 9; i++) {
       fireEnd(listener);
       await vi.advanceTimersByTimeAsync(600);
     }
 
-    expect(agentCommand).toHaveBeenCalledTimes(4);
+    expect(agentCommand).toHaveBeenCalledTimes(9);
 
-    // 3rd call = escalation
+    // call[2] (sameStepCount=3) = first escalation
     expect(vi.mocked(agentCommand).mock.calls[2][0].message).toContain("ESCALATION");
-
-    // 4th call = back to normal (escalated flag was set)
+    // calls 3-6 (sameStepCount=4,5,6,7) = normal self-driving
     expect(vi.mocked(agentCommand).mock.calls[3][0].message).toContain("SELF-DRIVING LOOP");
+    expect(vi.mocked(agentCommand).mock.calls[6][0].message).toContain("SELF-DRIVING LOOP");
 
+    // call[7] (sameStepCount=8) = re-escalation ((8-3) % 5 === 0)
+    expect(vi.mocked(agentCommand).mock.calls[7][0].message).toContain("ESCALATION");
     handle.stop();
   });
 
@@ -343,24 +340,22 @@ describe("startTaskSelfDriving", () => {
     handle.stop();
   });
 
-  it("respects MAX_CONSECUTIVE_CONTINUATIONS (20)", async () => {
+  it("respects MAX_CONSECUTIVE_CONTINUATIONS (50)", async () => {
     vi.mocked(findActiveTask).mockResolvedValue(makeTask());
-
     const handle = startTaskSelfDriving({
       cfg: { agents: { defaults: {} } } as OpenClawConfig,
     });
 
     const listener = getListener();
 
-    // Fire 22 end events
-    for (let i = 0; i < 22; i++) {
+    // Fire 52 end events
+    for (let i = 0; i < 52; i++) {
       fireEnd(listener);
       await vi.advanceTimersByTimeAsync(600);
     }
 
-    // Should cap at 20
-    expect(vi.mocked(agentCommand).mock.calls.length).toBeLessThanOrEqual(20);
-
+    // Should cap at 50
+    expect(vi.mocked(agentCommand).mock.calls.length).toBeLessThanOrEqual(50);
     handle.stop();
   });
 
@@ -527,5 +522,48 @@ describe("startTaskSelfDriving", () => {
 
       handle.stop();
     });
+  });
+
+  it("sends steps-missing prompt for non-simple task without steps", async () => {
+    vi.mocked(findActiveTask).mockResolvedValue(makeTask({ steps: [], simple: undefined }));
+
+    const handle = startTaskSelfDriving({
+      cfg: { agents: { defaults: {} } } as OpenClawConfig,
+    });
+
+    const listener = getListener();
+    fireEnd(listener);
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(agentCommand).toHaveBeenCalledTimes(1);
+    const message = vi.mocked(agentCommand).mock.calls[0][0].message;
+    expect(message).toContain("STEPS REQUIRED");
+    expect(message).toContain("task_update");
+    expect(message).toContain("set_steps");
+
+    handle.stop();
+  });
+
+  it("stops steps-missing prompts after 3 attempts", async () => {
+    vi.mocked(findActiveTask).mockResolvedValue(makeTask({ steps: [], simple: undefined }));
+
+    const handle = startTaskSelfDriving({
+      cfg: { agents: { defaults: {} } } as OpenClawConfig,
+    });
+
+    const listener = getListener();
+
+    for (let i = 0; i < 5; i++) {
+      fireEnd(listener);
+      await vi.advanceTimersByTimeAsync(600);
+    }
+
+    expect(agentCommand).toHaveBeenCalledTimes(3);
+    for (let i = 0; i < 3; i++) {
+      expect(vi.mocked(agentCommand).mock.calls[i][0].message).toContain("STEPS REQUIRED");
+    }
+
+    handle.stop();
   });
 });

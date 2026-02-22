@@ -105,6 +105,63 @@ describe("task-tool", () => {
       expect(content).toContain("## Context");
       expect(content).toContain("User requested via Discord");
     });
+
+    it("creates simple task without steps", async () => {
+      const tool = createTaskStartTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Quick fix",
+        simple: true,
+      });
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.simple).toBe(true);
+      expect(parsed.stepsCount).toBeUndefined();
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls[0];
+      const content = writeCall[1] as string;
+      expect(content).toContain("**Simple:** true");
+      expect(content).not.toContain("## Steps");
+    });
+
+    it("creates task with steps, first step auto in_progress", async () => {
+      const tool = createTaskStartTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Multi-step task",
+        steps: [
+          { content: "Analyze code" },
+          { content: "Implement changes" },
+          { content: "Test and verify" },
+        ],
+      });
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.success).toBe(true);
+      expect(parsed.stepsCount).toBe(3);
+      expect(parsed.simple).toBeUndefined();
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls[0];
+      const content = writeCall[1] as string;
+      expect(content).toContain("## Steps");
+      expect(content).toContain("[>] (s1) Analyze code");
+      expect(content).toContain("[ ] (s2) Implement changes");
+      expect(content).toContain("[ ] (s3) Test and verify");
+    });
+
+    it("steps stay pending when requires_approval is true", async () => {
+      const tool = createTaskStartTool({ config: mockConfig });
+      const result = await tool!.execute("call-1", {
+        description: "Approval task with steps",
+        requires_approval: true,
+        steps: [{ content: "Step A" }, { content: "Step B" }],
+      });
+      const parsed = result.details as Record<string, unknown>;
+      expect(parsed.status).toBe("pending_approval");
+      expect(parsed.stepsCount).toBe(2);
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls[0];
+      const content = writeCall[1] as string;
+      expect(content).toContain("[ ] (s1) Step A");
+      expect(content).toContain("[ ] (s2) Step B");
+    });
   });
 
   describe("createTaskUpdateTool", () => {
