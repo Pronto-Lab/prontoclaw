@@ -1,0 +1,8 @@
+{
+  "id": "send-to-dashboard",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
