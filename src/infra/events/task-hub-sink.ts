@@ -47,7 +47,7 @@ function buildPayload(event: CoordinationEvent): TaskHubPayload | null {
   const label =
     event.type === EVENT_TYPES.A2A_SEND
       ? `[${fromAgent} → ${toAgent}]`
-      : `[${fromAgent} ← ${toAgent}]`;
+      : `[${toAgent} ← ${fromAgent}]`;
 
   return {
     agentId: fromAgent,
