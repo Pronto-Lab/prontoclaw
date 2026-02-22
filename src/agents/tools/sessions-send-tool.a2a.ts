@@ -251,6 +251,12 @@ export async function runSessionsSendA2AFlow(params: {
             break;
           }
 
+          // Agent still running — loop again without counting as retry
+          if (wait?.status === "timeout") {
+            elapsed += CHUNK_MS;
+            continue;
+          }
+
           // Classify non-ok wait responses
           errorInfo = classifyA2AError(wait ?? { status: "error", error: "null response" });
         } catch (err) {
@@ -484,7 +490,23 @@ export async function runSessionsSendA2AFlow(params: {
         });
         const replyText = stepResult.reply;
 
-        if (!replyText || isReplySkip(replyText)) {
+        if (!replyText) {
+          earlyTermination = true;
+          terminationReason = stepResult.ok
+            ? "empty_reply"
+            : stepResult.error?.code === "timeout"
+              ? "turn_timeout"
+              : "agent_error";
+          log.debug("ping-pong turn empty reply", {
+            turn,
+            ok: stepResult.ok,
+            errorCode: stepResult.error?.code,
+            errorMessage: stepResult.error?.message,
+            conversationId,
+          });
+          break;
+        }
+        if (isReplySkip(replyText)) {
           earlyTermination = true;
           terminationReason = "explicit_skip";
           break;

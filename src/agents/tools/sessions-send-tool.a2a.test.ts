@@ -356,6 +356,11 @@ describe("M1 - skipPingPong in A2A flow", () => {
       .map((c: unknown[]) => eventFromCall(c))
       .find((event) => event.type === "a2a.complete");
     expect(completeEvent).toBeDefined();
+
+    const retryEvents = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .filter((event) => event.type === "a2a.retry");
+    expect(retryEvents).toHaveLength(0);
   });
 
   it("emits outcome A2A_RESPONSE when waitRunId returns error status", async () => {
@@ -378,5 +383,95 @@ describe("M1 - skipPingPong in A2A flow", () => {
     expect(typeof errorMessage).toBe("string");
     expect(errorMessage).toContain("rate limit");
     expect(responseEvents[0]?.data?.outcome).toBe("no_reply");
+  });
+
+  it("ping-pong terminates with turn_timeout when runAgentStep times out", async () => {
+    mockRunAgentStep.mockReset();
+    mockRunAgentStep.mockResolvedValue({
+      reply: undefined,
+      ok: false,
+      error: { code: "timeout", message: "agent step timed out" },
+    });
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        skipPingPong: false,
+        maxPingPongTurns: 3,
+        message: "같이 이 코드 검토해줄래?",
+      }),
+    );
+
+    const completeEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.complete");
+    expect(completeEvent).toBeDefined();
+    expect(completeEvent?.data?.terminationReason).toBe("turn_timeout");
+    expect(completeEvent?.data?.actualTurns).toBe(0);
+  });
+
+  it("ping-pong terminates with agent_error when runAgentStep fails non-timeout", async () => {
+    mockRunAgentStep.mockReset();
+    mockRunAgentStep.mockResolvedValue({
+      reply: undefined,
+      ok: false,
+      error: { code: "gateway_error", message: "connection refused" },
+    });
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        skipPingPong: false,
+        maxPingPongTurns: 3,
+        message: "같이 이 코드 검토해줄래?",
+      }),
+    );
+
+    const completeEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.complete");
+    expect(completeEvent).toBeDefined();
+    expect(completeEvent?.data?.terminationReason).toBe("agent_error");
+    expect(completeEvent?.data?.actualTurns).toBe(0);
+  });
+
+  it("ping-pong terminates with empty_reply when runAgentStep succeeds without text", async () => {
+    mockRunAgentStep.mockReset();
+    mockRunAgentStep.mockResolvedValue({ reply: undefined, ok: true });
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        skipPingPong: false,
+        maxPingPongTurns: 3,
+        message: "같이 이 코드 검토해줄래?",
+      }),
+    );
+
+    const completeEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.complete");
+    expect(completeEvent).toBeDefined();
+    expect(completeEvent?.data?.terminationReason).toBe("empty_reply");
+    expect(completeEvent?.data?.actualTurns).toBe(0);
+  });
+
+  it("ping-pong terminates with explicit_skip only when REPLY_SKIP token present", async () => {
+    const { isReplySkip } = await import("./sessions-send-helpers.js");
+
+    mockRunAgentStep.mockReset();
+    mockRunAgentStep.mockResolvedValue({ reply: "REPLY_SKIP", ok: true });
+    vi.mocked(isReplySkip).mockReturnValue(true);
+
+    await runSessionsSendA2AFlow(
+      baseParams({
+        skipPingPong: false,
+        maxPingPongTurns: 3,
+        message: "같이 이 코드 검토해줄래?",
+      }),
+    );
+
+    const completeEvent = mockEmit.mock.calls
+      .map((c: unknown[]) => eventFromCall(c))
+      .find((event) => event.type === "a2a.complete");
+    expect(completeEvent).toBeDefined();
+    expect(completeEvent?.data?.terminationReason).toBe("explicit_skip");
   });
 });
