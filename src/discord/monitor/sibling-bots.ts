@@ -14,6 +14,7 @@
  */
 
 const GLOBAL_KEY = "__openclaw_siblingBotMap__";
+const GLOBAL_REVERSE_KEY = "__openclaw_siblingBotReverseMap__";
 
 function getSiblingBotMap(): Map<string, string> {
   const g = globalThis as Record<string, unknown>;
@@ -23,16 +24,31 @@ function getSiblingBotMap(): Map<string, string> {
   return g[GLOBAL_KEY] as Map<string, string>;
 }
 
+function getSiblingBotReverseMap(): Map<string, string> {
+  const g = globalThis as Record<string, unknown>;
+  if (!g[GLOBAL_REVERSE_KEY]) {
+    g[GLOBAL_REVERSE_KEY] = new Map<string, string>();
+  }
+  return g[GLOBAL_REVERSE_KEY] as Map<string, string>;
+}
+
 /** Register a bot user ID as a sibling agent. */
 export function registerSiblingBot(botId: string, agentId?: string): void {
   if (botId) {
     getSiblingBotMap().set(botId, agentId ?? "");
+    if (agentId) {
+      getSiblingBotReverseMap().set(agentId, botId);
+    }
   }
 }
 
 /** Unregister a bot user ID when an account disconnects. */
 export function unregisterSiblingBot(botId: string): void {
+  const agentId = getSiblingBotMap().get(botId);
   getSiblingBotMap().delete(botId);
+  if (agentId) {
+    getSiblingBotReverseMap().delete(agentId);
+  }
 }
 
 /** Check whether a user ID belongs to a registered sibling bot. */
@@ -51,12 +67,7 @@ export function getAgentIdForBot(botUserId: string): string | undefined {
 
 /** Resolve the Discord bot user ID for a given agent ID. */
 export function getBotUserIdForAgent(agentId: string): string | undefined {
-  for (const [botId, agent] of getSiblingBotMap()) {
-    if (agent === agentId) {
-      return botId;
-    }
-  }
-  return undefined;
+  return getSiblingBotReverseMap().get(agentId);
 }
 
 /** Return all registered sibling bot IDs (for diagnostics). */
@@ -67,4 +78,5 @@ export function listSiblingBots(): string[] {
 /** Clear all registrations (for tests). */
 export function clearSiblingBots(): void {
   getSiblingBotMap().clear();
+  getSiblingBotReverseMap().clear();
 }

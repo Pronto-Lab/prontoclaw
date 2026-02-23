@@ -16,6 +16,12 @@ const log = createSubsystemLogger("discord-conversation-sink");
 const A2A_FORWARD_TYPES = new Set([EVENT_TYPES.A2A_SEND, EVENT_TYPES.A2A_RESPONSE]);
 const CONVERSATION_MAIN_ROLE = "conversation.main";
 const MESSAGE_TRUNCATE_LIMIT = 1900;
+const PENDING_TIMEOUT_MS = 60_000;
+
+function extractString(data: Record<string, unknown>, key: string, fallback = ""): string {
+  const val = data[key];
+  return typeof val === "string" ? val : fallback;
+}
 
 interface ThreadInfo {
   threadId: string;
@@ -70,16 +76,16 @@ function resolveArchiveMinutes(policy: string): number | undefined {
 
 function resolveFromAgent(event: CoordinationEvent): string {
   const data = event.data ?? {};
-  return typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
+  return extractString(data, "fromAgent", "unknown");
 }
 
 function formatMessage(event: CoordinationEvent): string | null {
   const data = event.data ?? {};
-  const message = typeof data.message === "string" ? data.message : "";
+  const message = extractString(data, "message", "");
   if (!message.trim()) {
     return null;
   }
-  const toAgent = typeof data.toAgent === "string" ? data.toAgent : "";
+  const toAgent = extractString(data, "toAgent", "");
   const toBotId = toAgent ? getBotUserIdForAgent(toAgent) : null;
   const mention = toBotId ? `<@${toBotId}> ` : "";
   const truncated =
@@ -94,29 +100,29 @@ function shouldForward(event: CoordinationEvent, filterSet: Set<string>): boolea
     return false;
   }
   const data = event.data ?? {};
-  const eventRole = typeof data.eventRole === "string" ? data.eventRole : "";
+  const eventRole = extractString(data, "eventRole", "");
   return eventRole === CONVERSATION_MAIN_ROLE;
 }
 
 function extractConversationId(event: CoordinationEvent): string {
   const data = event.data ?? {};
-  const conversationId = typeof data.conversationId === "string" ? data.conversationId : "";
+  const conversationId = extractString(data, "conversationId", "");
   if (conversationId) {
     return conversationId;
   }
-  const fromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "";
-  const toAgent = typeof data.toAgent === "string" ? data.toAgent : "";
-  const topicId = typeof data.topicId === "string" ? data.topicId : "";
+  const fromAgent = extractString(data, "fromAgent", "");
+  const toAgent = extractString(data, "toAgent", "");
+  const topicId = extractString(data, "topicId", "");
   return `${[fromAgent, toAgent].toSorted().join("-")}_${topicId || "default"}`;
 }
 
 function buildRouteContext(event: CoordinationEvent): RouteContext {
   const data = event.data ?? {};
   const cfg = loadConfig();
-  const fromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
-  const toAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
-  const message = typeof data.message === "string" ? data.message : "";
-  const topicId = typeof data.topicId === "string" ? data.topicId : undefined;
+  const fromAgent = extractString(data, "fromAgent", "unknown");
+  const toAgent = extractString(data, "toAgent", "unknown");
+  const message = extractString(data, "message", "");
+  const topicId = extractString(data, "topicId", "") || undefined;
   const conversationId = extractConversationId(event);
 
   const fromIdentity = resolveAgentIdentity(cfg, fromAgent);
@@ -131,6 +137,26 @@ function buildRouteContext(event: CoordinationEvent): RouteContext {
     topicId,
     conversationId,
   };
+}
+
+async function sendToThread(
+  threadId: string,
+  text: string,
+  sendOpts: { accountId: string },
+): Promise<void> {
+  try {
+    await sendMessageDiscord(`channel:${threadId}`, text, sendOpts);
+  } catch (err) {
+    log.warn("failed to send to thread", { threadId, error: String(err) });
+  }
+}
+
+async function sendToExistingThread(
+  existing: ThreadInfo,
+  text: string,
+  sendOpts: { accountId: string },
+): Promise<void> {
+  await sendToThread(existing.threadId, text, sendOpts);
 }
 
 export class DiscordConversationSink implements ConversationSink {
@@ -160,7 +186,7 @@ export class DiscordConversationSink implements ConversationSink {
     let stopped = false;
     const pending = new Map<string, Promise<void>>();
 
-    void cache.load().then(() => {
+    const cacheReady = cache.load().then(() => {
       for (const [convId, entry] of cache.getAllEntries()) {
         if (!threadMap.has(convId)) {
           threadMap.set(convId, {
@@ -177,6 +203,40 @@ export class DiscordConversationSink implements ConversationSink {
       });
     });
 
+    async function waitForPending(
+      conversationId: string,
+      text: string,
+      sendOpts: { accountId: string },
+    ): Promise<boolean> {
+      const pendingPromise = pending.get(conversationId);
+      if (!pendingPromise) {
+        return false;
+      }
+
+      const timeoutPromise = new Promise<"timeout">((resolve) => {
+        const timer = setTimeout(() => resolve("timeout"), PENDING_TIMEOUT_MS);
+        pendingPromise.then(
+          () => clearTimeout(timer),
+          () => clearTimeout(timer),
+        );
+      });
+      const result: "ok" | "timeout" = await Promise.race([
+        pendingPromise.then((): "ok" => "ok"),
+        timeoutPromise,
+      ]);
+
+      if (result === "timeout") {
+        log.warn("pending route timed out, will create fresh route", { conversationId });
+        return false;
+      }
+
+      const resolved = threadMap.get(conversationId);
+      if (resolved) {
+        await sendToThread(resolved.threadId, text, sendOpts);
+      }
+      return true;
+    }
+
     async function handleEvent(event: CoordinationEvent): Promise<void> {
       if (stopped) {
         return;
@@ -190,34 +250,23 @@ export class DiscordConversationSink implements ConversationSink {
         return;
       }
 
+      await cacheReady;
+
       const conversationId = extractConversationId(event);
       const fromAgent = resolveFromAgent(event);
       const sendOpts = { accountId: fromAgent };
 
       const existing = threadMap.get(conversationId);
       if (existing) {
-        try {
-          await sendMessageDiscord(`channel:${existing.threadId}`, text, sendOpts);
-        } catch (err) {
-          log.warn("failed to send to existing thread", {
-            threadId: existing.threadId,
-            error: String(err),
-          });
-        }
+        await sendToExistingThread(existing, text, sendOpts);
         return;
       }
 
       if (pending.has(conversationId)) {
-        await pending.get(conversationId);
-        const resolved = threadMap.get(conversationId);
-        if (resolved) {
-          try {
-            await sendMessageDiscord(`channel:${resolved.threadId}`, text, sendOpts);
-          } catch (err) {
-            log.warn("failed to send after pending resolution", { error: String(err) });
-          }
+        const handled = await waitForPending(conversationId, text, sendOpts);
+        if (handled) {
+          return;
         }
-        return;
       }
 
       const routePromise = (async () => {
@@ -225,8 +274,8 @@ export class DiscordConversationSink implements ConversationSink {
           const routeCtx = buildRouteContext(event);
 
           const data = event.data ?? {};
-          const evFromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
-          const evToAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
+          const evFromAgent = extractString(data, "fromAgent", "unknown");
+          const evToAgent = extractString(data, "toAgent", "unknown");
           const agentPair = [evFromAgent, evToAgent].toSorted() as [string, string];
 
           const cachedEntry = cache.getByAgentPair(agentPair);
@@ -261,7 +310,7 @@ export class DiscordConversationSink implements ConversationSink {
             );
             threadId = thread.id;
           } else {
-            await sendMessageDiscord(`channel:${threadId}`, text, sendOpts);
+            await sendToThread(threadId, text, sendOpts);
           }
 
           const threadInfo: ThreadInfo = {
