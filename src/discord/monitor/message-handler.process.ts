@@ -346,10 +346,17 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   const resolvedMessageChannelId = messageChannelId ?? message.channelId;
 
   // ── A2A Auto-Routing ──────────────────────────────────────────────
-  // When a sibling bot @mentions us, route through the A2A flow instead
-  // of normal message processing.  This injects the sender's conversation
-  // context so the receiving agent understands what the sender is working on.
-  if (isSiblingBot(author.id) && isGuildMessage && ctx.botUserId && !threadChannel) {
+  // When a sibling bot @mentions us in a main channel, route through the
+  // A2A flow.  In threads, sibling bot messages are dropped entirely —
+  // the A2A conversation sink already manages thread message delivery.
+  if (isSiblingBot(author.id) && isGuildMessage && ctx.botUserId) {
+    if (threadChannel) {
+      logVerbose(
+        `discord: drop sibling bot message in thread ${resolvedMessageChannelId} (A2A sink manages threads)`,
+      );
+      return;
+    }
+    // Main channel: route through A2A flow
     const senderAgentId = getAgentIdForBot(author.id);
     const mentionsUs = message.mentionedUsers?.some((user: User) => user.id === ctx.botUserId);
     if (senderAgentId && mentionsUs) {
