@@ -76,21 +76,9 @@ function formatMessage(event: CoordinationEvent): string | null {
     return null;
   }
 
-  const fromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
-  const toAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
-
-  const fromBotId = getBotUserIdForAgent(fromAgent);
-  const toBotId = getBotUserIdForAgent(toAgent);
-
-  const fromMention = fromBotId ? `<@${fromBotId}>` : fromAgent;
-  const toMention = toBotId ? `<@${toBotId}>` : toAgent;
-
-  const truncated =
-    message.length > MESSAGE_TRUNCATE_LIMIT
-      ? message.slice(0, MESSAGE_TRUNCATE_LIMIT) + "..."
-      : message;
-
-  return `${fromMention} → ${toMention}\n\n${truncated}`;
+  return message.length > MESSAGE_TRUNCATE_LIMIT
+    ? message.slice(0, MESSAGE_TRUNCATE_LIMIT) + "..."
+    : message;
 }
 
 function shouldForward(event: CoordinationEvent, filterSet: Set<string>): boolean {
