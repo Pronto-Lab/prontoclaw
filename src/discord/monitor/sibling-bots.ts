@@ -38,6 +38,16 @@ export function getAgentIdForBot(botUserId: string): string | undefined {
   return agentId || undefined;
 }
 
+/** Resolve the Discord bot user ID for a given agent ID. */
+export function getBotUserIdForAgent(agentId: string): string | undefined {
+  for (const [botId, agent] of siblingBotMap) {
+    if (agent === agentId) {
+      return botId;
+    }
+  }
+  return undefined;
+}
+
 /** Return all registered sibling bot IDs (for diagnostics). */
 export function listSiblingBots(): string[] {
   return [...siblingBotMap.keys()];

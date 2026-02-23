@@ -313,6 +313,7 @@ export class ChannelRouter {
           .join(" ")
           .trim();
         log.info("sub-agent final response", {
+          consoleMessage: `sub-agent final response (turns=${turn} stop=${response.stopReason} textLen=${text.length}): ${text.slice(0, 200)}`,
           turns: turn,
           stopReason: response.stopReason,
           textLen: text.length,
@@ -325,7 +326,11 @@ export class ChannelRouter {
       llmContext.messages.push(response);
       const toolCalls = response.content.filter(isToolCall);
       for (const call of toolCalls) {
-        log.info("sub-agent tool call", { tool: call.name, turn });
+        log.info("sub-agent tool call", {
+          consoleMessage: `sub-agent tool call: ${call.name} (turn ${turn})`,
+          tool: call.name,
+          turn,
+        });
         let resultText: string;
         try {
           resultText = await executeTool(call.name, call.arguments, this.accountId);
@@ -387,8 +392,7 @@ export class ChannelRouter {
 
       return {
         channelId,
-        threadName:
-          threadName.slice(0, THREAD_NAME_MAX) || this.generateFallbackName({} as RouteContext),
+        threadName: threadName.slice(0, THREAD_NAME_MAX) || "새로운 협업 대화",
         reasoning,
       };
     } catch (err) {
@@ -401,6 +405,12 @@ export class ChannelRouter {
   }
 
   private generateFallbackName(context: RouteContext): string {
+    if (context?.message) {
+      const cleaned = context.message.replace(/\n/g, " ").trim();
+      if (cleaned.length > 0) {
+        return cleaned.slice(0, THREAD_NAME_MAX);
+      }
+    }
     const ts = new Date().toISOString().slice(0, 16);
     if (context?.fromAgentName && context?.toAgentName) {
       return `${context.fromAgentName} ↔ ${context.toAgentName} · ${ts}`.slice(0, THREAD_NAME_MAX);

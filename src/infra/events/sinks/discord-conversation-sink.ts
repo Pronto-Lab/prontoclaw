@@ -1,5 +1,6 @@
 import { resolveAgentIdentity } from "../../../agents/identity.js";
 import { loadConfig } from "../../../config/config.js";
+import { getBotUserIdForAgent } from "../../../discord/monitor/sibling-bots.js";
 import { createThreadDiscord } from "../../../discord/send.messages.js";
 import { sendMessageDiscord } from "../../../discord/send.outbound.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
@@ -8,6 +9,7 @@ import type { ConversationSink, ConversationSinkConfig } from "../conversation-s
 import { EVENT_TYPES } from "../schemas.js";
 import { ChannelRouter, type RouteContext } from "./channel-router.js";
 
+const OWNER_DISCORD_ID = "974537452750528553";
 const log = createSubsystemLogger("discord-conversation-sink");
 
 const A2A_FORWARD_TYPES = new Set([EVENT_TYPES.A2A_SEND, EVENT_TYPES.A2A_RESPONSE]);
@@ -61,7 +63,7 @@ function resolveArchiveMinutes(policy: string): number | undefined {
   }
 }
 
-function formatMessage(event: CoordinationEvent): string | null {
+function formatMessage(event: CoordinationEvent, isNewThread: boolean): string | null {
   const data = event.data ?? {};
   const message = typeof data.message === "string" ? data.message : "";
   if (!message.trim()) {
@@ -83,7 +85,21 @@ function formatMessage(event: CoordinationEvent): string | null {
       ? message.slice(0, MESSAGE_TRUNCATE_LIMIT) + "..."
       : message;
 
-  return `**${fromLabel}** → **${toLabel}**\n\n${truncated}`;
+  let mentions = "";
+  if (isNewThread) {
+    const mentionParts: string[] = [`<@${OWNER_DISCORD_ID}>`];
+    const toBotId = getBotUserIdForAgent(toAgent);
+    if (toBotId) {
+      mentionParts.push(`<@${toBotId}>`);
+    }
+    const fromBotId = getBotUserIdForAgent(fromAgent);
+    if (fromBotId) {
+      mentionParts.push(`<@${fromBotId}>`);
+    }
+    mentions = mentionParts.join(" ") + "\n\n";
+  }
+
+  return `${mentions}**${fromLabel}** → **${toLabel}**\n\n${truncated}`;
 }
 
 function shouldForward(event: CoordinationEvent, filterSet: Set<string>): boolean {
@@ -162,7 +178,7 @@ export class DiscordConversationSink implements ConversationSink {
         return;
       }
 
-      const text = formatMessage(event);
+      const text = formatMessage(event, false);
       if (!text) {
         return;
       }
@@ -201,6 +217,7 @@ export class DiscordConversationSink implements ConversationSink {
         try {
           const routeCtx = buildRouteContext(event);
           const result = await router.route(routeCtx);
+          const threadStartText = formatMessage(event, true) ?? text;
 
           log.info("routed conversation", {
             conversationId,
@@ -217,7 +234,7 @@ export class DiscordConversationSink implements ConversationSink {
               result.channelId,
               {
                 name: result.threadName,
-                content: text,
+                content: threadStartText,
                 autoArchiveMinutes: archiveMinutes,
               },
               { accountId: opts.messageAccountId },

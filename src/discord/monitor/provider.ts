@@ -66,6 +66,7 @@ import {
 } from "./native-command.js";
 import { resolveDiscordPresenceUpdate } from "./presence.js";
 import { resolveDiscordRestFetch } from "./rest-fetch.js";
+import { registerSiblingBot } from "./sibling-bots.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
@@ -531,6 +532,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   try {
     const botUser = await client.fetchUser("@me");
     botUserId = botUser?.id;
+    if (botUserId) {
+      registerSiblingBot(botUserId, account.accountId);
+    }
   } catch (err) {
     runtime.error?.(danger(`discord: failed to fetch bot identity: ${String(err)}`));
   }
