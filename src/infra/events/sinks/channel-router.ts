@@ -1,5 +1,9 @@
+import { completeSimple, type TextContent } from "@mariozechner/pi-ai";
 import type { APIChannel } from "discord-api-types/v10";
 import { ChannelType } from "discord-api-types/v10";
+import { getApiKeyForModel, requireApiKey } from "../../../agents/model-auth.js";
+import { resolveModel } from "../../../agents/pi-embedded-runner/model.js";
+import { loadConfig } from "../../../config/config.js";
 import { listGuildChannelsDiscord, listThreadsDiscord } from "../../../discord/send.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 
@@ -7,6 +11,7 @@ const log = createSubsystemLogger("channel-router");
 
 const ROUTER_TIMEOUT_MS = 15_000;
 const THREAD_NAME_MAX = 100;
+const MAX_PROMPT_MESSAGE_LENGTH = 500;
 
 export interface RouteContext {
   message: string;
@@ -29,7 +34,9 @@ interface ActiveThread {
   id: string;
   name: string;
   parentId: string;
-  archived: boolean;
+  parentName?: string;
+  messageCount?: number;
+  lastMessageAt?: string;
 }
 
 interface ChannelInfo {
@@ -37,18 +44,46 @@ interface ChannelInfo {
   name: string;
   topic?: string;
   parentName?: string;
-  type: number;
+}
+
+interface RouterModelConfig {
+  provider: string;
+  model: string;
+}
+
+function parseModelString(modelString: string): RouterModelConfig {
+  const parts = modelString.split("/");
+  if (parts.length >= 2) {
+    return { provider: parts[0], model: parts.slice(1).join("/") };
+  }
+  return { provider: "anthropic", model: modelString };
+}
+
+function isTextContentBlock(block: unknown): block is TextContent {
+  return (
+    block !== null &&
+    typeof block === "object" &&
+    (block as Record<string, unknown>).type === "text" &&
+    typeof (block as Record<string, unknown>).text === "string"
+  );
 }
 
 export class ChannelRouter {
   private guildId: string;
   private defaultChannelId: string;
   private accountId: string;
+  private routerModel: string;
 
-  constructor(opts: { guildId: string; defaultChannelId: string; accountId: string }) {
+  constructor(opts: {
+    guildId: string;
+    defaultChannelId: string;
+    accountId: string;
+    routerModel?: string;
+  }) {
     this.guildId = opts.guildId;
     this.defaultChannelId = opts.defaultChannelId;
     this.accountId = opts.accountId;
+    this.routerModel = opts.routerModel ?? "anthropic/claude-sonnet-4-5";
   }
 
   async route(context: RouteContext): Promise<RouteResult> {
@@ -61,34 +96,206 @@ export class ChannelRouter {
   }
 
   private async doRoute(context: RouteContext): Promise<RouteResult> {
-    const opts = { accountId: this.accountId };
+    const discordOpts = { accountId: this.accountId };
 
     const [channels, threadsResponse] = await Promise.all([
-      listGuildChannelsDiscord(this.guildId, opts),
-      listThreadsDiscord({ guildId: this.guildId }, opts),
+      listGuildChannelsDiscord(this.guildId, discordOpts),
+      listThreadsDiscord({ guildId: this.guildId }, discordOpts),
     ]);
 
     const textChannels = this.filterTextChannels(channels);
-    const activeThreads = this.extractActiveThreads(threadsResponse);
+    const activeThreads = this.extractActiveThreads(channels, threadsResponse);
 
-    const matchingThread = this.findMatchingThread(activeThreads, context);
-    if (matchingThread) {
-      return {
-        channelId: matchingThread.parentId,
-        threadId: matchingThread.id,
-        threadName: matchingThread.name,
-        reasoning: `reusing existing thread "${matchingThread.name}"`,
-      };
+    const llmResult = await this.callRouterLLM(context, textChannels, activeThreads);
+    if (llmResult) {
+      return llmResult;
     }
 
-    const channelId = this.pickChannel(textChannels, context);
-    const threadName = this.generateThreadName(context);
+    return this.buildFallback(context);
+  }
 
-    return {
-      channelId,
-      threadName,
-      reasoning: `new thread in channel ${channelId}`,
-    };
+  private async callRouterLLM(
+    context: RouteContext,
+    channels: ChannelInfo[],
+    threads: ActiveThread[],
+  ): Promise<RouteResult | null> {
+    const cfg = loadConfig();
+    const { provider, model: modelId } = parseModelString(this.routerModel);
+    const resolved = resolveModel(provider, modelId, undefined, cfg);
+
+    if (!resolved.model) {
+      log.warn("router model not found, falling back", {
+        model: this.routerModel,
+        error: resolved.error,
+      });
+      return null;
+    }
+
+    let apiKey: string;
+    try {
+      apiKey = requireApiKey(await getApiKeyForModel({ model: resolved.model, cfg }), provider);
+    } catch (err) {
+      log.warn("router model API key not available", { error: String(err) });
+      return null;
+    }
+
+    const prompt = this.buildPrompt(context, channels, threads);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ROUTER_TIMEOUT_MS - 2000);
+
+    try {
+      const res = await completeSimple(
+        resolved.model,
+        {
+          messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+        },
+        {
+          apiKey,
+          maxTokens: 300,
+          temperature: 0,
+          signal: controller.signal,
+        },
+      );
+
+      const text = res.content
+        .filter(isTextContentBlock)
+        .map((block) => block.text.trim())
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+      return this.parseResponse(text, channels, threads, context);
+    } catch (err) {
+      log.warn("router LLM call failed", { error: String(err) });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private buildPrompt(
+    context: RouteContext,
+    channels: ChannelInfo[],
+    threads: ActiveThread[],
+  ): string {
+    const channelList = channels
+      .map((ch) => {
+        const parts = [`- id:${ch.id} name:#${ch.name}`];
+        if (ch.topic) {
+          parts.push(`topic:"${ch.topic}"`);
+        }
+        if (ch.parentName) {
+          parts.push(`category:${ch.parentName}`);
+        }
+        return parts.join(" ");
+      })
+      .join("\n");
+
+    const threadList =
+      threads.length > 0
+        ? threads
+            .map((t) => {
+              const parts = [`- id:${t.id} name:"${t.name}" channel:${t.parentId}`];
+              if (t.parentName) {
+                parts.push(`(#${t.parentName})`);
+              }
+              if (t.messageCount) {
+                parts.push(`msgs:${t.messageCount}`);
+              }
+              return parts.join(" ");
+            })
+            .join("\n")
+        : "(no active threads)";
+
+    const truncatedMessage = context.message.slice(0, MAX_PROMPT_MESSAGE_LENGTH);
+
+    return `You are a Discord thread router for an AI agent team.
+Your job: find the best place for an agent-to-agent conversation.
+
+[New Conversation]
+From: ${context.fromAgent} (${context.fromAgentName})
+To: ${context.toAgent} (${context.toAgentName})
+Topic ID: ${context.topicId ?? "N/A"}
+First message:
+---
+${truncatedMessage}
+---
+
+[Available Channels]
+${channelList}
+
+[Active Threads]
+${threadList}
+
+[Instructions]
+1. Check if any existing thread's topic closely matches this conversation
+   - If YES: return that thread (reuse)
+   - If NO: pick the most appropriate channel and create a new thread name
+2. Thread name rules:
+   - Korean, concise, max 50 chars
+   - Describe the discussion topic (not the agents)
+   - Examples: "Gateway 메모리 누수 분석", "task-hub DM 시스템 마이그레이션"
+3. Default channel (fallback): ${this.defaultChannelId}
+
+Return ONLY a JSON object (no markdown, no explanation):
+{"channelId": "...", "threadId": "...or null", "threadName": "...", "reasoning": "..."}`;
+  }
+
+  private parseResponse(
+    text: string,
+    channels: ChannelInfo[],
+    threads: ActiveThread[],
+    context: RouteContext,
+  ): RouteResult | null {
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        log.warn("no JSON found in router response", { text: text.slice(0, 200) });
+        return null;
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+      const channelId = typeof parsed.channelId === "string" ? parsed.channelId : "";
+      const threadId =
+        typeof parsed.threadId === "string" && parsed.threadId !== "null"
+          ? parsed.threadId
+          : undefined;
+      const threadName = typeof parsed.threadName === "string" ? parsed.threadName : "";
+      const reasoning = typeof parsed.reasoning === "string" ? parsed.reasoning : undefined;
+
+      if (!channelId && !threadId) {
+        log.warn("router response missing channelId and threadId");
+        return null;
+      }
+
+      if (threadId) {
+        const thread = threads.find((t) => t.id === threadId);
+        if (!thread) {
+          log.warn("router returned unknown threadId", { threadId });
+          return null;
+        }
+        return {
+          channelId: thread.parentId,
+          threadId: thread.id,
+          threadName: thread.name,
+          reasoning: reasoning ?? `reusing existing thread "${thread.name}"`,
+        };
+      }
+
+      const channel = channels.find((ch) => ch.id === channelId);
+      const resolvedChannelId = channel ? channel.id : this.defaultChannelId;
+      const resolvedThreadName =
+        threadName.slice(0, THREAD_NAME_MAX) || this.generateFallbackName(context);
+
+      return {
+        channelId: resolvedChannelId,
+        threadName: resolvedThreadName,
+        reasoning,
+      };
+    } catch (err) {
+      log.warn("failed to parse router response", { error: String(err), text: text.slice(0, 200) });
+      return null;
+    }
   }
 
   private filterTextChannels(channels: APIChannel[]): ChannelInfo[] {
@@ -106,14 +313,25 @@ export class ChannelRouter {
         name: "name" in ch ? (ch.name ?? "") : "",
         topic: "topic" in ch ? (ch.topic ?? undefined) : undefined,
         parentName: "parent_id" in ch && ch.parent_id ? categories.get(ch.parent_id) : undefined,
-        type: ch.type,
       }));
   }
 
-  private extractActiveThreads(response: unknown): ActiveThread[] {
+  private extractActiveThreads(channels: APIChannel[], response: unknown): ActiveThread[] {
     if (!response || typeof response !== "object") {
       return [];
     }
+
+    const categories = new Map<string, string>();
+    for (const ch of channels) {
+      if (
+        (ch.type === ChannelType.GuildText || ch.type === ChannelType.GuildForum) &&
+        "name" in ch &&
+        ch.name
+      ) {
+        categories.set(ch.id, ch.name);
+      }
+    }
+
     const data = response as { threads?: unknown[] };
     if (!Array.isArray(data.threads)) {
       return [];
@@ -124,180 +342,24 @@ export class ChannelRouter {
         id: typeof t.id === "string" ? t.id : "",
         name: typeof t.name === "string" ? t.name : "",
         parentId: typeof t.parent_id === "string" ? t.parent_id : "",
+        parentName: typeof t.parent_id === "string" ? categories.get(t.parent_id) : undefined,
+        messageCount: typeof t.message_count === "number" ? t.message_count : undefined,
+        lastMessageAt: typeof t.last_message_id === "string" ? t.last_message_id : undefined,
         archived:
           typeof t.thread_metadata === "object" &&
           t.thread_metadata !== null &&
           (t.thread_metadata as Record<string, unknown>).archived === true,
       }))
-      .filter((t) => t.id && !t.archived);
+      .filter((t) => t.id && !(t as Record<string, unknown>).archived)
+      .map(({ archived: _archived, ...rest }) => rest as ActiveThread);
   }
 
-  private findMatchingThread(
-    threads: ActiveThread[],
-    context: RouteContext,
-  ): ActiveThread | undefined {
-    if (threads.length === 0) {
-      return undefined;
-    }
-
-    const keywords = this.extractKeywords(context.message);
-    if (keywords.length === 0) {
-      return undefined;
-    }
-
-    let bestMatch: ActiveThread | undefined;
-    let bestScore = 0;
-
-    for (const thread of threads) {
-      const threadNameLower = thread.name.toLowerCase();
-      let score = 0;
-      for (const kw of keywords) {
-        if (threadNameLower.includes(kw)) {
-          score++;
-        }
-      }
-      const ratio = score / keywords.length;
-      if (ratio >= 0.4 && score > bestScore) {
-        bestScore = score;
-        bestMatch = thread;
-      }
-    }
-
-    return bestMatch;
-  }
-
-  private extractKeywords(message: string): string[] {
-    const text = message.slice(0, 500).toLowerCase();
-    const stopWords = new Set([
-      "the",
-      "a",
-      "an",
-      "is",
-      "are",
-      "was",
-      "were",
-      "be",
-      "been",
-      "have",
-      "has",
-      "had",
-      "do",
-      "does",
-      "did",
-      "will",
-      "would",
-      "could",
-      "should",
-      "may",
-      "might",
-      "can",
-      "shall",
-      "to",
-      "of",
-      "in",
-      "for",
-      "on",
-      "with",
-      "at",
-      "by",
-      "from",
-      "and",
-      "or",
-      "but",
-      "not",
-      "no",
-      "if",
-      "then",
-      "so",
-      "that",
-      "this",
-      "it",
-      "its",
-      "my",
-      "your",
-      "our",
-      "their",
-      "이",
-      "그",
-      "저",
-      "을",
-      "를",
-      "은",
-      "는",
-      "이",
-      "가",
-      "에",
-      "에서",
-      "로",
-      "으로",
-      "와",
-      "과",
-      "의",
-      "도",
-      "좀",
-      "수",
-      "것",
-      "거",
-      "해",
-      "할",
-      "하고",
-      "하는",
-      "해줘",
-    ]);
-    return text
-      .replace(/[^a-z0-9가-힣\s-]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w.length > 1 && !stopWords.has(w))
-      .slice(0, 10);
-  }
-
-  private pickChannel(channels: ChannelInfo[], context: RouteContext): string {
-    if (channels.length === 0) {
-      return this.defaultChannelId;
-    }
-
-    const keywords = this.extractKeywords(context.message);
-    if (keywords.length === 0) {
-      return this.defaultChannelId;
-    }
-
-    let bestChannel: ChannelInfo | undefined;
-    let bestScore = 0;
-
-    for (const ch of channels) {
-      const searchText = [ch.name, ch.topic ?? "", ch.parentName ?? ""].join(" ").toLowerCase();
-      let score = 0;
-      for (const kw of keywords) {
-        if (searchText.includes(kw)) {
-          score++;
-        }
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        bestChannel = ch;
-      }
-    }
-
-    return bestChannel?.id ?? this.defaultChannelId;
-  }
-
-  private generateThreadName(context: RouteContext): string {
-    const firstLine =
-      context.message
-        .split("\n")
-        .find((l) => l.trim())
-        ?.trim() ?? "";
-
-    if (firstLine.length > 0 && firstLine.length <= THREAD_NAME_MAX) {
-      return firstLine.slice(0, THREAD_NAME_MAX);
-    }
-
-    if (firstLine.length > THREAD_NAME_MAX) {
-      return firstLine.slice(0, THREAD_NAME_MAX - 3) + "...";
-    }
-
+  private generateFallbackName(context: RouteContext): string {
     const ts = new Date().toISOString().slice(0, 16);
-    return `${context.fromAgentName} ↔ ${context.toAgentName} · ${ts}`.slice(0, THREAD_NAME_MAX);
+    if (context?.fromAgentName && context?.toAgentName) {
+      return `${context.fromAgentName} ↔ ${context.toAgentName} · ${ts}`.slice(0, THREAD_NAME_MAX);
+    }
+    return `conversation · ${ts}`.slice(0, THREAD_NAME_MAX);
   }
 
   private async timeoutFallback(context: RouteContext): Promise<RouteResult> {
@@ -310,13 +372,9 @@ export class ChannelRouter {
   }
 
   private buildFallback(context: RouteContext): RouteResult {
-    const ts = new Date().toISOString().slice(0, 16);
     return {
       channelId: this.defaultChannelId,
-      threadName: `${context.fromAgentName} ↔ ${context.toAgentName} · ${ts}`.slice(
-        0,
-        THREAD_NAME_MAX,
-      ),
+      threadName: this.generateFallbackName(context),
       reasoning: "fallback (timeout or error)",
     };
   }

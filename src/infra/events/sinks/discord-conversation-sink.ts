@@ -28,6 +28,7 @@ interface DiscordConversationSinkOptions {
   messageAccountId: string;
   archivePolicy: string;
   eventFilter: string[];
+  routerModel?: string;
 }
 
 function str(v: unknown, fallback: string): string {
@@ -43,6 +44,7 @@ function parseOptions(raw: Record<string, unknown>): DiscordConversationSinkOpti
     eventFilter: Array.isArray(raw.eventFilter)
       ? (raw.eventFilter as string[])
       : [EVENT_TYPES.A2A_SEND, EVENT_TYPES.A2A_RESPONSE],
+    routerModel: typeof raw.routerModel === "string" ? raw.routerModel : undefined,
   };
 }
 
@@ -143,6 +145,7 @@ export class DiscordConversationSink implements ConversationSink {
       guildId: opts.guildId,
       defaultChannelId: opts.defaultChannelId,
       accountId: opts.routerAccountId,
+      routerModel: opts.routerModel,
     });
 
     const threadMap = new Map<string, ThreadInfo>();
