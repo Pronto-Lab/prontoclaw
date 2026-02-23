@@ -204,9 +204,8 @@ ${truncatedMessage}
    - Describe the discussion topic (not the agents)
    - Examples: "Gateway 메모리 누수 분석", "task-hub DM 시스템 마이그레이션"
 6. Default channel (fallback): ${defaultChannelId}
-
-Return JSON:
-{ "channelId": "...", "threadId": "...or null", "threadName": "...", "reasoning": "..." }`;
+CRITICAL: Your final response MUST be ONLY raw JSON (no markdown, no code fences, no explanation).
+Example: {"channelId": "123", "threadId": null, "threadName": "topic name", "reasoning": "brief reason"}`;
 }
 
 export class ChannelRouter {
@@ -313,14 +312,20 @@ export class ChannelRouter {
           .filter(Boolean)
           .join(" ")
           .trim();
-        log.debug("sub-agent routing complete", { turns: turn, text: text.slice(0, 200) });
+        log.info("sub-agent final response", {
+          turns: turn,
+          stopReason: response.stopReason,
+          textLen: text.length,
+          text: text.slice(0, 300),
+          contentTypes: response.content.map((b) => (b as Record<string, unknown>).type).join(","),
+        });
         return this.parseResponse(text);
       }
 
       llmContext.messages.push(response);
       const toolCalls = response.content.filter(isToolCall);
       for (const call of toolCalls) {
-        log.debug("sub-agent tool call", { tool: call.name, turn });
+        log.info("sub-agent tool call", { tool: call.name, turn });
         let resultText: string;
         try {
           resultText = await executeTool(call.name, call.arguments, this.accountId);
@@ -344,13 +349,20 @@ export class ChannelRouter {
 
   private parseResponse(text: string): RouteResult | null {
     try {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        log.warn("no JSON found in sub-agent response", { text: text.slice(0, 200) });
+      let jsonStr: string | undefined;
+      const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fencedMatch) {
+        jsonStr = fencedMatch[1].trim();
+      } else {
+        const rawMatch = text.match(/\{[\s\S]*\}/);
+        jsonStr = rawMatch?.[0];
+      }
+      if (!jsonStr) {
+        log.warn("no JSON found in sub-agent response", { text: text.slice(0, 300) });
         return null;
       }
 
-      const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+      const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
       const channelId = typeof parsed.channelId === "string" ? parsed.channelId : "";
       const threadId =
         typeof parsed.threadId === "string" && parsed.threadId !== "null"
