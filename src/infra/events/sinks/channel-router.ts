@@ -243,7 +243,7 @@ export class ChannelRouter {
     this.guildId = opts.guildId;
     this.defaultChannelId = opts.defaultChannelId;
     this.accountId = opts.accountId;
-    this.routerModel = opts.routerModel ?? "anthropic/claude-sonnet-4-6";
+    this.routerModel = opts.routerModel ?? "anthropic/claude-sonnet-4-5";
   }
 
   async route(context: RouteContext): Promise<RouteResult> {
