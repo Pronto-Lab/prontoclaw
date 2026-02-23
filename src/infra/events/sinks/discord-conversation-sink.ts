@@ -1,7 +1,7 @@
 import { resolveAgentIdentity } from "../../../agents/identity.js";
 import { loadConfig } from "../../../config/config.js";
 import { resolveStateDir } from "../../../config/paths.js";
-import { getBotUserIdForAgent } from "../../../discord/monitor/sibling-bots.js";
+import { getBotUserIdForAgent, listSiblingBots } from "../../../discord/monitor/sibling-bots.js";
 import { createThreadDiscord } from "../../../discord/send.messages.js";
 import { sendMessageDiscord } from "../../../discord/send.outbound.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
@@ -79,11 +79,16 @@ function formatMessage(event: CoordinationEvent): string | null {
   if (!message.trim()) {
     return null;
   }
-
   const toAgent = typeof data.toAgent === "string" ? data.toAgent : "";
   const toBotId = toAgent ? getBotUserIdForAgent(toAgent) : null;
+  if (toAgent && !toBotId) {
+    log.warn("getBotUserIdForAgent returned undefined", {
+      toAgent,
+      siblingBotCount: listSiblingBots().length,
+      consoleMessage: `getBotUserIdForAgent(${toAgent}) → undefined (${listSiblingBots().length} bots registered: ${listSiblingBots().join(", ")})`,
+    });
+  }
   const mention = toBotId ? `<@${toBotId}> ` : "";
-
   const truncated =
     message.length > MESSAGE_TRUNCATE_LIMIT
       ? message.slice(0, MESSAGE_TRUNCATE_LIMIT) + "..."
