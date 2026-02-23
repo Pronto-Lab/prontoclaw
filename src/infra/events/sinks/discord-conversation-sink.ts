@@ -28,6 +28,7 @@ interface DiscordConversationSinkOptions {
   routerAccountId: string;
   messageAccountId: string;
   reportChannelId?: string;
+  notifyUserIds?: string[];
   archivePolicy: string;
   eventFilter: string[];
   routerModel?: string;
@@ -43,6 +44,7 @@ function parseOptions(raw: Record<string, unknown>): DiscordConversationSinkOpti
     routerAccountId: str(raw.routerAccountId, "ruda"),
     messageAccountId: str(raw.messageAccountId, "ruda"),
     reportChannelId: typeof raw.reportChannelId === "string" ? raw.reportChannelId : undefined,
+    notifyUserIds: Array.isArray(raw.notifyUserIds) ? (raw.notifyUserIds as string[]) : undefined,
     archivePolicy: str(raw.archivePolicy, "never"),
     eventFilter: Array.isArray(raw.eventFilter)
       ? (raw.eventFilter as string[])
@@ -219,7 +221,9 @@ export class DiscordConversationSink implements ConversationSink {
               result.channelId,
               {
                 name: result.threadName,
-                content: text,
+                content: opts.notifyUserIds?.length
+                  ? `${opts.notifyUserIds.map((id) => `<@${id}>`).join(" ")} ${text}`
+                  : text,
                 autoArchiveMinutes: archiveMinutes,
               },
               { accountId: fromAgent },
