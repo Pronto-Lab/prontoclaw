@@ -28,7 +28,8 @@ import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { startA2AIndex } from "../infra/events/a2a-index.js";
 import { startEventLog } from "../infra/events/event-log.js";
-import { startTaskHubSink } from "../infra/events/task-hub-sink.js";
+import { SinkRegistry } from "../infra/events/sink-registry.js";
+import { DiscordConversationSink } from "../infra/events/sinks/discord-conversation-sink.js";
 import { startTaskContinuationRunner } from "../infra/task-continuation-runner.js";
 import { scheduleTaskContinuation } from "../infra/task-continuation.js";
 import { startTaskSelfDriving } from "../infra/task-self-driving.js";
@@ -128,10 +129,14 @@ export async function startGatewaySidecars(params: {
     params.log.warn(`a2a subsystem failed to start: ${String(err)}`);
   }
 
+  // Start conversation sinks (replaces old task-hub-sink).
+  const sinkRegistry = new SinkRegistry();
+  sinkRegistry.register(new DiscordConversationSink());
   try {
-    startTaskHubSink();
+    const sinkConfigs = params.cfg.gateway?.conversationSinks ?? [];
+    sinkRegistry.startAll(sinkConfigs);
   } catch (err) {
-    params.log.warn(`task-hub sink failed to start: ${String(err)}`);
+    params.log.warn(`conversation sink startup failed: ${String(err)}`);
   }
   // Start OpenClaw browser control server (unless disabled via config).
   let browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> = null;

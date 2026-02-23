@@ -276,6 +276,12 @@ export type GatewayToolsConfig = {
   allow?: string[];
 };
 
+export type ConversationSinkEntry = {
+  id: string;
+  enabled: boolean;
+  options: Record<string, unknown>;
+};
+
 export type GatewayConfig = {
   /** Single multiplexed port for Gateway WS + HTTP (default: 18789). */
   port?: number;
@@ -318,4 +324,6 @@ export type GatewayConfig = {
    * Set to 0 to disable. Default: 5.
    */
   channelHealthCheckMinutes?: number;
+  /** Pluggable conversation sinks for routing A2A events to external platforms (e.g. Discord). */
+  conversationSinks?: ConversationSinkEntry[];
 };
