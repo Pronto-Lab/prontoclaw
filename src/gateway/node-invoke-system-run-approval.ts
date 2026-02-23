@@ -1,9 +1,9 @@
-import type { ExecApprovalManager, ExecApprovalRecord } from "./exec-approval-manager.js";
-import type { GatewayClient } from "./server-methods/types.js";
 import {
   formatExecCommand,
   validateSystemRunCommandConsistency,
 } from "../infra/system-run-command.js";
+import type { ExecApprovalManager, ExecApprovalRecord } from "./exec-approval-manager.js";
+import type { GatewayClient } from "./server-methods/types.js";
 
 type SystemRunParamsLike = {
   command?: unknown;
@@ -230,9 +230,22 @@ export function sanitizeSystemRunParamsForForwarding(opts: {
   }
 
   // Normal path: enforce the decision recorded by the gateway.
-  if (snapshot.decision === "allow-once" || snapshot.decision === "allow-always") {
+  if (snapshot.decision === "allow-once") {
+    if (typeof manager.consumeAllowOnce !== "function" || !manager.consumeAllowOnce(runId)) {
+      return {
+        ok: false,
+        message: "approval required",
+        details: { code: "APPROVAL_REQUIRED", runId },
+      };
+    }
     next.approved = true;
-    next.approvalDecision = snapshot.decision;
+    next.approvalDecision = "allow-once";
+    return { ok: true, params: next };
+  }
+
+  if (snapshot.decision === "allow-always") {
+    next.approved = true;
+    next.approvalDecision = "allow-always";
     return { ok: true, params: next };
   }
 
