@@ -1,10 +1,15 @@
-import { completeSimple, type TextContent } from "@mariozechner/pi-ai";
-import type { APIChannel } from "discord-api-types/v10";
+import { complete } from "@mariozechner/pi-ai";
+import type { Context, TextContent, Tool, ToolCall, ToolResultMessage } from "@mariozechner/pi-ai";
+import { Type } from "@sinclair/typebox";
 import { ChannelType } from "discord-api-types/v10";
 import { getApiKeyForModel, requireApiKey } from "../../../agents/model-auth.js";
 import { resolveModel } from "../../../agents/pi-embedded-runner/model.js";
 import { loadConfig } from "../../../config/config.js";
-import { listGuildChannelsDiscord, listThreadsDiscord } from "../../../discord/send.js";
+import {
+  listGuildChannelsDiscord,
+  listThreadsDiscord,
+  readMessagesDiscord,
+} from "../../../discord/send.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 
 const log = createSubsystemLogger("channel-router");
@@ -12,6 +17,7 @@ const log = createSubsystemLogger("channel-router");
 const ROUTER_TIMEOUT_MS = 15_000;
 const THREAD_NAME_MAX = 100;
 const MAX_PROMPT_MESSAGE_LENGTH = 500;
+const MAX_TOOL_TURNS = 3;
 
 export interface RouteContext {
   message: string;
@@ -30,22 +36,6 @@ export interface RouteResult {
   reasoning?: string;
 }
 
-interface ActiveThread {
-  id: string;
-  name: string;
-  parentId: string;
-  parentName?: string;
-  messageCount?: number;
-  lastMessageAt?: string;
-}
-
-interface ChannelInfo {
-  id: string;
-  name: string;
-  topic?: string;
-  parentName?: string;
-}
-
 interface RouterModelConfig {
   provider: string;
   model: string;
@@ -59,13 +49,164 @@ function parseModelString(modelString: string): RouterModelConfig {
   return { provider: "anthropic", model: modelString };
 }
 
-function isTextContentBlock(block: unknown): block is TextContent {
+function isTextContent(block: unknown): block is TextContent {
   return (
     block !== null &&
     typeof block === "object" &&
     (block as Record<string, unknown>).type === "text" &&
     typeof (block as Record<string, unknown>).text === "string"
   );
+}
+
+function isToolCall(block: unknown): block is ToolCall {
+  return (
+    block !== null &&
+    typeof block === "object" &&
+    (block as Record<string, unknown>).type === "toolCall" &&
+    typeof (block as Record<string, unknown>).id === "string" &&
+    typeof (block as Record<string, unknown>).name === "string"
+  );
+}
+
+function buildToolDefinitions(): Tool[] {
+  return [
+    {
+      name: "listGuildChannels",
+      description:
+        "List all text channels in the Discord guild. Returns array of {id, name, topic, category}.",
+      parameters: Type.Object({
+        guildId: Type.String({ description: "The Discord guild ID" }),
+      }),
+    },
+    {
+      name: "listActiveThreads",
+      description:
+        "List all active (non-archived) threads in the Discord guild. Returns array of {id, name, parentId, messageCount}.",
+      parameters: Type.Object({
+        guildId: Type.String({ description: "The Discord guild ID" }),
+      }),
+    },
+    {
+      name: "readRecentMessages",
+      description:
+        "Read recent messages from a thread to check if its topic matches the new conversation. Returns array of {author, content, timestamp}.",
+      parameters: Type.Object({
+        threadId: Type.String({ description: "The thread or channel ID to read messages from" }),
+        limit: Type.Optional(
+          Type.Number({ description: "Number of messages to fetch (1-10, default 3)" }),
+        ),
+      }),
+    },
+  ];
+}
+
+async function executeTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  accountId: string,
+): Promise<string> {
+  const discordOpts = { accountId };
+
+  switch (toolName) {
+    case "listGuildChannels": {
+      const guildId = typeof args.guildId === "string" ? args.guildId : "";
+      const channels = await listGuildChannelsDiscord(guildId, discordOpts);
+      const categories = new Map<string, string>();
+      for (const ch of channels) {
+        if (ch.type === ChannelType.GuildCategory && "name" in ch && ch.name) {
+          categories.set(ch.id, ch.name);
+        }
+      }
+      const textChannels = channels
+        .filter((ch) => ch.type === ChannelType.GuildText || ch.type === ChannelType.GuildForum)
+        .map((ch) => ({
+          id: ch.id,
+          name: "name" in ch ? (ch.name ?? "") : "",
+          topic: "topic" in ch ? (ch.topic ?? null) : null,
+          category:
+            "parent_id" in ch && ch.parent_id ? (categories.get(ch.parent_id) ?? null) : null,
+        }));
+      return JSON.stringify(textChannels);
+    }
+
+    case "listActiveThreads": {
+      const guildId = typeof args.guildId === "string" ? args.guildId : "";
+      const response = await listThreadsDiscord({ guildId }, discordOpts);
+      if (!response || typeof response !== "object") {
+        return JSON.stringify([]);
+      }
+      const data = response as { threads?: unknown[] };
+      if (!Array.isArray(data.threads)) {
+        return JSON.stringify([]);
+      }
+      const threads = data.threads
+        .filter((t): t is Record<string, unknown> => t !== null && typeof t === "object")
+        .filter((t) => {
+          if (typeof t.thread_metadata === "object" && t.thread_metadata !== null) {
+            return (t.thread_metadata as Record<string, unknown>).archived !== true;
+          }
+          return true;
+        })
+        .map((t) => ({
+          id: typeof t.id === "string" ? t.id : "",
+          name: typeof t.name === "string" ? t.name : "",
+          parentId: typeof t.parent_id === "string" ? t.parent_id : "",
+          messageCount: typeof t.message_count === "number" ? t.message_count : null,
+        }))
+        .filter((t) => t.id);
+      return JSON.stringify(threads);
+    }
+
+    case "readRecentMessages": {
+      const threadId = typeof args.threadId === "string" ? args.threadId : "";
+      const limit = Math.min(Math.max(Number(args.limit) || 3, 1), 10);
+      const messages = await readMessagesDiscord(threadId, { limit }, discordOpts);
+      const simplified = messages.map((m) => ({
+        author: m.author?.username ?? "unknown",
+        content: (m.content ?? "").slice(0, 200),
+        timestamp: m.timestamp,
+      }));
+      return JSON.stringify(simplified);
+    }
+
+    default:
+      return JSON.stringify({ error: `Unknown tool: ${toolName}` });
+  }
+}
+
+function buildSubagentSystemPrompt(
+  context: RouteContext,
+  guildId: string,
+  defaultChannelId: string,
+): string {
+  const truncatedMessage = context.message.slice(0, MAX_PROMPT_MESSAGE_LENGTH);
+  return `You are a Discord thread router for an AI agent team.
+Your job: find the best place for an agent-to-agent conversation.
+
+[New Conversation]
+From: ${context.fromAgent} (${context.fromAgentName})
+To: ${context.toAgent} (${context.toAgentName})
+Topic ID: ${context.topicId ?? "N/A"}
+First message:
+---
+${truncatedMessage}
+---
+
+[Instructions]
+1. Use listGuildChannels to see all available channels (guildId: ${guildId})
+2. Use listActiveThreads to see existing threads (guildId: ${guildId})
+3. Check if any existing thread's topic closely matches this conversation
+   - If YES: return that thread (reuse)
+   - If NO: pick the most appropriate channel and create a new thread name
+4. Optionally use readRecentMessages to verify a thread's topic before reusing it
+5. Thread name rules:
+   - Korean, concise, max 50 chars
+   - Describe the discussion topic (not the agents)
+   - Examples: "Gateway 메모리 누수 분석", "task-hub DM 시스템 마이그레이션"
+6. Default channel (fallback): ${defaultChannelId}
+
+Return JSON:
+{ "channelId": "...", "threadId": "...or null", "threadName": "...", "reasoning": "..." }`;
 }
 
 export class ChannelRouter {
@@ -96,29 +237,6 @@ export class ChannelRouter {
   }
 
   private async doRoute(context: RouteContext): Promise<RouteResult> {
-    const discordOpts = { accountId: this.accountId };
-
-    const [channels, threadsResponse] = await Promise.all([
-      listGuildChannelsDiscord(this.guildId, discordOpts),
-      listThreadsDiscord({ guildId: this.guildId }, discordOpts),
-    ]);
-
-    const textChannels = this.filterTextChannels(channels);
-    const activeThreads = this.extractActiveThreads(channels, threadsResponse);
-
-    const llmResult = await this.callRouterLLM(context, textChannels, activeThreads);
-    if (llmResult) {
-      return llmResult;
-    }
-
-    return this.buildFallback(context);
-  }
-
-  private async callRouterLLM(
-    context: RouteContext,
-    channels: ChannelInfo[],
-    threads: ActiveThread[],
-  ): Promise<RouteResult | null> {
     const cfg = loadConfig();
     const { provider, model: modelId } = parseModelString(this.routerModel);
     const resolved = resolveModel(provider, modelId, undefined, cfg);
@@ -128,7 +246,7 @@ export class ChannelRouter {
         model: this.routerModel,
         error: resolved.error,
       });
-      return null;
+      return this.buildFallback(context);
     }
 
     let apiKey: string;
@@ -136,121 +254,99 @@ export class ChannelRouter {
       apiKey = requireApiKey(await getApiKeyForModel({ model: resolved.model, cfg }), provider);
     } catch (err) {
       log.warn("router model API key not available", { error: String(err) });
-      return null;
+      return this.buildFallback(context);
     }
 
-    const prompt = this.buildPrompt(context, channels, threads);
+    const tools = buildToolDefinitions();
+    const systemPrompt = buildSubagentSystemPrompt(context, this.guildId, this.defaultChannelId);
+    const llmContext: Context = {
+      systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content:
+            "Route this conversation. Use the tools to inspect the Discord guild, then return your JSON routing decision.",
+          timestamp: Date.now(),
+        },
+      ],
+      tools,
+    };
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), ROUTER_TIMEOUT_MS - 2000);
 
     try {
-      const res = await completeSimple(
-        resolved.model,
-        {
-          messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-        },
-        {
-          apiKey,
-          maxTokens: 300,
-          temperature: 0,
-          signal: controller.signal,
-        },
-      );
-
-      const text = res.content
-        .filter(isTextContentBlock)
-        .map((block) => block.text.trim())
-        .filter(Boolean)
-        .join(" ")
-        .trim();
-
-      return this.parseResponse(text, channels, threads, context);
+      const result = await this.runToolLoop(resolved.model, llmContext, apiKey, controller.signal);
+      if (result) {
+        return result;
+      }
+      return this.buildFallback(context);
     } catch (err) {
-      log.warn("router LLM call failed", { error: String(err) });
-      return null;
+      log.warn("sub-agent routing failed", { error: String(err) });
+      return this.buildFallback(context);
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  private buildPrompt(
-    context: RouteContext,
-    channels: ChannelInfo[],
-    threads: ActiveThread[],
-  ): string {
-    const channelList = channels
-      .map((ch) => {
-        const parts = [`- id:${ch.id} name:#${ch.name}`];
-        if (ch.topic) {
-          parts.push(`topic:"${ch.topic}"`);
+  private async runToolLoop(
+    model: Parameters<typeof complete>[0],
+    llmContext: Context,
+    apiKey: string,
+    signal: AbortSignal,
+  ): Promise<RouteResult | null> {
+    for (let turn = 0; turn <= MAX_TOOL_TURNS; turn++) {
+      const response = await complete(model, llmContext, {
+        apiKey,
+        maxTokens: 1024,
+        temperature: 0,
+        signal,
+      });
+
+      if (response.stopReason !== "toolUse" || turn === MAX_TOOL_TURNS) {
+        if (turn === MAX_TOOL_TURNS && response.stopReason === "toolUse") {
+          log.warn("sub-agent exceeded max tool turns, extracting result");
         }
-        if (ch.parentName) {
-          parts.push(`category:${ch.parentName}`);
+        const text = response.content
+          .filter(isTextContent)
+          .map((b) => b.text.trim())
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        log.debug("sub-agent routing complete", { turns: turn, text: text.slice(0, 200) });
+        return this.parseResponse(text);
+      }
+
+      llmContext.messages.push(response);
+      const toolCalls = response.content.filter(isToolCall);
+      for (const call of toolCalls) {
+        log.debug("sub-agent tool call", { tool: call.name, turn });
+        let resultText: string;
+        try {
+          resultText = await executeTool(call.name, call.arguments, this.accountId);
+        } catch (err) {
+          resultText = JSON.stringify({ error: String(err) });
+          log.warn("tool execution failed", { tool: call.name, error: String(err) });
         }
-        return parts.join(" ");
-      })
-      .join("\n");
-
-    const threadList =
-      threads.length > 0
-        ? threads
-            .map((t) => {
-              const parts = [`- id:${t.id} name:"${t.name}" channel:${t.parentId}`];
-              if (t.parentName) {
-                parts.push(`(#${t.parentName})`);
-              }
-              if (t.messageCount) {
-                parts.push(`msgs:${t.messageCount}`);
-              }
-              return parts.join(" ");
-            })
-            .join("\n")
-        : "(no active threads)";
-
-    const truncatedMessage = context.message.slice(0, MAX_PROMPT_MESSAGE_LENGTH);
-
-    return `You are a Discord thread router for an AI agent team.
-Your job: find the best place for an agent-to-agent conversation.
-
-[New Conversation]
-From: ${context.fromAgent} (${context.fromAgentName})
-To: ${context.toAgent} (${context.toAgentName})
-Topic ID: ${context.topicId ?? "N/A"}
-First message:
----
-${truncatedMessage}
----
-
-[Available Channels]
-${channelList}
-
-[Active Threads]
-${threadList}
-
-[Instructions]
-1. Check if any existing thread's topic closely matches this conversation
-   - If YES: return that thread (reuse)
-   - If NO: pick the most appropriate channel and create a new thread name
-2. Thread name rules:
-   - Korean, concise, max 50 chars
-   - Describe the discussion topic (not the agents)
-   - Examples: "Gateway 메모리 누수 분석", "task-hub DM 시스템 마이그레이션"
-3. Default channel (fallback): ${this.defaultChannelId}
-
-Return ONLY a JSON object (no markdown, no explanation):
-{"channelId": "...", "threadId": "...or null", "threadName": "...", "reasoning": "..."}`;
+        const toolResult: ToolResultMessage = {
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name,
+          content: [{ type: "text", text: resultText }],
+          isError: false,
+          timestamp: Date.now(),
+        };
+        llmContext.messages.push(toolResult);
+      }
+    }
+    return null;
   }
 
-  private parseResponse(
-    text: string,
-    channels: ChannelInfo[],
-    threads: ActiveThread[],
-    context: RouteContext,
-  ): RouteResult | null {
+  private parseResponse(text: string): RouteResult | null {
     try {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        log.warn("no JSON found in router response", { text: text.slice(0, 200) });
+        log.warn("no JSON found in sub-agent response", { text: text.slice(0, 200) });
         return null;
       }
 
@@ -263,95 +359,33 @@ Return ONLY a JSON object (no markdown, no explanation):
       const threadName = typeof parsed.threadName === "string" ? parsed.threadName : "";
       const reasoning = typeof parsed.reasoning === "string" ? parsed.reasoning : undefined;
 
-      if (!channelId && !threadId) {
-        log.warn("router response missing channelId and threadId");
-        return null;
-      }
-
       if (threadId) {
-        const thread = threads.find((t) => t.id === threadId);
-        if (!thread) {
-          log.warn("router returned unknown threadId", { threadId });
-          return null;
-        }
         return {
-          channelId: thread.parentId,
-          threadId: thread.id,
-          threadName: thread.name,
-          reasoning: reasoning ?? `reusing existing thread "${thread.name}"`,
+          channelId: channelId || this.defaultChannelId,
+          threadId,
+          threadName: threadName || "reused thread",
+          reasoning: reasoning ?? "reusing existing thread",
         };
       }
 
-      const channel = channels.find((ch) => ch.id === channelId);
-      const resolvedChannelId = channel ? channel.id : this.defaultChannelId;
-      const resolvedThreadName =
-        threadName.slice(0, THREAD_NAME_MAX) || this.generateFallbackName(context);
+      if (!channelId) {
+        log.warn("sub-agent response missing channelId");
+        return null;
+      }
 
       return {
-        channelId: resolvedChannelId,
-        threadName: resolvedThreadName,
+        channelId,
+        threadName:
+          threadName.slice(0, THREAD_NAME_MAX) || this.generateFallbackName({} as RouteContext),
         reasoning,
       };
     } catch (err) {
-      log.warn("failed to parse router response", { error: String(err), text: text.slice(0, 200) });
+      log.warn("failed to parse sub-agent response", {
+        error: String(err),
+        text: text.slice(0, 200),
+      });
       return null;
     }
-  }
-
-  private filterTextChannels(channels: APIChannel[]): ChannelInfo[] {
-    const categories = new Map<string, string>();
-    for (const ch of channels) {
-      if (ch.type === ChannelType.GuildCategory && "name" in ch && ch.name) {
-        categories.set(ch.id, ch.name);
-      }
-    }
-
-    return channels
-      .filter((ch) => ch.type === ChannelType.GuildText || ch.type === ChannelType.GuildForum)
-      .map((ch) => ({
-        id: ch.id,
-        name: "name" in ch ? (ch.name ?? "") : "",
-        topic: "topic" in ch ? (ch.topic ?? undefined) : undefined,
-        parentName: "parent_id" in ch && ch.parent_id ? categories.get(ch.parent_id) : undefined,
-      }));
-  }
-
-  private extractActiveThreads(channels: APIChannel[], response: unknown): ActiveThread[] {
-    if (!response || typeof response !== "object") {
-      return [];
-    }
-
-    const categories = new Map<string, string>();
-    for (const ch of channels) {
-      if (
-        (ch.type === ChannelType.GuildText || ch.type === ChannelType.GuildForum) &&
-        "name" in ch &&
-        ch.name
-      ) {
-        categories.set(ch.id, ch.name);
-      }
-    }
-
-    const data = response as { threads?: unknown[] };
-    if (!Array.isArray(data.threads)) {
-      return [];
-    }
-    return data.threads
-      .filter((t): t is Record<string, unknown> => t !== null && typeof t === "object")
-      .map((t) => ({
-        id: typeof t.id === "string" ? t.id : "",
-        name: typeof t.name === "string" ? t.name : "",
-        parentId: typeof t.parent_id === "string" ? t.parent_id : "",
-        parentName: typeof t.parent_id === "string" ? categories.get(t.parent_id) : undefined,
-        messageCount: typeof t.message_count === "number" ? t.message_count : undefined,
-        lastMessageAt: typeof t.last_message_id === "string" ? t.last_message_id : undefined,
-        archived:
-          typeof t.thread_metadata === "object" &&
-          t.thread_metadata !== null &&
-          (t.thread_metadata as Record<string, unknown>).archived === true,
-      }))
-      .filter((t) => t.id && !(t as Record<string, unknown>).archived)
-      .map(({ archived: _archived, ...rest }) => rest as ActiveThread);
   }
 
   private generateFallbackName(context: RouteContext): string {
