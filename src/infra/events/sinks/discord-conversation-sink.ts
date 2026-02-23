@@ -9,7 +9,6 @@ import type { ConversationSink, ConversationSinkConfig } from "../conversation-s
 import { EVENT_TYPES } from "../schemas.js";
 import { ChannelRouter, type RouteContext } from "./channel-router.js";
 
-const OWNER_DISCORD_ID = "974537452750528553";
 const log = createSubsystemLogger("discord-conversation-sink");
 
 const A2A_FORWARD_TYPES = new Set([EVENT_TYPES.A2A_SEND, EVENT_TYPES.A2A_RESPONSE]);
@@ -28,6 +27,7 @@ interface DiscordConversationSinkOptions {
   defaultChannelId: string;
   routerAccountId: string;
   messageAccountId: string;
+  reportChannelId?: string;
   archivePolicy: string;
   eventFilter: string[];
   routerModel?: string;
@@ -42,6 +42,7 @@ function parseOptions(raw: Record<string, unknown>): DiscordConversationSinkOpti
     defaultChannelId: str(raw.defaultChannelId, ""),
     routerAccountId: str(raw.routerAccountId, "ruda"),
     messageAccountId: str(raw.messageAccountId, "ruda"),
+    reportChannelId: typeof raw.reportChannelId === "string" ? raw.reportChannelId : undefined,
     archivePolicy: str(raw.archivePolicy, "never"),
     eventFilter: Array.isArray(raw.eventFilter)
       ? (raw.eventFilter as string[])
@@ -63,43 +64,33 @@ function resolveArchiveMinutes(policy: string): number | undefined {
   }
 }
 
-function formatMessage(event: CoordinationEvent, isNewThread: boolean): string | null {
+function resolveFromAgent(event: CoordinationEvent): string {
+  const data = event.data ?? {};
+  return typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
+}
+
+function formatMessage(event: CoordinationEvent): string | null {
   const data = event.data ?? {};
   const message = typeof data.message === "string" ? data.message : "";
   if (!message.trim()) {
     return null;
   }
 
-  const cfg = loadConfig();
   const fromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
   const toAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
 
-  const fromIdentity = resolveAgentIdentity(cfg, fromAgent);
-  const toIdentity = resolveAgentIdentity(cfg, toAgent);
+  const fromBotId = getBotUserIdForAgent(fromAgent);
+  const toBotId = getBotUserIdForAgent(toAgent);
 
-  const fromLabel = `${fromIdentity?.emoji ?? ""} ${fromIdentity?.name ?? fromAgent}`.trim();
-  const toLabel = `${toIdentity?.emoji ?? ""} ${toIdentity?.name ?? toAgent}`.trim();
+  const fromMention = fromBotId ? `<@${fromBotId}>` : fromAgent;
+  const toMention = toBotId ? `<@${toBotId}>` : toAgent;
 
   const truncated =
     message.length > MESSAGE_TRUNCATE_LIMIT
       ? message.slice(0, MESSAGE_TRUNCATE_LIMIT) + "..."
       : message;
 
-  let mentions = "";
-  if (isNewThread) {
-    const mentionParts: string[] = [`<@${OWNER_DISCORD_ID}>`];
-    const toBotId = getBotUserIdForAgent(toAgent);
-    if (toBotId) {
-      mentionParts.push(`<@${toBotId}>`);
-    }
-    const fromBotId = getBotUserIdForAgent(fromAgent);
-    if (fromBotId) {
-      mentionParts.push(`<@${fromBotId}>`);
-    }
-    mentions = mentionParts.join(" ") + "\n\n";
-  }
-
-  return `${mentions}**${fromLabel}** → **${toLabel}**\n\n${truncated}`;
+  return `${fromMention} → ${toMention}\n\n${truncated}`;
 }
 
 function shouldForward(event: CoordinationEvent, filterSet: Set<string>): boolean {
@@ -178,13 +169,14 @@ export class DiscordConversationSink implements ConversationSink {
         return;
       }
 
-      const text = formatMessage(event, false);
+      const text = formatMessage(event);
       if (!text) {
         return;
       }
 
       const conversationId = extractConversationId(event);
-      const sendOpts = { accountId: opts.messageAccountId };
+      const fromAgent = resolveFromAgent(event);
+      const sendOpts = { accountId: fromAgent };
 
       const existing = threadMap.get(conversationId);
       if (existing) {
@@ -217,7 +209,6 @@ export class DiscordConversationSink implements ConversationSink {
         try {
           const routeCtx = buildRouteContext(event);
           const result = await router.route(routeCtx);
-          const threadStartText = formatMessage(event, true) ?? text;
 
           log.info("routed conversation", {
             conversationId,
@@ -234,10 +225,10 @@ export class DiscordConversationSink implements ConversationSink {
               result.channelId,
               {
                 name: result.threadName,
-                content: threadStartText,
+                content: text,
                 autoArchiveMinutes: archiveMinutes,
               },
-              { accountId: opts.messageAccountId },
+              { accountId: fromAgent },
             );
             threadId = thread.id;
           } else {
@@ -245,15 +236,31 @@ export class DiscordConversationSink implements ConversationSink {
           }
 
           const data = event.data ?? {};
-          const fromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
-          const toAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
+          const evFromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
+          const evToAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
 
           threadMap.set(conversationId, {
             threadId,
             channelId: result.channelId,
-            agents: [fromAgent, toAgent].toSorted() as [string, string],
+            agents: [evFromAgent, evToAgent].toSorted() as [string, string],
             createdAt: Date.now(),
           });
+
+          // Report new thread to the reporting channel
+          if (opts.reportChannelId && !result.threadId) {
+            const fromBotId = getBotUserIdForAgent(evFromAgent);
+            const toBotId = getBotUserIdForAgent(evToAgent);
+            const fromRef = fromBotId ? `<@${fromBotId}>` : evFromAgent;
+            const toRef = toBotId ? `<@${toBotId}>` : evToAgent;
+            const reportText = `🔗 ${fromRef} → ${toRef} | **${result.threadName}** | <#${threadId}>`;
+            try {
+              await sendMessageDiscord(`channel:${opts.reportChannelId}`, reportText, {
+                accountId: opts.routerAccountId,
+              });
+            } catch (err) {
+              log.warn("failed to send report notification", { error: String(err) });
+            }
+          }
         } catch (err) {
           log.warn("failed to create thread for conversation", {
             conversationId,

@@ -184,14 +184,14 @@ function buildSubagentSystemPrompt(
 From: ${context.fromAgent} (${context.fromAgentName})
 To: ${context.toAgent} (${context.toAgentName})
 Message: ${truncatedMessage}
-
 Steps:
 1. listGuildChannels(guildId: "${guildId}") to see channels
 2. listActiveThreads(guildId: "${guildId}") to see existing threads
 3. If an existing thread matches this topic, reuse it. Otherwise pick the best channel.
-4. Thread names: Korean, concise, max 50 chars, topic-focused (not agent names).
+4. Thread names MUST follow the format: [카테고리] 주제 (Korean, max 50 chars)
+   Examples: [논의] 배포전 인프라 체크리스트, [요청] 데이터 분석 리포트 작성, [검토] API 응답 구조 변경, [협업] 이벤트 시스템 설계
+   Categories: 논의, 요청, 검토, 협업, 공유, 보고, 기타
 5. Default channel: ${defaultChannelId}
-
 Respond with ONLY this JSON (no other text):
 {"channelId": "...", "threadId": "...or null", "threadName": "...", "reasoning": "..."}`;
 }
@@ -395,14 +395,17 @@ export class ChannelRouter {
     if (context?.message) {
       const cleaned = context.message.replace(/\n/g, " ").trim();
       if (cleaned.length > 0) {
-        return cleaned.slice(0, THREAD_NAME_MAX);
+        return `[기타] ${cleaned}`.slice(0, THREAD_NAME_MAX);
       }
     }
     const ts = new Date().toISOString().slice(0, 16);
     if (context?.fromAgentName && context?.toAgentName) {
-      return `${context.fromAgentName} ↔ ${context.toAgentName} · ${ts}`.slice(0, THREAD_NAME_MAX);
+      return `[기타] ${context.fromAgentName} ↔ ${context.toAgentName} · ${ts}`.slice(
+        0,
+        THREAD_NAME_MAX,
+      );
     }
-    return `conversation · ${ts}`.slice(0, THREAD_NAME_MAX);
+    return `[기타] 대화 · ${ts}`.slice(0, THREAD_NAME_MAX);
   }
 
   private async timeoutFallback(context: RouteContext): Promise<RouteResult> {

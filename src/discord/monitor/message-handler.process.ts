@@ -1,16 +1,14 @@
+import crypto from "node:crypto";
 import type { User } from "@buape/carbon";
 import { ChannelType } from "@buape/carbon";
-import crypto from "node:crypto";
-import type { ReplyPayload } from "../../auto-reply/types.js";
-import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
 import { resolveAckReaction, resolveHumanDelayConfig } from "../../agents/identity.js";
 import { AGENT_LANE_NESTED } from "../../agents/lanes.js";
+import { createAndStartFlow } from "../../agents/tools/a2a-job-orchestrator.js";
 import {
   buildRequesterContextSummary,
   buildAgentToAgentMessageContext,
   resolvePingPongTurns,
 } from "../../agents/tools/sessions-send-helpers.js";
-import { createAndStartFlow } from "../../agents/tools/a2a-job-orchestrator.js";
 import { resolveChunkMode } from "../../auto-reply/chunk.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { formatInboundEnvelope, resolveEnvelopeFormatOptions } from "../../auto-reply/envelope.js";
@@ -20,6 +18,7 @@ import {
 } from "../../auto-reply/reply/history.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.js";
+import type { ReplyPayload } from "../../auto-reply/types.js";
 import { shouldAckReaction as shouldAckReactionGate } from "../../channels/ack-reactions.js";
 import { logTypingFailure, logAckFailure } from "../../channels/logging.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
@@ -42,6 +41,7 @@ import { markDmResponded, resolveDmRetryConfig } from "../dm-retry/index.js";
 import { reactMessageDiscord, removeReactionDiscord } from "../send.js";
 import { normalizeDiscordSlug, resolveDiscordOwnerAllowFrom } from "./allow-list.js";
 import { resolveTimestampMs } from "./format.js";
+import type { DiscordMessagePreflightContext } from "./message-handler.preflight.js";
 import {
   buildDiscordMediaPayload,
   resolveDiscordMessageText,
@@ -349,7 +349,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   // When a sibling bot @mentions us, route through the A2A flow instead
   // of normal message processing.  This injects the sender's conversation
   // context so the receiving agent understands what the sender is working on.
-  if (isSiblingBot(author.id) && isGuildMessage && ctx.botUserId) {
+  if (isSiblingBot(author.id) && isGuildMessage && ctx.botUserId && !threadChannel) {
     const senderAgentId = getAgentIdForBot(author.id);
     const mentionsUs = message.mentionedUsers?.some((user: User) => user.id === ctx.botUserId);
     if (senderAgentId && mentionsUs) {
