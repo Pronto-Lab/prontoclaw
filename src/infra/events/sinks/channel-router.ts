@@ -260,6 +260,12 @@ export class ChannelRouter {
     const { provider, model: modelId } = parseModelString(this.routerModel);
     const resolved = resolveModel(provider, modelId, undefined, cfg);
 
+    log.info("router model resolved", {
+      consoleMessage: `router model resolved: ${this.routerModel} → ${resolved.model?.id ?? "null"} (error: ${resolved.error ?? "none"})`,
+      requested: this.routerModel,
+      resolvedId: resolved.model?.id,
+      error: resolved.error,
+    });
     if (!resolved.model) {
       log.warn("router model not found, falling back", {
         model: this.routerModel,
@@ -320,6 +326,14 @@ export class ChannelRouter {
         temperature: 0,
         signal,
       });
+
+      if (response.stopReason === "error") {
+        log.warn("sub-agent LLM error", {
+          consoleMessage: `sub-agent LLM error: ${JSON.stringify(response).slice(0, 500)}`,
+          model: this.routerModel,
+          response: JSON.stringify(response).slice(0, 1000),
+        });
+      }
 
       if (response.stopReason !== "toolUse" || turn === MAX_TOOL_TURNS) {
         if (turn === MAX_TOOL_TURNS && response.stopReason === "toolUse") {
