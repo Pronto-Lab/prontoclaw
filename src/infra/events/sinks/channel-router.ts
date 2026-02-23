@@ -174,26 +174,58 @@ async function executeTool(
   }
 }
 
+const TOPIC_NOISE_PATTERN =
+  /^(\S+[!?]\s*|\S+에게\s+|\S+한테\s+|\S+에게로?\s+|다음\s+메시지를?\s+전달해\s*[줘주]?:?\s*|전달해\s*[줘주]?:?\s*)/;
+const TOPIC_SUFFIX_NOISE = /[\s,.!?~…]+$/;
+const TOPIC_MAX_LENGTH = 40;
+
+function extractTopicFromMessage(message: string): string | null {
+  let text = message.replace(/\n/g, " ").trim();
+  if (!text) {
+    return null;
+  }
+
+  text = text.replace(TOPIC_NOISE_PATTERN, "").trim();
+  text = text.replace(TOPIC_SUFFIX_NOISE, "").trim();
+
+  const firstSentence = text.split(/[.!?。]/)[0]?.trim() ?? text;
+  const topic =
+    firstSentence.length > TOPIC_MAX_LENGTH
+      ? firstSentence.slice(0, TOPIC_MAX_LENGTH)
+      : firstSentence;
+
+  return topic || null;
+}
+
 function buildSubagentSystemPrompt(
   context: RouteContext,
   guildId: string,
   defaultChannelId: string,
 ): string {
   const truncatedMessage = context.message.slice(0, MAX_PROMPT_MESSAGE_LENGTH);
-  return `You are a Discord channel router. Pick the best channel for an agent conversation and respond with ONLY JSON.
+  return `You are a Discord channel router. Route agent conversations to the right thread.
+
+CONVERSATION:
 From: ${context.fromAgent} (${context.fromAgentName})
 To: ${context.toAgent} (${context.toAgentName})
 Message: ${truncatedMessage}
-Steps:
-1. listGuildChannels(guildId: "${guildId}") to see channels
-2. listActiveThreads(guildId: "${guildId}") to see existing threads
-3. If an existing thread matches this topic, reuse it. Otherwise pick the best channel.
-4. Thread names MUST follow the format: [카테고리] 주제 (Korean, max 50 chars)
-   Examples: [논의] 배포전 인프라 체크리스트, [요청] 데이터 분석 리포트 작성, [검토] API 응답 구조 변경, [협업] 이벤트 시스템 설계
-   Categories: 논의, 요청, 검토, 협업, 공유, 보고, 기타
-5. Default channel: ${defaultChannelId}
-Respond with ONLY this JSON (no other text):
-{"channelId": "...", "threadId": "...or null", "threadName": "...", "reasoning": "..."}`;
+INSTRUCTIONS:
+1. Call listGuildChannels AND listActiveThreads in PARALLEL (both need guildId: "${guildId}").
+2. Check active thread NAMES for topic overlap. Thread names follow [카테고리] 주제 format.
+   - If a thread covers the same subject → reuse it (set threadId to that thread's id).
+   - Only use readRecentMessages if two threads look equally relevant.
+3. If no thread matches → pick the best channel and set threadId to null.
+4. Default channel if unsure: ${defaultChannelId}
+
+THREAD NAME RULES (for new threads only):
+- Format: [카테고리] 주제 (Korean, max 50 chars)
+- 주제 = short topic noun phrase. NOT the message. Extract the core subject.
+- Categories: 논의, 요청, 검토, 협업, 공유, 보고, 기타
+- GOOD: [요청] 홈페이지 디자인 피드백, [논의] 배포 인프라 점검, [협업] 이벤트 시스템 설계
+- BAD: [요청] 이든! 병욱이 홈페이지 디자인 피드백 좀 해달라고 했어 (this is a message, not a topic)
+
+RESPOND WITH ONLY THIS JSON (no markdown, no explanation):
+{"channelId":"...","threadId":"...or null","threadName":"[카테고리] 주제","reasoning":"..."}`;
 }
 
 export class ChannelRouter {
@@ -211,7 +243,7 @@ export class ChannelRouter {
     this.guildId = opts.guildId;
     this.defaultChannelId = opts.defaultChannelId;
     this.accountId = opts.accountId;
-    this.routerModel = opts.routerModel ?? "anthropic/claude-sonnet-4-5";
+    this.routerModel = opts.routerModel ?? "anthropic/claude-sonnet-4-6";
   }
 
   async route(context: RouteContext): Promise<RouteResult> {
@@ -360,8 +392,11 @@ export class ChannelRouter {
         typeof parsed.threadId === "string" && parsed.threadId !== "null"
           ? parsed.threadId
           : undefined;
-      const threadName = typeof parsed.threadName === "string" ? parsed.threadName : "";
+      let threadName = typeof parsed.threadName === "string" ? parsed.threadName : "";
       const reasoning = typeof parsed.reasoning === "string" ? parsed.reasoning : undefined;
+      if (threadName && !/^\[.+?\]\s/.test(threadName)) {
+        threadName = `[기타] ${threadName}`;
+      }
 
       if (threadId) {
         return {
@@ -393,9 +428,9 @@ export class ChannelRouter {
 
   private generateFallbackName(context: RouteContext): string {
     if (context?.message) {
-      const cleaned = context.message.replace(/\n/g, " ").trim();
-      if (cleaned.length > 0) {
-        return `[기타] ${cleaned}`.slice(0, THREAD_NAME_MAX);
+      const topic = extractTopicFromMessage(context.message);
+      if (topic) {
+        return `[기타] ${topic}`.slice(0, THREAD_NAME_MAX);
       }
     }
     const ts = new Date().toISOString().slice(0, 16);
