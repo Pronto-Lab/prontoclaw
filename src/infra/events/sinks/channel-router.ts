@@ -442,12 +442,15 @@ export class ChannelRouter {
     signal: AbortSignal,
   ): Promise<RouteResult | null> {
     for (let turn = 0; turn <= MAX_TOOL_TURNS; turn++) {
-      const response = await complete(model, llmContext, {
+      const completeOpts: Record<string, unknown> = {
         apiKey,
         maxTokens: 1024,
-        temperature: 0,
         signal,
-      });
+      };
+      if (!this.routerModel.startsWith("openai-codex")) {
+        completeOpts.temperature = 0;
+      }
+      const response = await complete(model, llmContext, completeOpts);
 
       if (response.stopReason === "error") {
         const responseStr = JSON.stringify(response);
