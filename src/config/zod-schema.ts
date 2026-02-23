@@ -570,6 +570,17 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        conversationSinks: z
+          .array(
+            z
+              .object({
+                id: z.string(),
+                enabled: z.boolean().optional(),
+                options: z.record(z.unknown()).optional(),
+              })
+              .strict(),
+          )
+          .optional(),
       })
       .strict()
       .optional(),
