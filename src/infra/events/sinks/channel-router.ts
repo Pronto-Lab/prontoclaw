@@ -181,7 +181,7 @@ async function executeTool(
 const TOPIC_NOISE_PATTERN =
   /^(\S+[!?]\s*|\S+에게\s+|\S+한테\s+|\S+에게로?\s+|다음\s+메시지를?\s+전달해\s*[줘주]?:?\s*|전달해\s*[줘주]?:?\s*)/;
 const TOPIC_SUFFIX_NOISE = /[\s,.!?~…]+$/;
-const TOPIC_MAX_LENGTH = 40;
+const TOPIC_MAX_LENGTH = 15;
 
 interface CategoryRule {
   category: string;
@@ -308,11 +308,11 @@ INSTRUCTIONS:
 4. Default channel if unsure: ${defaultChannelId}
 
 THREAD NAME RULES (for new threads only):
-- Format: [카테고리] 주제 (Korean, max 50 chars)
-- 주제 = short topic noun phrase. NOT the message. Extract the core subject.
-- Categories: 논의, 요청, 검토, 협업, 공유, 보고, 기타
-- GOOD: [요청] 홈페이지 디자인 피드백, [논의] 배포 인프라 점검, [협업] 이벤트 시스템 설계
-- BAD: [요청] 이든! 병욱이 홈페이지 디자인 피드백 좀 해달라고 했어 (this is a message, not a topic)
+ Format: [카테고리] 주제 (Korean, max 20 chars total including category)
+ 주제 must be a SHORT noun phrase (2-6 words). Strip all conversational filler.
+ Categories: 논의, 요청, 검토, 협업, 공유, 보고, 기타
+ GOOD: [요청] 백로그 Top 3 정리, [논의] 배포 파이프라인 점검, [협업] 이벤트 시스템 설계
+ BAD: [요청] 프론토랩 프로젝트에서 현재 가장 우선순위가 높은 백로그 3개를 정리 (too long, just copy of message)
 
 RESPOND WITH ONLY THIS JSON (no markdown, no explanation):
 {"channelId":"...","threadId":"...or null","threadName":"[카테고리] 주제","reasoning":"..."}`;
