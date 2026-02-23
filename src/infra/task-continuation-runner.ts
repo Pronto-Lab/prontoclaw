@@ -1,7 +1,6 @@
 import { openSync, readSync, closeSync, fstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { callGateway } from "../../gateway/call.js";
 import {
   resolveAgentWorkspaceDir,
   resolveDefaultAgentId,
@@ -22,6 +21,7 @@ import { parseDurationMs } from "../cli/parse-duration.js";
 import { agentCommand } from "../commands/agent.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
+import { callGateway } from "../gateway/call.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize, getActiveTaskCount } from "../process/command-queue.js";
 // CommandLane import removed - using agent-specific lanes

@@ -1,35 +1,31 @@
-import type { CanvasHostServer } from "../canvas-host/server.js";
-import type { PluginServicesHandle } from "../plugins/services.js";
-import type { RuntimeEnv } from "../runtime.js";
-import type { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import type { CanvasHostServer } from "../canvas-host/server.js";
 import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js";
 import { createDefaultDeps } from "../cli/deps.js";
-import { isRestartEnabled } from "../config/commands.js";
-import {
-  CONFIG_PATH,
-  isNixMode,
-  loadConfig,
-  readConfigFileSnapshot,
-} from "../config/config.js";
+import { CONFIG_PATH, isNixMode, loadConfig, readConfigFileSnapshot } from "../config/config.js";
 import { createExecApprovalForwarder } from "../infra/exec-approval-forwarder.js";
 import { getMachineDisplayName } from "../infra/machine-name.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
+import type { TaskContinuationRunner } from "../infra/task-continuation-runner.js";
+import type { TaskSelfDrivingHandle } from "../infra/task-self-driving.js";
+import type { TaskStepContinuationHandle } from "../infra/task-step-continuation.js";
 import { scheduleGatewayUpdateCheck } from "../infra/update-startup.js";
 import { stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook-runner-global.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
+import type { PluginServicesHandle } from "../plugins/services.js";
+import type { RuntimeEnv } from "../runtime.js";
 import { runOnboardingWizard } from "../wizard/onboarding.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
 import { startGatewayConfigReloader } from "./config-reload.js";
-import type { ControlUiRootState } from "./control-ui.js";
 import {
   GATEWAY_EVENT_UPDATE_AVAILABLE,
   type GatewayUpdateAvailableEventPayload,
 } from "./events.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
+import type { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import { createChannelManager } from "./server-channels.js";
 import { createGatewayCloseHandler } from "./server-close.js";
 import { startGatewayDiscovery } from "./server-discovery-runtime.js";
@@ -56,16 +52,15 @@ import {
   refreshGatewayHealthSnapshot,
 } from "./server/health-state.js";
 import { loadGatewayTlsRuntime } from "./server/tls.js";
-import { ensureGatewayStartupAuth } from "./startup-auth.js";
 
 export { __resetModelCatalogCacheForTest } from "./server-model-catalog.js";
 
-import { initDiagnostics } from "./server-init-diagnostics.js";
 import { initGatewayConfig } from "./server-init-config.js";
 import { resolveControlUiState } from "./server-init-control-ui.js";
-import { initGatewayRegistry } from "./server-init-registry.js";
-import { initGatewayEvents } from "./server-init-events.js";
 import { initGatewayCron } from "./server-init-cron.js";
+import { initDiagnostics } from "./server-init-diagnostics.js";
+import { initGatewayEvents } from "./server-init-events.js";
+import { initGatewayRegistry } from "./server-init-registry.js";
 
 ensureOpenClawCliOnPath();
 
@@ -465,8 +460,21 @@ export async function startGatewayServer(
       });
 
   let browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> = null;
+  let taskContinuationRunner: TaskContinuationRunner = {
+    stop: () => {},
+    updateConfig: () => {},
+    checkNow: async () => {},
+  };
+  let taskSelfDriving: TaskSelfDrivingHandle = { stop: () => {} };
+  let taskStepContinuation: TaskStepContinuationHandle = { stop: () => {} };
   if (!minimalTestGateway) {
-    ({ browserControl, pluginServices } = await startGatewaySidecars({
+    ({
+      browserControl,
+      pluginServices,
+      taskContinuationRunner,
+      taskSelfDriving,
+      taskStepContinuation,
+    } = await startGatewaySidecars({
       cfg: cfgAtStart,
       pluginRegistry,
       defaultWorkspaceDir,
@@ -498,12 +506,14 @@ export async function startGatewayServer(
           getState: () => ({
             hooksConfig,
             heartbeatRunner,
+            taskContinuationRunner,
             cronState,
             browserControl,
           }),
           setState: (nextState) => {
             hooksConfig = nextState.hooksConfig;
             heartbeatRunner = nextState.heartbeatRunner;
+            taskContinuationRunner = nextState.taskContinuationRunner;
             cronState = nextState.cronState;
             cron = cronState.cron;
             cronStorePath = cronState.storePath;
@@ -552,6 +562,9 @@ export async function startGatewayServer(
     clients,
     configReloader,
     browserControl,
+    taskContinuationRunner,
+    taskSelfDriving,
+    taskStepContinuation,
     wss,
     httpServer,
     httpServers,

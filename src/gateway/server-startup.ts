@@ -1,3 +1,4 @@
+import path from "node:path";
 import { initA2AConcurrencyGate } from "../agents/a2a-concurrency.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
@@ -9,8 +10,6 @@ import {
 } from "../agents/model-selection.js";
 import { resolveAgentSessionDirs } from "../agents/session-dirs.js";
 import { cleanStaleLockFiles } from "../agents/session-write-lock.js";
-import path from "node:path";
-import { startEventLog } from "../infra/events/event-log.js";
 import { initA2AJobManager } from "../agents/tools/a2a-job-manager.js";
 import { resumeFlows } from "../agents/tools/a2a-job-orchestrator.js";
 import { A2AJobReaper } from "../agents/tools/a2a-job-reaper.js";
@@ -28,8 +27,12 @@ import {
 import { loadInternalHooks } from "../hooks/loader.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { startA2AIndex } from "../infra/events/a2a-index.js";
+import { startEventLog } from "../infra/events/event-log.js";
 import { startTaskHubSink } from "../infra/events/task-hub-sink.js";
+import { startTaskContinuationRunner } from "../infra/task-continuation-runner.js";
 import { scheduleTaskContinuation } from "../infra/task-continuation.js";
+import { startTaskSelfDriving } from "../infra/task-self-driving.js";
+import { startTaskStepContinuation } from "../infra/task-step-continuation.js";
 import { startTaskTracker } from "../infra/task-tracker.js";
 import { cleanupStaleTasks } from "../plugins/core-hooks/task-enforcer.js";
 import type { loadOpenClawPlugins } from "../plugins/loader.js";
@@ -262,5 +265,16 @@ export async function startGatewaySidecars(params: {
     });
   }
 
-  return { browserControl, pluginServices };
+  // Start task continuation runners (backlog auto-pickup, self-driving, step continuation).
+  const taskContinuationRunner = startTaskContinuationRunner({ cfg: params.cfg });
+  const taskSelfDriving = startTaskSelfDriving({ cfg: params.cfg });
+  const taskStepContinuation = startTaskStepContinuation({ cfg: params.cfg });
+
+  return {
+    browserControl,
+    pluginServices,
+    taskContinuationRunner,
+    taskSelfDriving,
+    taskStepContinuation,
+  };
 }
