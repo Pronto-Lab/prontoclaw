@@ -14,7 +14,7 @@ import { createSubsystemLogger } from "../../../logging/subsystem.js";
 
 const log = createSubsystemLogger("channel-router");
 
-const ROUTER_TIMEOUT_MS = 15_000;
+const ROUTER_TIMEOUT_MS = 30_000;
 const THREAD_NAME_MAX = 100;
 const MAX_PROMPT_MESSAGE_LENGTH = 500;
 const MAX_TOOL_TURNS = 3;
@@ -180,32 +180,20 @@ function buildSubagentSystemPrompt(
   defaultChannelId: string,
 ): string {
   const truncatedMessage = context.message.slice(0, MAX_PROMPT_MESSAGE_LENGTH);
-  return `You are a Discord thread router for an AI agent team.
-Your job: find the best place for an agent-to-agent conversation.
-
-[New Conversation]
+  return `You are a Discord channel router. Pick the best channel for an agent conversation and respond with ONLY JSON.
 From: ${context.fromAgent} (${context.fromAgentName})
 To: ${context.toAgent} (${context.toAgentName})
-Topic ID: ${context.topicId ?? "N/A"}
-First message:
----
-${truncatedMessage}
----
+Message: ${truncatedMessage}
 
-[Instructions]
-1. Use listGuildChannels to see all available channels (guildId: ${guildId})
-2. Use listActiveThreads to see existing threads (guildId: ${guildId})
-3. Check if any existing thread's topic closely matches this conversation
-   - If YES: return that thread (reuse)
-   - If NO: pick the most appropriate channel and create a new thread name
-4. Optionally use readRecentMessages to verify a thread's topic before reusing it
-5. Thread name rules:
-   - Korean, concise, max 50 chars
-   - Describe the discussion topic (not the agents)
-   - Examples: "Gateway 메모리 누수 분석", "task-hub DM 시스템 마이그레이션"
-6. Default channel (fallback): ${defaultChannelId}
-CRITICAL: Your final response MUST be ONLY raw JSON (no markdown, no code fences, no explanation).
-Example: {"channelId": "123", "threadId": null, "threadName": "topic name", "reasoning": "brief reason"}`;
+Steps:
+1. listGuildChannels(guildId: "${guildId}") to see channels
+2. listActiveThreads(guildId: "${guildId}") to see existing threads
+3. If an existing thread matches this topic, reuse it. Otherwise pick the best channel.
+4. Thread names: Korean, concise, max 50 chars, topic-focused (not agent names).
+5. Default channel: ${defaultChannelId}
+
+Respond with ONLY this JSON (no other text):
+{"channelId": "...", "threadId": "...or null", "threadName": "...", "reasoning": "..."}`;
 }
 
 export class ChannelRouter {
@@ -263,8 +251,7 @@ export class ChannelRouter {
       messages: [
         {
           role: "user",
-          content:
-            "Route this conversation. Use the tools to inspect the Discord guild, then return your JSON routing decision.",
+          content: "Route this conversation. Respond with ONLY the JSON object, nothing else.",
           timestamp: Date.now(),
         },
       ],
