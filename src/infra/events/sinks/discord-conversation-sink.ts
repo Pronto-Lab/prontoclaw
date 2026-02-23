@@ -1,5 +1,6 @@
 import { resolveAgentIdentity } from "../../../agents/identity.js";
 import { loadConfig } from "../../../config/config.js";
+import { resolveStateDir } from "../../../config/paths.js";
 import { getBotUserIdForAgent } from "../../../discord/monitor/sibling-bots.js";
 import { createThreadDiscord } from "../../../discord/send.messages.js";
 import { sendMessageDiscord } from "../../../discord/send.outbound.js";
@@ -8,6 +9,7 @@ import { subscribe, type CoordinationEvent } from "../bus.js";
 import type { ConversationSink, ConversationSinkConfig } from "../conversation-sink.js";
 import { EVENT_TYPES } from "../schemas.js";
 import { ChannelRouter, type RouteContext } from "./channel-router.js";
+import { ThreadRouteCache } from "./thread-route-cache.js";
 
 const log = createSubsystemLogger("discord-conversation-sink");
 
@@ -151,11 +153,31 @@ export class DiscordConversationSink implements ConversationSink {
       routerModel: opts.routerModel,
     });
 
+    const stateDir = resolveStateDir();
+    const cache = new ThreadRouteCache(stateDir);
+
     const threadMap = new Map<string, ThreadInfo>();
     const filterSet = new Set(opts.eventFilter);
     const archiveMinutes = resolveArchiveMinutes(opts.archivePolicy);
     let stopped = false;
     const pending = new Map<string, Promise<void>>();
+
+    void cache.load().then(() => {
+      for (const [convId, entry] of cache.getAllEntries()) {
+        if (!threadMap.has(convId)) {
+          threadMap.set(convId, {
+            threadId: entry.threadId,
+            channelId: entry.channelId,
+            agents: entry.agents,
+            createdAt: entry.createdAt,
+          });
+        }
+      }
+      log.info("thread map hydrated from cache", {
+        consoleMessage: `thread map hydrated: ${threadMap.size} entries from persistent cache`,
+        count: threadMap.size,
+      });
+    });
 
     async function handleEvent(event: CoordinationEvent): Promise<void> {
       if (stopped) {
@@ -187,7 +209,6 @@ export class DiscordConversationSink implements ConversationSink {
         return;
       }
 
-      // Prevent duplicate thread creation for same conversationId
       if (pending.has(conversationId)) {
         await pending.get(conversationId);
         const resolved = threadMap.get(conversationId);
@@ -204,6 +225,17 @@ export class DiscordConversationSink implements ConversationSink {
       const routePromise = (async () => {
         try {
           const routeCtx = buildRouteContext(event);
+
+          const data = event.data ?? {};
+          const evFromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
+          const evToAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
+          const agentPair = [evFromAgent, evToAgent].toSorted() as [string, string];
+
+          const cachedEntry = cache.getByAgentPair(agentPair);
+          if (cachedEntry) {
+            routeCtx.channelHint = cachedEntry.channelId;
+          }
+
           const result = await router.route(routeCtx);
 
           log.info("routed conversation", {
@@ -212,6 +244,7 @@ export class DiscordConversationSink implements ConversationSink {
             threadId: result.threadId,
             threadName: result.threadName,
             reasoning: result.reasoning,
+            consoleMessage: `routed: ${conversationId} → ch:${result.channelId} thread:${result.threadId ?? "new"} "${result.threadName}" (${result.reasoning})`,
           });
 
           let threadId = result.threadId;
@@ -233,18 +266,23 @@ export class DiscordConversationSink implements ConversationSink {
             await sendMessageDiscord(`channel:${threadId}`, text, sendOpts);
           }
 
-          const data = event.data ?? {};
-          const evFromAgent = typeof data.fromAgent === "string" ? data.fromAgent : "unknown";
-          const evToAgent = typeof data.toAgent === "string" ? data.toAgent : "unknown";
-
-          threadMap.set(conversationId, {
+          const threadInfo: ThreadInfo = {
             threadId,
             channelId: result.channelId,
-            agents: [evFromAgent, evToAgent].toSorted() as [string, string],
+            agents: agentPair,
+            createdAt: Date.now(),
+          };
+
+          threadMap.set(conversationId, threadInfo);
+
+          cache.set(conversationId, {
+            threadId,
+            channelId: result.channelId,
+            threadName: result.threadName,
+            agents: agentPair,
             createdAt: Date.now(),
           });
 
-          // Report new thread to the reporting channel
           if (opts.reportChannelId && !result.threadId) {
             const fromBotId = getBotUserIdForAgent(evFromAgent);
             const toBotId = getBotUserIdForAgent(evToAgent);

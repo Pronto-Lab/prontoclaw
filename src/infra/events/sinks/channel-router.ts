@@ -15,6 +15,7 @@ import { createSubsystemLogger } from "../../../logging/subsystem.js";
 const log = createSubsystemLogger("channel-router");
 
 const ROUTER_TIMEOUT_MS = 30_000;
+const RETRY_DELAY_MS = 2_000;
 const THREAD_NAME_MAX = 100;
 const MAX_PROMPT_MESSAGE_LENGTH = 500;
 const MAX_TOOL_TURNS = 3;
@@ -27,6 +28,9 @@ export interface RouteContext {
   toAgentName: string;
   topicId?: string;
   conversationId: string;
+  channelHint?: string;
+  threadIdHint?: string;
+  threadNameHint?: string;
 }
 
 export interface RouteResult {
@@ -179,22 +183,108 @@ const TOPIC_NOISE_PATTERN =
 const TOPIC_SUFFIX_NOISE = /[\s,.!?~…]+$/;
 const TOPIC_MAX_LENGTH = 40;
 
-function extractTopicFromMessage(message: string): string | null {
+interface CategoryRule {
+  category: string;
+  keywords: string[];
+}
+
+const CATEGORY_RULES: CategoryRule[] = [
+  {
+    category: "검토",
+    keywords: ["검토", "리뷰", "review", "확인", "피드백", "feedback", "수정", "개선", "코드 리뷰"],
+  },
+  {
+    category: "요청",
+    keywords: [
+      "요청",
+      "부탁",
+      "해줘",
+      "해주세요",
+      "만들어",
+      "작성",
+      "추가",
+      "생성",
+      "구현",
+      "개발",
+    ],
+  },
+  {
+    category: "협업",
+    keywords: [
+      "협업",
+      "같이",
+      "함께",
+      "공동",
+      "설계",
+      "design",
+      "아키텍처",
+      "architecture",
+      "기획",
+    ],
+  },
+  {
+    category: "논의",
+    keywords: ["논의", "토론", "의견", "discuss", "어떻게", "방향", "전략", "strategy", "고민"],
+  },
+  {
+    category: "보고",
+    keywords: ["보고", "결과", "완료", "report", "분석", "analysis", "현황", "상태", "진행"],
+  },
+  {
+    category: "공유",
+    keywords: ["공유", "share", "참고", "안내", "알림", "전달", "공지"],
+  },
+];
+
+function inferCategory(message: string): string {
+  const lower = message.toLowerCase();
+  for (const rule of CATEGORY_RULES) {
+    if (rule.keywords.some((kw) => lower.includes(kw))) {
+      return rule.category;
+    }
+  }
+  return "협업";
+}
+
+function extractKeyNounPhrase(message: string): string | null {
   let text = message.replace(/\n/g, " ").trim();
   if (!text) {
     return null;
   }
 
   text = text.replace(TOPIC_NOISE_PATTERN, "").trim();
+  text = text.replace(/^(안녕|안녕하세요|네|응|좋아|아주 좋아|잘)\s*/i, "").trim();
+  text = text.replace(/^(좋[아은]|괜찮[아은]|알겠[어습]|감사)[^.!?\s]*/i, "").trim();
   text = text.replace(TOPIC_SUFFIX_NOISE, "").trim();
 
-  const firstSentence = text.split(/[.!?。]/)[0]?.trim() ?? text;
-  const topic =
-    firstSentence.length > TOPIC_MAX_LENGTH
-      ? firstSentence.slice(0, TOPIC_MAX_LENGTH)
-      : firstSentence;
+  if (!text || text.length < 3) {
+    return null;
+  }
 
-  return topic || null;
+  const firstClause = text.split(/[.!?。,\n]/)[0]?.trim() ?? text;
+  if (firstClause.length > TOPIC_MAX_LENGTH) {
+    return firstClause.slice(0, TOPIC_MAX_LENGTH);
+  }
+  return firstClause || null;
+}
+
+function generateAgendaName(context: RouteContext): string {
+  const category = inferCategory(context.message);
+  const noun = extractKeyNounPhrase(context.message);
+
+  if (noun) {
+    return `[${category}] ${noun}`.slice(0, THREAD_NAME_MAX);
+  }
+
+  return `[${category}] ${context.fromAgentName} · ${context.toAgentName} 협업`.slice(
+    0,
+    THREAD_NAME_MAX,
+  );
+}
+
+function isRateLimitError(err: unknown): boolean {
+  const msg = String(err).toLowerCase();
+  return msg.includes("429") || msg.includes("rate limit") || msg.includes("too many requests");
 }
 
 function buildSubagentSystemPrompt(
@@ -247,6 +337,20 @@ export class ChannelRouter {
   }
 
   async route(context: RouteContext): Promise<RouteResult> {
+    if (context.threadIdHint) {
+      log.info("reusing thread from cache hint", {
+        consoleMessage: `cache hit: reusing thread ${context.threadIdHint} in channel ${context.channelHint}`,
+        threadId: context.threadIdHint,
+        channelId: context.channelHint,
+      });
+      return {
+        channelId: context.channelHint ?? this.defaultChannelId,
+        threadId: context.threadIdHint,
+        threadName: context.threadNameHint ?? "cached thread",
+        reasoning: "reused from persistent cache",
+      };
+    }
+
     try {
       return await Promise.race([this.doRoute(context), this.timeoutFallback(context)]);
     } catch (err) {
@@ -284,33 +388,51 @@ export class ChannelRouter {
 
     const tools = buildToolDefinitions();
     const systemPrompt = buildSubagentSystemPrompt(context, this.guildId, this.defaultChannelId);
-    const llmContext: Context = {
-      systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: "Route this conversation. Respond with ONLY the JSON object, nothing else.",
-          timestamp: Date.now(),
-        },
-      ],
-      tools,
-    };
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), ROUTER_TIMEOUT_MS - 2000);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const llmContext: Context = {
+        systemPrompt,
+        messages: [
+          {
+            role: "user",
+            content: "Route this conversation. Respond with ONLY the JSON object, nothing else.",
+            timestamp: Date.now(),
+          },
+        ],
+        tools,
+      };
 
-    try {
-      const result = await this.runToolLoop(resolved.model, llmContext, apiKey, controller.signal);
-      if (result) {
-        return result;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), ROUTER_TIMEOUT_MS - 2000);
+
+      try {
+        const result = await this.runToolLoop(
+          resolved.model,
+          llmContext,
+          apiKey,
+          controller.signal,
+        );
+        if (result) {
+          return result;
+        }
+      } catch (err) {
+        clearTimeout(timeout);
+        if (attempt === 0 && isRateLimitError(err)) {
+          log.warn("rate limit hit, retrying after delay", {
+            consoleMessage: `429 rate limit — retrying in ${RETRY_DELAY_MS}ms`,
+            attempt,
+          });
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+        log.warn("sub-agent routing failed", { error: String(err), attempt });
+        return this.buildFallback(context);
+      } finally {
+        clearTimeout(timeout);
       }
-      return this.buildFallback(context);
-    } catch (err) {
-      log.warn("sub-agent routing failed", { error: String(err) });
-      return this.buildFallback(context);
-    } finally {
-      clearTimeout(timeout);
     }
+
+    return this.buildFallback(context);
   }
 
   private async runToolLoop(
@@ -328,10 +450,14 @@ export class ChannelRouter {
       });
 
       if (response.stopReason === "error") {
+        const responseStr = JSON.stringify(response);
+        if (isRateLimitError(responseStr)) {
+          throw new Error(`Rate limit: ${responseStr.slice(0, 200)}`);
+        }
         log.warn("sub-agent LLM error", {
-          consoleMessage: `sub-agent LLM error: ${JSON.stringify(response).slice(0, 500)}`,
+          consoleMessage: `sub-agent LLM error: ${responseStr.slice(0, 500)}`,
           model: this.routerModel,
-          response: JSON.stringify(response).slice(0, 1000),
+          response: responseStr.slice(0, 1000),
         });
       }
 
@@ -441,20 +567,7 @@ export class ChannelRouter {
   }
 
   private generateFallbackName(context: RouteContext): string {
-    if (context?.message) {
-      const topic = extractTopicFromMessage(context.message);
-      if (topic) {
-        return `[기타] ${topic}`.slice(0, THREAD_NAME_MAX);
-      }
-    }
-    const ts = new Date().toISOString().slice(0, 16);
-    if (context?.fromAgentName && context?.toAgentName) {
-      return `[기타] ${context.fromAgentName} ↔ ${context.toAgentName} · ${ts}`.slice(
-        0,
-        THREAD_NAME_MAX,
-      );
-    }
-    return `[기타] 대화 · ${ts}`.slice(0, THREAD_NAME_MAX);
+    return generateAgendaName(context);
   }
 
   private async timeoutFallback(context: RouteContext): Promise<RouteResult> {
@@ -468,9 +581,9 @@ export class ChannelRouter {
 
   private buildFallback(context: RouteContext): RouteResult {
     return {
-      channelId: this.defaultChannelId,
+      channelId: context.channelHint ?? this.defaultChannelId,
       threadName: this.generateFallbackName(context),
-      reasoning: "fallback (timeout or error)",
+      reasoning: `fallback (channel: ${context.channelHint ? "from cache" : "default"})`,
     };
   }
 }
