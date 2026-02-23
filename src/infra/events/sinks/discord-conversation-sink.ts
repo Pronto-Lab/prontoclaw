@@ -76,9 +76,15 @@ function formatMessage(event: CoordinationEvent): string | null {
     return null;
   }
 
-  return message.length > MESSAGE_TRUNCATE_LIMIT
-    ? message.slice(0, MESSAGE_TRUNCATE_LIMIT) + "..."
-    : message;
+  const toAgent = typeof data.toAgent === "string" ? data.toAgent : "";
+  const toBotId = toAgent ? getBotUserIdForAgent(toAgent) : null;
+  const mention = toBotId ? `<@${toBotId}> ` : "";
+
+  const truncated =
+    message.length > MESSAGE_TRUNCATE_LIMIT
+      ? message.slice(0, MESSAGE_TRUNCATE_LIMIT) + "..."
+      : message;
+  return `${mention}${truncated}`;
 }
 
 function shouldForward(event: CoordinationEvent, filterSet: Set<string>): boolean {
