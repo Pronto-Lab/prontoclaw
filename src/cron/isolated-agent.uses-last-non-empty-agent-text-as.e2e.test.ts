@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import "./isolated-agent.mocks.js";
 import { loadModelCatalog } from "../agents/model-catalog.js";
 import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
 import type { CliDeps } from "../cli/deps.js";
-import "./isolated-agent.mocks.js";
 import { runCronIsolatedAgentTurn } from "./isolated-agent.js";
 import { makeCfg, makeJob, withTempCronHome } from "./isolated-agent.test-harness.js";
 import type { CronJob } from "./types.js";
@@ -33,6 +33,16 @@ function mockEmbeddedTexts(texts: string[]) {
 
 function mockEmbeddedOk() {
   mockEmbeddedTexts(["ok"]);
+}
+
+function mockEmbeddedPayloads(payloads: Array<{ text?: string; isError?: boolean }>) {
+  vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
+    payloads,
+    meta: {
+      durationMs: 5,
+      agentMeta: { sessionId: "s", provider: "p", model: "m" },
+    },
+  });
 }
 
 function expectEmbeddedProviderModel(expected: { provider: string; model: string }) {
@@ -182,6 +192,32 @@ describe("runCronIsolatedAgentTurn", () => {
 
       expect(res.status).toBe("ok");
       expect(res.summary).toBe("last");
+    });
+  });
+
+  it("returns error when embedded run payload is marked as error", async () => {
+    await withTempHome(async (home) => {
+      const storePath = await writeSessionStore(home);
+      const deps = makeDeps();
+      mockEmbeddedPayloads([
+        {
+          text: "Exec failed: /bin/bash: line 1: python: command not found",
+          isError: true,
+        },
+      ]);
+
+      const res = await runCronIsolatedAgentTurn({
+        cfg: makeCfg(home, storePath),
+        deps,
+        job: makeJob(DEFAULT_AGENT_TURN_PAYLOAD),
+        message: DEFAULT_MESSAGE,
+        sessionKey: DEFAULT_SESSION_KEY,
+        lane: "cron",
+      });
+
+      expect(res.status).toBe("error");
+      expect(res.error).toContain("command not found");
+      expect(res.summary).toContain("Exec failed");
     });
   });
 
