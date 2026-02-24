@@ -32,6 +32,17 @@ export type AgentConfig = {
   workspace?: string;
   agentDir?: string;
   model?: AgentModelConfig;
+  /**
+   * Per-agent default thinking level.
+   *
+   * Why this exists:
+   * - teams often want different reasoning budgets per agent role
+   * - using only agents.defaults.thinkingDefault forces one global value
+   *
+   * Resolution order still applies at runtime:
+   * inline /think > session override > this field > global default.
+   */
+  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Optional allowlist of skills for this agent (omit = all skills; empty = none). */
   skills?: string[];
   /** Optional per-agent memory access controls. */
