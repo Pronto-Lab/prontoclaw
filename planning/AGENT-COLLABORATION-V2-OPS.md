@@ -1,8 +1,9 @@
 # Agent Collaboration v2: 운영 / 복구 / 마이그레이션
 
-> **Status**: Draft v2
+> **Status**: ✅ 기본 구현 완료 (고급 복구 절차는 미구현)
 > **Date**: 2026-02-26
 > **Parent**: [AGENT-COLLABORATION-V2.md](./AGENT-COLLABORATION-V2.md)
+> **Architecture Doc**: [prontolab/custom/AGENT-COLLABORATION-V2.md](../prontolab/custom/AGENT-COLLABORATION-V2.md)
 
 ---
 

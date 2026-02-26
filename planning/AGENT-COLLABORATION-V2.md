@@ -1,9 +1,10 @@
 # Agent Collaboration v2: Handler/Observer + Standalone collaborate Tool
 
-> **Status**: Draft v2 (피드백 반영)
+> **Status**: ✅ Phase 1-2 구현 완료 · Phase 3-4 미구현
 > **Date**: 2026-02-26
 > **Author**: 병욱
 > **Scope**: prontolab-openclaw (gateway)
+> **Architecture Doc**: [prontolab/custom/AGENT-COLLABORATION-V2.md](../prontolab/custom/AGENT-COLLABORATION-V2.md) — 구현된 아키텍처 참조
 
 ---
 
@@ -592,7 +593,7 @@ collaborate() 호출 → pending 등록
 
 ## 8. 구현 계획
 
-### Phase 1: Handler/Observer 라우팅 (핵심)
+### Phase 1: Handler/Observer 라우팅 (핵심) ✅ 구현 완료
 
 **목표**: 멘션 기반 라우팅으로 중복 처리 제거 + 스레드 참여자 자동 인식
 
@@ -614,7 +615,7 @@ collaborate() 호출 → pending 등록
 - gateway 재시작 후 캐시 복구 검증 (state/thread-participants.json)
 - 캐시 없는 재시작 시 safe degradation (멘션 기반 HANDLER만) 검증
 
-### Phase 2: collaborate 도구 (핵심)
+### Phase 2: collaborate 도구 (핵심) ✅ 구현 완료
 
 **목표**: 세션 타입 무관하게 에이전트 간 Discord 스레드 통신
 
@@ -643,7 +644,7 @@ Phase 3 (ResponseTracker의 reminder/escalation)가 없는 Phase 1-2 배포 기�
 - webchat/main 세션에서도 collaborate 사용 가능
 - collaborate() 호출 후 즉시 반환, 사용자에게 전달 안내 메시지 확인
 
-### Phase 3: 응답 추적 + 재시도
+### Phase 3: 응답 추적 + 재시도 ❌ 미구현
 
 **목표**: 무응답 시 리마인더, 최종 실패 시 에스컬레이션
 
@@ -653,7 +654,7 @@ Phase 3 (ResponseTracker의 reminder/escalation)가 없는 Phase 1-2 배포 기�
 | `src/discord/a2a-retry/scheduler.ts`               | 기존 파일 수정 — 리마인더 로직    | ~20줄 |
 | `src/discord/monitor/message-handler.preflight.ts` | markMentionResponded 연동         | ~5줄  |
 
-### Phase 4: AGENTS.md 업데이트 + agentSend 정리
+### Phase 4: AGENTS.md 업데이트 + agentSend 정리 ⚠️ 부분 구현 (system prompt에 반영됨)
 
 **목표**: 에이전트들이 collaborate를 자연스럽게 사용하도록 유도
 

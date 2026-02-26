@@ -1,8 +1,9 @@
 # Agent Collaboration v2: 런타임 정책
 
-> **Status**: Draft v2
+> **Status**: ⚠️ 부분 구현 (런타임 정책 중 레이트리밋/루프가드 미구현)
 > **Date**: 2026-02-26
 > **Parent**: [AGENT-COLLABORATION-V2.md](./AGENT-COLLABORATION-V2.md)
+> **Architecture Doc**: [prontolab/custom/AGENT-COLLABORATION-V2.md](../prontolab/custom/AGENT-COLLABORATION-V2.md)
 
 ---
 

@@ -2,11 +2,11 @@
 
 > **Pronto-Lab Fork** of [OpenClaw](https://github.com/openclaw/openclaw)
 >
-> Custom features for 7 agents coordinating via Discord.
+> Custom features for 11 agents coordinating via Discord threads.
 
 ## Overview
 
-This fork adds multi-agent coordination features for the Pronto-Lab team. Seven AI agents communicate with each other through Discord DMs and coordinate work across shared tasks.
+This fork adds multi-agent coordination features for the Pronto-Lab team. Eleven AI agents collaborate through Discord threads with LLM-powered routing and coordinate work across shared tasks.
 
 ---
 
@@ -358,17 +358,112 @@ See:
 
 ---
 
+### 9. Agent Collaboration v2 (Thread-based) ✅
+
+**Purpose:** Replace DM-based agent-to-agent communication with visible Discord thread-based collaboration using LLM-powered channel/thread routing.
+
+**Key Components:**
+| Component | File | Purpose |
+|-----------|------|---------|
+| Collaborate Tool | `src/agents/tools/collaborate-tool.ts` | `collaborate` MCP tool for peer-to-peer agent collaboration |
+| ChannelRouter | `src/infra/events/sinks/channel-router.ts` | LLM-powered channel/thread selection |
+| Handler/Observer | `src/discord/monitor/message-handler.preflight.ts` | Smart thread participation routing |
+| Thread Participants | `src/discord/monitor/thread-participants.ts` | Thread participant registry (24h TTL) |
+| Sibling Bots | `src/discord/monitor/sibling-bots.ts` | Bot user ID ↔ agent ID mapping |
+
+**How it works:**
+
+1. Agent A calls `collaborate(targetAgent: "eden", message: "...")`
+2. ChannelRouter (LLM) selects appropriate channel and thread
+3. Thread created/reused with Agent A's bot identity
+4. Message sent with @target mention
+5. Target agent's monitor → Handler path (responds via LLM)
+6. Sender agent's monitor → Observer path (records to history)
+
+**Architecture doc:** `prontolab/custom/AGENT-COLLABORATION-V2.md`
+
+---
+
+### 10. Handler/Observer Pattern ✅
+
+**Purpose:** When multiple agents are in a Discord thread, only the @mentioned agent responds (Handler), while other participant agents silently observe (Observer) to maintain context.
+
+**How it works:**
+
+1. Message arrives in Discord thread
+2. Preflight check determines if bot is mentioned → HANDLER
+3. If not mentioned but is thread participant → OBSERVER
+4. Handler: full LLM processing, generates response
+5. Observer: message recorded to session history, no LLM call
+
+**Files:**
+| File | Purpose |
+|------|---------|
+| `src/discord/monitor/message-handler.preflight.ts` | Handler vs Observer routing logic |
+| `src/discord/monitor/message-handler.process.ts` | A2A thread routing and processing |
+| `src/discord/monitor/thread-participants.ts` | ThreadParticipantMap (globalThis singleton, disk persistence) |
+
+---
+
+### 11. ChannelRouter (LLM-powered Routing) ✅
+
+**Purpose:** Use Claude as a sub-agent to intelligently route agent conversations to appropriate Discord channels and threads based on topic analysis.
+
+**How it works:**
+
+1. Collaborate tool calls `routeViaLLM()` with agent context
+2. ChannelRouter lists guild channels and active threads
+3. Claude analyzes message topic and matches to best channel/thread
+4. Returns: channelId, threadId (if existing), threadName (if new)
+5. ThreadRouteCache caches decisions for conversation pairs
+
+**Configuration (in gateway.conversationSinks):**
+
+```json5
+{
+  gateway: {
+    conversationSinks: [
+      {
+        id: "discord-conversation",
+        type: "discord-conversation",
+        options: {
+          guildId: "...",
+          defaultChannelId: "...",
+          routerAccountId: "ruda",
+          routerModel: "claude-sonnet-4-20250514",
+        },
+      },
+    ],
+  },
+}
+```
+
+---
+
 ## Agent Configuration
 
-| Agent ID         | Name        | Emoji | Role             |
-| ---------------- | ----------- | ----- | ---------------- |
-| `main` (default) | 루다 (Luda) | 🌙    | Main coordinator |
-| `eden`           | 이든        | 💻    | Developer        |
-| `seum`           | 세움        | 🔧    | Builder          |
-| `yunseul`        | 윤슬        | ✨    | Creative         |
-| `miri`           | 미리        | 📊    | Analyst          |
-| `onsae`          | 온새        | 🌿    | Nature           |
-| `ieum`           | 이음        | 🔗    | Connector        |
+| Agent ID         | Name        | Emoji | Role              |
+| ---------------- | ----------- | ----- | ----------------- |
+| `main` (default) | 루다 (Luda) | 🌙    | Main coordinator  |
+| `eden`           | 이든        | 💻    | Developer         |
+| `seum`           | 세움        | 🔧    | Builder           |
+| `yunseul`        | 윤슬        | ✨    | Creative          |
+| `miri`           | 미리        | 📊    | Analyst           |
+| `onsae`          | 온새        | 🌿    | Nature            |
+| `ieum`           | 이음        | 🔗    | Connector         |
+| `dajim`          | 다짐        | 💪    | Commitment        |
+| `nuri`           | 누리        | 🌍    | World/Community   |
+| `hangyeol`       | 한결        | 🎯    | Consistency       |
+| `grim`           | 그림        | 🎨    | Art/Visualization |
+
+**Utility Agents:**
+
+| Agent ID       | Name         | Emoji | Role                |
+| -------------- | ------------ | ----- | ------------------- |
+| `explorer`     | Explorer     |       | Exploration         |
+| `worker-quick` | Worker-Quick |       | Fast task execution |
+| `worker-deep`  | Worker-Deep  |       | Deep task execution |
+| `consultant`   | Consultant   |       | Consulting          |
 
 ---
 
@@ -436,19 +531,26 @@ f84b16ff2 feat(discord): add DM retry and task continuation for multi-agent
 
 ## Key Files Reference
 
-| Purpose                | File                                     |
-| ---------------------- | ---------------------------------------- |
-| Restart sentinel types | `src/infra/restart-sentinel.ts`          |
-| Gateway restart wake   | `src/gateway/server-restart-sentinel.ts` |
-| Gateway tool           | `src/agents/tools/gateway-tool.ts`       |
-| Session key utils      | `src/routing/session-key.js`             |
-| Task tracker           | `src/infra/task-tracker.ts`              |
-| Task continuation      | `src/infra/task-continuation.ts`         |
-| Task MCP tools         | `src/agents/tools/task-tool.ts`          |
-| Task watch script      | `scripts/task-watch.sh`                  |
-| DM retry scheduler     | `src/discord/dm-retry/scheduler.ts`      |
-| DM retry tracker       | `src/discord/dm-retry/tracker.ts`        |
-| Gateway startup        | `src/gateway/server-startup.ts`          |
+| Purpose                    | File                                               |
+| -------------------------- | -------------------------------------------------- |
+| Restart sentinel types     | `src/infra/restart-sentinel.ts`                    |
+| Gateway restart wake       | `src/gateway/server-restart-sentinel.ts`           |
+| Gateway tool               | `src/agents/tools/gateway-tool.ts`                 |
+| Session key utils          | `src/routing/session-key.js`                       |
+| Task tracker               | `src/infra/task-tracker.ts`                        |
+| Task continuation          | `src/infra/task-continuation.ts`                   |
+| Task MCP tools             | `src/agents/tools/task-tool.ts`                    |
+| Task watch script          | `scripts/task-watch.sh`                            |
+| DM retry scheduler         | `src/discord/dm-retry/scheduler.ts`                |
+| DM retry tracker           | `src/discord/dm-retry/tracker.ts`                  |
+| Gateway startup            | `src/gateway/server-startup.ts`                    |
+| Collaborate tool           | `src/agents/tools/collaborate-tool.ts`             |
+| ChannelRouter              | `src/infra/events/sinks/channel-router.ts`         |
+| Thread participants        | `src/discord/monitor/thread-participants.ts`       |
+| Sibling bots registry      | `src/discord/monitor/sibling-bots.ts`              |
+| Handler/Observer preflight | `src/discord/monitor/message-handler.preflight.ts` |
+| System prompt              | `src/agents/system-prompt.ts`                      |
+| Tool policy                | `src/agents/tool-policy.ts`                        |
 
 ---
 

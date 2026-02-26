@@ -1,8 +1,9 @@
 # Agent Collaboration v2: 검증 시나리오
 
-> **Status**: Draft v2
+> **Status**: 📋 검증 시나리오 (수동 테스트용 — 자동화 미구현)
 > **Date**: 2026-02-26
 > **Parent**: [AGENT-COLLABORATION-V2.md](./AGENT-COLLABORATION-V2.md)
+> **Architecture Doc**: [prontolab/custom/AGENT-COLLABORATION-V2.md](../prontolab/custom/AGENT-COLLABORATION-V2.md)
 
 ---
 
