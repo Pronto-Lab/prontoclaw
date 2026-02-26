@@ -122,11 +122,15 @@ export async function preflightDiscordMessage(
       }
     }
 
-    // Track A2A responses: when a sibling bot posts, mark pending mentions as responded
+    // Track A2A responses: when a sibling bot posts, mark the oldest pending mention as responded.
+    // Pass the message timestamp so only mentions sent BEFORE this response are matched (FIFO).
     if (siblingBypass) {
       const responderAgentId = getAgentIdForBot(author.id);
       if (responderAgentId) {
-        markMentionResponded(message.channelId, responderAgentId).catch((err) => {
+        const messageTs = resolveTimestampMs(message.timestamp);
+        markMentionResponded(message.channelId, responderAgentId, {
+          beforeTimestamp: messageTs,
+        }).catch((err) => {
           logVerbose(`discord: a2a-retry mark responded failed: ${String(err)}`);
         });
       }

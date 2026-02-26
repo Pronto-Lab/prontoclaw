@@ -11,7 +11,7 @@ export type A2aRetryResolvedConfig = {
 };
 
 const A2A_RETRY_DEFAULTS: A2aRetryResolvedConfig = {
-  enabled: false,
+  enabled: true,
   responseTimeoutMs: 300_000,
   maxAttempts: 3,
   checkIntervalMs: 60_000,

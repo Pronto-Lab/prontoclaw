@@ -102,28 +102,49 @@ export async function trackOutboundMention(params: {
   return mention;
 }
 
+/**
+ * Mark the OLDEST pending mention as responded (FIFO).
+ *
+ * When `beforeTimestamp` is provided, only mentions with `sentAt <= beforeTimestamp`
+ * are eligible — this prevents a single response from clearing future mentions
+ * that haven't been seen yet (e.g. when A sends two collaborate() calls to B
+ * in the same thread, B's first response should only clear the first mention).
+ */
 export async function markMentionResponded(
   threadId: string,
   responderAgentId: string,
+  options?: { beforeTimestamp?: number },
 ): Promise<number> {
   const store = loadA2aMentionStore();
-  let count = 0;
   const now = Date.now();
+
+  // Find the oldest pending mention that matches (FIFO)
+  let oldestMatch: TrackedMention | null = null;
   for (const mention of Object.values(store.tracked)) {
-    if (
-      mention.threadId === threadId &&
-      mention.status === "pending" &&
-      mention.targetAgentId === responderAgentId
-    ) {
-      mention.status = "responded";
-      mention.respondedAt = now;
-      count++;
+    if (mention.threadId !== threadId) {
+      continue;
+    }
+    if (mention.status !== "pending") {
+      continue;
+    }
+    if (mention.targetAgentId !== responderAgentId) {
+      continue;
+    }
+    if (options?.beforeTimestamp !== undefined && mention.sentAt > options.beforeTimestamp) {
+      continue;
+    }
+    if (!oldestMatch || mention.sentAt < oldestMatch.sentAt) {
+      oldestMatch = mention;
     }
   }
-  if (count > 0) {
+
+  if (oldestMatch) {
+    oldestMatch.status = "responded";
+    oldestMatch.respondedAt = now;
     await saveA2aMentionStore(store);
+    return 1;
   }
-  return count;
+  return 0;
 }
 
 export function getTimedOutMentions(timeoutMs: number): TrackedMention[] {

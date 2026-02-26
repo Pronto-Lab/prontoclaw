@@ -106,4 +106,70 @@ export function checkA2ADepthLimit(currentDepth: number, config?: LoopGuardConfi
 /** Clear all windows (for tests). */
 export function resetLoopGuard(): void {
   windows.clear();
+  collaborateWindows.clear();
+}
+
+// ── Collaborate-specific rate limit ─────────────────────────────────
+// Separate sliding window for collaborate() tool calls, keyed by agentId pair.
+// Spec: max 3 collaborate calls per (fromAgent, toAgent) pair within 5 minutes.
+
+const collaborateWindows = new Map<string, ChannelWindow>();
+const DEFAULT_COLLABORATE_MAX = 3;
+const DEFAULT_COLLABORATE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+export interface CollaborateRateLimitResult {
+  blocked: boolean;
+  currentCount: number;
+  maxAllowed: number;
+  windowMs: number;
+  /** Ms until the oldest entry expires (available when blocked). */
+  resetInMs?: number;
+}
+
+/**
+ * Record a collaborate() call and check if the rate limit is exceeded.
+ * Uses agent IDs (not bot user IDs) and a 5-minute sliding window.
+ * Returns a result object with `blocked: true` if the call should be rejected.
+ */
+export function checkCollaborateRateLimit(
+  fromAgentId: string,
+  toAgentId: string,
+  config?: { maxPerPair?: number; windowMs?: number },
+): CollaborateRateLimitResult {
+  const maxPerPair = config?.maxPerPair ?? DEFAULT_COLLABORATE_MAX;
+  const windowMs = config?.windowMs ?? DEFAULT_COLLABORATE_WINDOW_MS;
+  // Bidirectional key: A→B and B→A share the same bucket
+  const key = channelKey(fromAgentId, toAgentId);
+  const now = Date.now();
+
+  const w = getCollaborateWindow(key);
+  pruneWindow(w, now, windowMs);
+
+  if (w.timestamps.length >= maxPerPair) {
+    const resetInMs = Math.max(0, w.timestamps[0] + windowMs - now);
+    return {
+      blocked: true,
+      currentCount: w.timestamps.length,
+      maxAllowed: maxPerPair,
+      windowMs,
+      resetInMs,
+    };
+  }
+
+  w.timestamps.push(now);
+  return {
+    blocked: false,
+    currentCount: w.timestamps.length,
+    maxAllowed: maxPerPair,
+    windowMs,
+  };
+}
+
+function getCollaborateWindow(key: string): ChannelWindow {
+  let w = collaborateWindows.get(key);
+  if (!w) {
+    w = { timestamps: [] };
+    collaborateWindows.set(key, w);
+  }
+  return w;
 }

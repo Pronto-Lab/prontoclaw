@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import { resolveAgentIdentity } from "../../agents/identity.js";
 import { loadConfig } from "../../config/config.js";
 import { trackOutboundMention } from "../../discord/a2a-retry/index.js";
+import { checkCollaborateRateLimit } from "../../discord/loop-guard.js";
 import { getBotUserIdForAgent, resolveAgentBotUserId } from "../../discord/monitor/sibling-bots.js";
 import { registerThreadParticipants } from "../../discord/monitor/thread-participants.js";
 import { sendMessageDiscord, createThreadDiscord } from "../../discord/send.js";
@@ -262,9 +263,28 @@ export async function handleCollaborate(params: {
     };
   }
 
+  const resolvedFromAgent = fromAgentId ?? "unknown";
+
+  // ── Loop Guard: per-pair collaborate rate limit ──
+  if (resolvedFromAgent !== "unknown") {
+    const rateLimitResult = checkCollaborateRateLimit(resolvedFromAgent, targetAgent);
+    if (rateLimitResult.blocked) {
+      const resetMin = Math.ceil((rateLimitResult.resetInMs ?? 0) / 60_000);
+      logVerbose(
+        `collaborate: rate limit exceeded for ${resolvedFromAgent} <-> ${targetAgent} (${rateLimitResult.currentCount}/${rateLimitResult.maxAllowed} in ${rateLimitResult.windowMs / 1000}s)`,
+      );
+      return {
+        success: false,
+        error:
+          `${targetAgent}에 대한 collaborate 호출 빈도가 너무 높습니다. ` +
+          `${rateLimitResult.windowMs / 60_000}분 내 최대 ${rateLimitResult.maxAllowed}회입니다. ` +
+          `약 ${resetMin}분 후 다시 시도하거나, 기존 스레드에서 직접 대화를 이어가세요.`,
+      };
+    }
+  }
+
   const mention = `<@${targetBotId}>`;
   const fullContent = `${mention}\n\n${message}`;
-  const resolvedFromAgent = fromAgentId ?? "unknown";
 
   const fromBotUserId =
     params.fromBotUserId ?? (fromAgentId ? getBotUserIdForAgent(fromAgentId) : undefined);
