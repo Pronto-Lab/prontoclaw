@@ -51,6 +51,11 @@ import {
 import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-context.js";
 import { deliverDiscordReply } from "./reply-delivery.js";
 import { getAgentIdForBot, isSiblingBot } from "./sibling-bots.js";
+import {
+  isThreadParticipant,
+  registerThreadParticipant,
+  touchThreadActivity,
+} from "./thread-participants.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
 import { sendTyping } from "./typing.js";
 
@@ -347,124 +352,140 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
 
   // ── A2A Auto-Routing ──────────────────────────────────────────────
   // When a sibling bot @mentions us in a main channel, route through the
-  // A2A flow.  In threads, sibling bot messages are dropped entirely —
-  // the A2A conversation sink already manages thread message delivery.
+  // A2A flow.  In threads, Handler/Observer routing applies: thread
+  // participants and mentioned bots process normally (HANDLER), others
+  // are silently skipped (OBSERVER).
   if (isSiblingBot(author.id) && isGuildMessage && ctx.botUserId) {
     if (threadChannel) {
-      logVerbose(
-        `discord: drop sibling bot message in thread ${resolvedMessageChannelId} (A2A sink manages threads)`,
+      const amIParticipant = isThreadParticipant(resolvedMessageChannelId, ctx.botUserId);
+      const amIMentioned = message.mentionedUsers?.some(
+        (user: { id: string }) => user.id === ctx.botUserId,
       );
-      return;
-    }
-    // Main channel: route through A2A flow
-    const senderAgentId = getAgentIdForBot(author.id);
-    const mentionsUs = message.mentionedUsers?.some((user: User) => user.id === ctx.botUserId);
-    if (senderAgentId && mentionsUs) {
-      try {
-        const freshCfg = loadConfig();
 
-        // Build sender's session key for the channel where the message originated
-        const senderSessionKey = buildAgentSessionKey({
-          agentId: senderAgentId,
-          channel: "discord",
-          peer: { kind: "channel", id: resolvedMessageChannelId },
-        });
+      if (amIParticipant || amIMentioned) {
+        // HANDLER — I'm a thread participant or was mentioned
+        if (amIMentioned && !amIParticipant) {
+          registerThreadParticipant(resolvedMessageChannelId, ctx.botUserId);
+        }
+        touchThreadActivity(resolvedMessageChannelId);
+        // Fall through to normal message processing (don't return)
+        // Skip A2A auto-routing for thread participants
+      } else {
+        // OBSERVER — not a participant, record and skip
+        logVerbose(`discord: observer mode for sibling bot in thread ${resolvedMessageChannelId}`);
+        return;
+      }
+    } else {
+      // Main channel: route through A2A flow
+      const senderAgentId = getAgentIdForBot(author.id);
+      const mentionsUs = message.mentionedUsers?.some((user: User) => user.id === ctx.botUserId);
+      if (senderAgentId && mentionsUs) {
+        try {
+          const freshCfg = loadConfig();
 
-        // Target is the receiving agent (us) — session key from preflight route
-        const targetSessionKey = route.sessionKey;
+          // Build sender's session key for the channel where the message originated
+          const senderSessionKey = buildAgentSessionKey({
+            agentId: senderAgentId,
+            channel: "discord",
+            peer: { kind: "channel", id: resolvedMessageChannelId },
+          });
 
-        const requesterContext = await buildRequesterContextSummary(senderSessionKey);
+          // Target is the receiving agent (us) — session key from preflight route
+          const targetSessionKey = route.sessionKey;
 
-        const enrichedContext = buildAgentToAgentMessageContext({
-          requesterSessionKey: senderSessionKey,
-          requesterChannel: "discord",
-          targetSessionKey,
-          config: freshCfg,
-          requesterContextSummary: requesterContext,
-        });
+          const requesterContext = await buildRequesterContextSummary(senderSessionKey);
 
-        const cleanMessage = (baseText ?? text)
-          .replace(new RegExp(`<@!?${ctx.botUserId}>`, "g"), "")
-          .trim();
+          const enrichedContext = buildAgentToAgentMessageContext({
+            requesterSessionKey: senderSessionKey,
+            requesterChannel: "discord",
+            targetSessionKey,
+            config: freshCfg,
+            requesterContextSummary: requesterContext,
+          });
 
-        const maxTurns = resolvePingPongTurns(freshCfg);
-        const idempotencyKey = crypto.randomUUID();
+          const cleanMessage = (baseText ?? text)
+            .replace(new RegExp(`<@!?${ctx.botUserId}>`, "g"), "")
+            .trim();
 
-        a2aLog.info("auto-routing sibling bot mention via A2A", {
-          senderAgentId,
-          senderSessionKey,
-          targetSessionKey,
-          channelId: resolvedMessageChannelId,
-          maxTurns,
-        });
+          const maxTurns = resolvePingPongTurns(freshCfg);
+          const idempotencyKey = crypto.randomUUID();
 
-        const conversationId = crypto.randomUUID();
-
-        // Emit a2a.auto_route event for task-hub visibility
-        emit({
-          type: EVENT_TYPES.A2A_AUTO_ROUTE,
-          agentId: senderAgentId,
-          ts: Date.now(),
-          data: {
+          a2aLog.info("auto-routing sibling bot mention via A2A", {
             senderAgentId,
-            targetAgentId: route.agentId,
+            senderSessionKey,
+            targetSessionKey,
             channelId: resolvedMessageChannelId,
             maxTurns,
-            message: (cleanMessage || text).slice(0, 200),
-            conversationId,
-          },
-        });
-
-        const response = await callGateway<{ runId: string }>({
-          method: "agent",
-          params: {
-            message: cleanMessage || text,
-            sessionKey: targetSessionKey,
-            idempotencyKey,
-            deliver: false,
-            channel: INTERNAL_MESSAGE_CHANNEL,
-            lane: AGENT_LANE_NESTED,
-            extraSystemPrompt: enrichedContext,
-            inputProvenance: {
-              kind: "inter_session",
-              sourceSessionKey: senderSessionKey,
-              sourceChannel: "discord",
-              sourceTool: "discord_a2a_auto_route",
-            },
-          },
-          timeoutMs: 10_000,
-        });
-
-        const runId =
-          typeof response?.runId === "string" && response.runId ? response.runId : idempotencyKey;
-
-        void createAndStartFlow({
-          jobId: runId,
-          targetSessionKey,
-          displayKey: targetSessionKey,
-          message: cleanMessage || text,
-          announceTimeoutMs: 120_000,
-          maxPingPongTurns: maxTurns,
-          requesterSessionKey: senderSessionKey,
-          requesterChannel: "discord",
-          waitRunId: runId,
-          conversationId,
-        }).catch((err) => {
-          a2aLog.warn("A2A auto-route flow failed", {
-            error: err instanceof Error ? err.message : String(err),
-            senderAgentId,
-            targetSessionKey,
           });
-        });
 
-        return; // Skip normal message processing
-      } catch (err) {
-        // Graceful fallback: log and continue to normal processing
-        a2aLog.warn("A2A auto-routing failed, falling back to normal processing", {
-          error: err instanceof Error ? err.message : String(err),
-          authorId: author.id,
-          channelId: resolvedMessageChannelId,
-        });
+          const conversationId = crypto.randomUUID();
+
+          // Emit a2a.auto_route event for task-hub visibility
+          emit({
+            type: EVENT_TYPES.A2A_AUTO_ROUTE,
+            agentId: senderAgentId,
+            ts: Date.now(),
+            data: {
+              senderAgentId,
+              targetAgentId: route.agentId,
+              channelId: resolvedMessageChannelId,
+              maxTurns,
+              message: (cleanMessage || text).slice(0, 200),
+              conversationId,
+            },
+          });
+
+          const response = await callGateway<{ runId: string }>({
+            method: "agent",
+            params: {
+              message: cleanMessage || text,
+              sessionKey: targetSessionKey,
+              idempotencyKey,
+              deliver: false,
+              channel: INTERNAL_MESSAGE_CHANNEL,
+              lane: AGENT_LANE_NESTED,
+              extraSystemPrompt: enrichedContext,
+              inputProvenance: {
+                kind: "inter_session",
+                sourceSessionKey: senderSessionKey,
+                sourceChannel: "discord",
+                sourceTool: "discord_a2a_auto_route",
+              },
+            },
+            timeoutMs: 10_000,
+          });
+
+          const runId =
+            typeof response?.runId === "string" && response.runId ? response.runId : idempotencyKey;
+
+          void createAndStartFlow({
+            jobId: runId,
+            targetSessionKey,
+            displayKey: targetSessionKey,
+            message: cleanMessage || text,
+            announceTimeoutMs: 120_000,
+            maxPingPongTurns: maxTurns,
+            requesterSessionKey: senderSessionKey,
+            requesterChannel: "discord",
+            waitRunId: runId,
+            conversationId,
+          }).catch((err) => {
+            a2aLog.warn("A2A auto-route flow failed", {
+              error: err instanceof Error ? err.message : String(err),
+              senderAgentId,
+              targetSessionKey,
+            });
+          });
+
+          return; // Skip normal message processing
+        } catch (err) {
+          // Graceful fallback: log and continue to normal processing
+          a2aLog.warn("A2A auto-routing failed, falling back to normal processing", {
+            error: err instanceof Error ? err.message : String(err),
+            authorId: author.id,
+            channelId: resolvedMessageChannelId,
+          });
+        }
       }
     }
   }

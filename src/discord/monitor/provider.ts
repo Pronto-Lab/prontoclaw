@@ -30,6 +30,7 @@ import { danger, logVerbose, shouldLogVerbose, warn } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createDiscordRetryRunner } from "../../infra/retry-policy.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { createNonExitingRuntime, type RuntimeEnv } from "../../runtime.js";
 import { resolveDiscordAccount } from "../accounts.js";
 import { attachDiscordGatewayLogging } from "../gateway-logging.js";
@@ -67,6 +68,7 @@ import {
 import { resolveDiscordPresenceUpdate } from "./presence.js";
 import { resolveDiscordRestFetch } from "./rest-fetch.js";
 import { registerSiblingBot } from "./sibling-bots.js";
+import { loadThreadParticipants } from "./thread-participants.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
@@ -534,9 +536,30 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     botUserId = botUser?.id;
     if (botUserId) {
       registerSiblingBot(botUserId, account.accountId);
+      // Dual registration: also register with resolved agentId for collaborate() lookups
+      try {
+        const freshCfg = loadConfig();
+        const dummyRoute = resolveAgentRoute({
+          cfg: freshCfg,
+          channel: "discord",
+          accountId: account.accountId,
+        });
+        if (dummyRoute.agentId && dummyRoute.agentId !== account.accountId) {
+          registerSiblingBot(botUserId, dummyRoute.agentId);
+        }
+      } catch {
+        // Non-critical: accountId registration is sufficient as fallback
+      }
     }
   } catch (err) {
     runtime.error?.(danger(`discord: failed to fetch bot identity: ${String(err)}`));
+  }
+
+  // Restore thread participant map from disk (safe degradation if missing)
+  try {
+    loadThreadParticipants();
+  } catch (err) {
+    runtime.log?.(`discord: thread participant restore failed (mention-only mode): ${String(err)}`);
   }
 
   const messageHandler = createDiscordMessageHandler({

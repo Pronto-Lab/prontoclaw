@@ -1,12 +1,13 @@
 import type { OpenClawConfig } from "../config/config.js";
-import type { GatewayMessageChannel } from "../utils/message-channel.js";
-import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
-import type { AnyAgentTool } from "./tools/common.js";
 import { resolvePluginTools } from "../plugins/tools.js";
+import type { GatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
+import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createBrowserTool } from "./tools/browser-tool.js";
 import { createCanvasTool } from "./tools/canvas-tool.js";
+import { createCollaborateTool } from "./tools/collaborate-tool.js";
+import type { AnyAgentTool } from "./tools/common.js";
 import { createCronTool } from "./tools/cron-tool.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 import { createImageTool } from "./tools/image-tool.js";
@@ -19,7 +20,6 @@ import { createSessionsListTool } from "./tools/sessions-list-tool.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { createSessionsSpawnTool } from "./tools/sessions-spawn-tool.js";
 import { createSubagentsTool } from "./tools/subagents-tool.js";
-import { createTaskVerifyTool } from "./tools/task-verify-tool.js";
 import {
   createTaskApproveTool,
   createTaskBlockTool,
@@ -33,6 +33,7 @@ import {
   createTaskStatusTool,
   createTaskUpdateTool,
 } from "./tools/task-tool.js";
+import { createTaskVerifyTool } from "./tools/task-verify-tool.js";
 import { createTtsTool } from "./tools/tts-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
@@ -264,6 +265,13 @@ export function createOpenClawTools(options?: {
   if (taskVerify) {
     tools.push(taskVerify);
   }
+
+  // Collaborate tool — Discord-native peer-to-peer agent collaboration
+  const collaborateTool = createCollaborateTool({
+    agentSessionKey: options?.agentSessionKey,
+    agentAccountId: options?.agentAccountId,
+  });
+  tools.push(collaborateTool);
 
   // Milestone management tools
   const milestoneTools = createMilestoneTools();

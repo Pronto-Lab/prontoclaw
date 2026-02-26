@@ -54,6 +54,11 @@ import { resolveDiscordChannelInfo, resolveDiscordMessageText } from "./message-
 import { resolveDiscordSenderIdentity, resolveDiscordWebhookId } from "./sender-identity.js";
 import { isSiblingBot, getAgentIdForBot } from "./sibling-bots.js";
 import { resolveDiscordSystemEvent } from "./system-events.js";
+import {
+  isThreadParticipant,
+  registerThreadParticipant,
+  touchThreadActivity,
+} from "./thread-participants.js";
 import { resolveDiscordThreadChannel, resolveDiscordThreadParentInfo } from "./threading.js";
 
 export type {
@@ -592,7 +597,21 @@ export async function preflightDiscordMessage(
   logDebug(
     `[discord-preflight] shouldRequireMention=${shouldRequireMention} mentionGate.shouldSkip=${mentionGate.shouldSkip} wasMentioned=${wasMentioned}`,
   );
-  if (isGuildMessage && shouldRequireMention) {
+  // ── Handler/Observer: thread participant bypass ──
+  // If I'm a registered participant in this thread, I'm a HANDLER regardless of mention.
+  // If I'm explicitly mentioned in a thread, register as participant and become HANDLER.
+  if (
+    threadChannel &&
+    params.botUserId &&
+    isThreadParticipant(message.channelId, params.botUserId)
+  ) {
+    touchThreadActivity(message.channelId);
+    // Skip mention gate — participant in this thread, no mention needed
+  } else if (threadChannel && params.botUserId && explicitlyMentioned) {
+    registerThreadParticipant(message.channelId, params.botUserId);
+    touchThreadActivity(message.channelId);
+    // Skip mention gate — just mentioned in thread, now registered as participant
+  } else if (isGuildMessage && shouldRequireMention) {
     if (botId && mentionGate.shouldSkip) {
       logDebug(`[discord-preflight] drop: no-mention`);
       logVerbose(`discord: drop guild message (mention required, botId=${botId})`);
@@ -611,6 +630,45 @@ export async function preflightDiscordMessage(
       });
       return null;
     }
+  }
+
+  // ── Observer: sibling bot messages in threads where I'm not a participant ──
+  if (
+    threadChannel &&
+    author.bot &&
+    isSiblingBot(author.id) &&
+    params.botUserId &&
+    !isThreadParticipant(message.channelId, params.botUserId) &&
+    !explicitlyMentioned
+  ) {
+    logVerbose(`discord: observer mode for sibling bot message in thread ${message.channelId}`);
+    if (historyEntry) {
+      recordPendingHistoryEntryIfEnabled({
+        historyMap: params.guildHistories,
+        historyKey: message.channelId,
+        limit: params.historyLimit,
+        entry: historyEntry,
+      });
+    }
+    return null;
+  }
+
+  // ── Observer: another bot was explicitly mentioned in guild, not us ──
+  if (
+    isGuildMessage &&
+    !explicitlyMentioned &&
+    message.mentionedUsers?.some((u: { id: string }) => isSiblingBot(u.id))
+  ) {
+    logVerbose(`discord: observer mode — another bot was explicitly mentioned`);
+    if (historyEntry) {
+      recordPendingHistoryEntryIfEnabled({
+        historyMap: params.guildHistories,
+        historyKey: message.channelId,
+        limit: params.historyLimit,
+        entry: historyEntry,
+      });
+    }
+    return null;
   }
 
   if (isGuildMessage && hasAccessRestrictions && !memberAllowed) {

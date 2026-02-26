@@ -70,6 +70,36 @@ export function getBotUserIdForAgent(agentId: string): string | undefined {
   return getSiblingBotReverseMap().get(agentId);
 }
 
+/**
+ * 2-stage lookup: resolve agentId to Discord bot user ID.
+ * Stage 1: direct lookup by agentId in reverse map
+ * Stage 2: fallback via config binding (agentId → accountId → botUserId)
+ */
+export function resolveAgentBotUserId(
+  agentId: string,
+  cfg?: { bindings?: Array<{ accountId: string; agentId?: string }> },
+): string | undefined {
+  // Stage 1: direct lookup
+  const direct = getBotUserIdForAgent(agentId);
+  if (direct) {
+    return direct;
+  }
+
+  // Stage 2: try config bindings to find accountId for this agentId
+  if (cfg?.bindings) {
+    for (const binding of cfg.bindings) {
+      if (binding.agentId === agentId && binding.accountId) {
+        const fallback = getBotUserIdForAgent(binding.accountId);
+        if (fallback) {
+          return fallback;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
 /** Return all registered sibling bot IDs (for diagnostics). */
 export function listSiblingBots(): string[] {
   return [...getSiblingBotMap().keys()];
