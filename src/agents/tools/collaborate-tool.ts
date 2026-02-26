@@ -1,10 +1,16 @@
 import { Type } from "@sinclair/typebox";
+import { resolveAgentIdentity } from "../../agents/identity.js";
 import { loadConfig } from "../../config/config.js";
 import { trackOutboundMention } from "../../discord/a2a-retry/index.js";
 import { getBotUserIdForAgent, resolveAgentBotUserId } from "../../discord/monitor/sibling-bots.js";
 import { registerThreadParticipants } from "../../discord/monitor/thread-participants.js";
 import { sendMessageDiscord, createThreadDiscord } from "../../discord/send.js";
 import { logVerbose } from "../../globals.js";
+import {
+  ChannelRouter,
+  type RouteContext,
+  type RouteResult,
+} from "../../infra/events/sinks/channel-router.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { AnyAgentTool } from "./common.js";
@@ -29,35 +35,78 @@ const CollaborateToolSchema = Type.Object({
   message: Type.String({ description: "전달할 메시지" }),
   threadId: Type.Optional(Type.String({ description: "기존 스레드에 이어쓰기 (선택)" })),
   channelId: Type.Optional(
-    Type.String({ description: "새 스레드를 만들 채널 ID (선택, 미지정 시 기본 채널)" }),
+    Type.String({
+      description:
+        "새 스레드를 만들 채널 ID (선택, 미지정 시 LLM Router가 자동으로 적절한 채널 선택)",
+    }),
   ),
   threadName: Type.Optional(Type.String({ description: "새 스레드 이름 (선택)" })),
 });
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── Channel Router Singleton ────────────────────────────────────────
 
-/** Discord thread names are capped at 100 characters. */
-function deriveCollaborateThreadName(
-  fromAgent: string,
-  targetAgent: string,
-  message: string,
-): string {
-  const firstLine =
-    message
-      .split("\n")
-      .find((l) => l.trim())
-      ?.trim() ?? "";
-  const prefix = `[협업] ${fromAgent} → ${targetAgent} · `;
-  const maxTopicLen = 100 - prefix.length;
-  const topic =
-    firstLine.slice(0, Math.max(maxTopicLen, 10)) || new Date().toISOString().slice(0, 16);
-  // Only add ellipsis if topic was actually truncated; enforce 100 char limit
-  const truncated = firstLine.length > maxTopicLen;
-  const raw = truncated
-    ? `${prefix}${topic.slice(0, Math.max(maxTopicLen - 3, 0))}...`
-    : `${prefix}${topic}`;
-  return raw.slice(0, 100);
+let cachedRouter: ChannelRouter | null = null;
+let routerConfigChecked = false;
+
+interface SinkOptions {
+  guildId?: string;
+  defaultChannelId?: string;
+  routerAccountId?: string;
+  routerModel?: string;
 }
+
+function getOrCreateRouter(): ChannelRouter | null {
+  if (cachedRouter) {
+    return cachedRouter;
+  }
+  if (routerConfigChecked) {
+    return null; // Already checked, no config available
+  }
+  routerConfigChecked = true;
+
+  try {
+    const cfg = loadConfig();
+    const sinks = cfg.gateway?.conversationSinks;
+    if (!Array.isArray(sinks) || sinks.length === 0) {
+      logVerbose("collaborate: no conversationSinks configured, router unavailable");
+      return null;
+    }
+
+    // Find the discord-conversation sink
+    const discordSink = sinks.find(
+      (s: Record<string, unknown>) =>
+        s.id === "discord-conversation" || s.type === "discord-conversation",
+    );
+    if (!discordSink) {
+      logVerbose("collaborate: no discord-conversation sink found");
+      return null;
+    }
+
+    const opts = (discordSink.options ?? discordSink) as SinkOptions;
+    const guildId = opts.guildId;
+    const defaultChannelId = opts.defaultChannelId;
+
+    if (!guildId || !defaultChannelId) {
+      logVerbose("collaborate: sink missing guildId or defaultChannelId");
+      return null;
+    }
+
+    cachedRouter = new ChannelRouter({
+      guildId,
+      defaultChannelId,
+      accountId: opts.routerAccountId ?? "ruda",
+      routerModel: opts.routerModel,
+    });
+
+    logVerbose("collaborate: ChannelRouter initialized from conversationSinks config");
+    return cachedRouter;
+  } catch (err) {
+    logVerbose("collaborate: failed to initialize ChannelRouter: " + String(err));
+    return null;
+  }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
 
 function truncateText(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
@@ -148,6 +197,46 @@ function registerAndTrack(params: {
   });
 }
 
+/**
+ * Use ChannelRouter to find the best channel/thread for this collaboration.
+ * Returns null if router is unavailable or fails.
+ */
+async function routeViaLLM(params: {
+  fromAgentId: string;
+  targetAgent: string;
+  message: string;
+}): Promise<RouteResult | null> {
+  const router = getOrCreateRouter();
+  if (!router) {
+    return null;
+  }
+
+  try {
+    const cfg = loadConfig();
+    const fromIdentity = resolveAgentIdentity(cfg, params.fromAgentId);
+    const toIdentity = resolveAgentIdentity(cfg, params.targetAgent);
+
+    const routeCtx: RouteContext = {
+      message: truncateText(params.message, 500),
+      fromAgent: params.fromAgentId,
+      toAgent: params.targetAgent,
+      fromAgentName: fromIdentity?.name ?? params.fromAgentId,
+      toAgentName: toIdentity?.name ?? params.targetAgent,
+      conversationId: `collaborate_${[params.fromAgentId, params.targetAgent].toSorted().join("-")}`,
+    };
+
+    logVerbose("collaborate: routing via ChannelRouter");
+    const result = await router.route(routeCtx);
+    logVerbose(
+      `collaborate: router result — channel:${result.channelId} thread:${result.threadId ?? "new"} name:"${result.threadName}"`,
+    );
+    return result;
+  } catch (err) {
+    logVerbose("collaborate: ChannelRouter failed, falling back: " + String(err));
+    return null;
+  }
+}
+
 // ── Main Handler ────────────────────────────────────────────────────
 
 export async function handleCollaborate(params: {
@@ -159,12 +248,12 @@ export async function handleCollaborate(params: {
   fromAgentId?: string;
   fromBotUserId?: string;
   accountId?: string;
+  currentChannelId?: string;
 }): Promise<CollaborateOutput> {
-  const { targetAgent, message, threadId, channelId, threadName, fromAgentId } = params;
+  const { targetAgent, message, threadId, fromAgentId } = params;
 
   logVerbose("collaborate: resolving bot id for agent " + targetAgent);
 
-  // BUG-1 fix: use resolveTargetBotId with config-based fallback
   const targetBotId = resolveTargetBotId(targetAgent);
   if (!targetBotId) {
     return {
@@ -177,12 +266,11 @@ export async function handleCollaborate(params: {
   const fullContent = `${mention}\n\n${message}`;
   const resolvedFromAgent = fromAgentId ?? "unknown";
 
-  // BUG-3 fix: auto-resolve sender's botUserId from agentId if not provided
   const fromBotUserId =
     params.fromBotUserId ?? (fromAgentId ? getBotUserIdForAgent(fromAgentId) : undefined);
 
   try {
-    // ── Path A: Send to existing thread ──
+    // ── Path A: Send to existing thread (explicit) ──
     if (threadId) {
       logVerbose("collaborate: sending to existing thread " + threadId);
       const result = await sendMessageDiscord(`channel:${threadId}`, fullContent);
@@ -206,30 +294,80 @@ export async function handleCollaborate(params: {
       };
     }
 
-    // ── Path B: Create new thread ──
+    // ── Path B: Use LLM Router when no explicit channelId ──
+    let resolvedChannelId = params.channelId;
+    let resolvedThreadName = params.threadName;
+    let routerThreadId: string | undefined;
 
-    // GAP-1 fix: better error message when no channelId
-    if (!channelId) {
+    if (!resolvedChannelId && resolvedFromAgent !== "unknown") {
+      const routeResult = await routeViaLLM({
+        fromAgentId: resolvedFromAgent,
+        targetAgent,
+        message,
+      });
+
+      if (routeResult) {
+        resolvedChannelId = routeResult.channelId;
+        resolvedThreadName = resolvedThreadName ?? routeResult.threadName;
+
+        // Router may return an existing thread to reuse
+        if (routeResult.threadId) {
+          routerThreadId = routeResult.threadId;
+        }
+      }
+    }
+
+    // Fallback to currentChannelId if router didn't provide one
+    if (!resolvedChannelId) {
+      resolvedChannelId = params.currentChannelId;
+    }
+
+    // ── Path B-1: Router found an existing thread ──
+    if (routerThreadId) {
+      logVerbose("collaborate: router matched existing thread " + routerThreadId);
+      const result = await sendMessageDiscord(`channel:${routerThreadId}`, fullContent);
+      const messageId = result.messageId;
+
+      registerAndTrack({
+        threadId: routerThreadId,
+        messageId,
+        fromBotUserId,
+        targetBotId,
+        fromAgentId: resolvedFromAgent,
+        targetAgent,
+        message,
+      });
+
       return {
-        success: false,
-        error: "threadId 또는 channelId가 필요합니다. 새 스레드를 만들려면 channelId를 지정하세요.",
+        success: true,
+        messageId,
+        threadId: routerThreadId,
+        threadName: resolvedThreadName,
+        channelId: resolvedChannelId,
+        note: `${targetAgent}에게 기존 스레드에서 메시지를 전달했습니다.`,
       };
     }
 
-    logVerbose("collaborate: creating thread in channel " + channelId);
-    const name = threadName || deriveCollaborateThreadName(resolvedFromAgent, targetAgent, message);
+    // ── Path B-2: Create new thread ──
+    if (!resolvedChannelId) {
+      return {
+        success: false,
+        error:
+          "채널을 결정할 수 없습니다. ChannelRouter가 설정되지 않았거나, channelId를 직접 지정해주세요.",
+      };
+    }
 
-    // BUG-2 fix: create thread WITHOUT content, then send message separately
-    // to get the actual messageId (createThreadDiscord doesn't return message ID)
-    const thread = await createThreadDiscord(channelId, { name });
-    const resolvedThreadId = thread.id;
+    logVerbose("collaborate: creating thread in channel " + resolvedChannelId);
+    const name = resolvedThreadName ?? `[협업] ${resolvedFromAgent} · ${targetAgent}`.slice(0, 100);
 
-    // Send the actual message to get a proper messageId
-    const sendResult = await sendMessageDiscord(`channel:${resolvedThreadId}`, fullContent);
+    const thread = await createThreadDiscord(resolvedChannelId, { name });
+    const newThreadId = thread.id;
+
+    const sendResult = await sendMessageDiscord(`channel:${newThreadId}`, fullContent);
     const messageId = sendResult.messageId;
 
     registerAndTrack({
-      threadId: resolvedThreadId,
+      threadId: newThreadId,
       messageId,
       fromBotUserId,
       targetBotId,
@@ -241,9 +379,9 @@ export async function handleCollaborate(params: {
     return {
       success: true,
       messageId,
-      threadId: resolvedThreadId,
+      threadId: newThreadId,
       threadName: name,
-      channelId,
+      channelId: resolvedChannelId,
       note: `${targetAgent}에게 메시지를 전달했습니다. 스레드에서 응답을 기다리세요.`,
     };
   } catch (err) {
@@ -264,17 +402,16 @@ export function createCollaborateTool(opts?: {
     label: "Collaborate",
     name: "collaborate",
     description:
-      "다른 에이전트와 Discord 스레드를 통해 협업합니다. 세션 타입에 관계없이 사용 가능합니다.",
+      "다른 에이전트와 Discord 스레드를 통해 협업합니다. LLM Router가 자동으로 적절한 채널과 스레드를 선택합니다.",
     parameters: CollaborateToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const targetAgent = readStringParam(params, "targetAgent", { required: true });
       const message = readStringParam(params, "message", { required: true });
       const threadId = readStringParam(params, "threadId") ?? undefined;
-      const channelId = readStringParam(params, "channelId") ?? opts?.currentChannelId ?? undefined;
+      const channelId = readStringParam(params, "channelId") ?? undefined;
       const threadName = readStringParam(params, "threadName") ?? undefined;
 
-      // BUG-4 fix: use proper session key parser instead of split(":")[0]
       const fromAgentId = opts?.agentSessionKey
         ? resolveAgentIdFromSessionKey(opts.agentSessionKey)
         : undefined;
@@ -287,6 +424,7 @@ export function createCollaborateTool(opts?: {
         threadName,
         fromAgentId,
         accountId: opts?.agentAccountId,
+        currentChannelId: opts?.currentChannelId,
       });
 
       return jsonResult(result);
