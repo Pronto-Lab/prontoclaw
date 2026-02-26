@@ -114,7 +114,7 @@ export function resetLoopGuard(): void {
 // Spec: max 3 collaborate calls per (fromAgent, toAgent) pair within 5 minutes.
 
 const collaborateWindows = new Map<string, ChannelWindow>();
-const DEFAULT_COLLABORATE_MAX = 3;
+const DEFAULT_COLLABORATE_MAX = 10;
 const DEFAULT_COLLABORATE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface CollaborateRateLimitResult {
