@@ -1,9 +1,9 @@
 import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
+import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { MemoryCitationsMode } from "../config/types.memory.js";
+import { listDeliverableMessageChannels } from "../utils/message-channel.js";
 import type { ResolvedTimeFormat } from "./date-time.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
-import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
-import { listDeliverableMessageChannels } from "../utils/message-channel.js";
 import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
 
 /**
@@ -133,6 +133,18 @@ function buildMessagingSection(params: {
           .filter(Boolean)
           .join("\n")
       : "",
+    params.availableTools.has("collaborate")
+      ? [
+          "",
+          "### Peer Collaboration (collaborate tool)",
+          "- When you need to discuss or collaborate with another agent, use `collaborate` — NOT `message`.",
+          "- `collaborate` creates a Discord thread and @mentions the target agent, making the conversation visible and organized.",
+          "- Use `collaborate(targetAgent, message, channelId)` for new conversations (creates a thread).",
+          "- Use `collaborate(targetAgent, message, threadId=...)` to continue in an existing thread.",
+          "- Do NOT send messages directly in the channel to talk to other agents — always use `collaborate` to create a thread.",
+          "- `sessions_send` is for internal/background coordination (not visible in channels). `collaborate` is for visible peer discussions.",
+        ].join("\n")
+      : "",
     "",
   ];
 }
@@ -244,8 +256,11 @@ export function buildAgentSystemPrompt(params: {
     agents_list: "List agent ids allowed for sessions_spawn",
     sessions_list: "List other sessions (incl. sub-agents) with filters/last",
     sessions_history: "Fetch history for another session/sub-agent",
-    sessions_send: "Send a message to another session/sub-agent",
+    sessions_send:
+      "Send a message to another session/sub-agent (internal, not visible in channels)",
     sessions_spawn: "Spawn a sub-agent session",
+    collaborate:
+      "Start or continue a Discord thread conversation with another agent. Preferred over message tool for peer-to-peer agent discussions — creates a visible thread and @mentions the target agent",
     subagents: "List, steer, or kill sub-agent runs for this requester session",
     session_status:
       "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
@@ -274,6 +289,7 @@ export function buildAgentSystemPrompt(params: {
     "sessions_list",
     "sessions_history",
     "sessions_send",
+    "collaborate",
     "subagents",
     "session_status",
     "image",
