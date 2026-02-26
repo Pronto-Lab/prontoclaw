@@ -28,6 +28,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "sessions_spawn",
     "subagents",
     "session_status",
+    "collaborate",
   ],
   // Task management tools
   "group:task": [
@@ -74,6 +75,7 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "sessions_spawn",
     "subagents",
     "session_status",
+    "collaborate",
     "memory_search",
     "memory_get",
     "web_search",
@@ -108,6 +110,7 @@ const TOOL_PROFILES: Record<ToolProfileId, ToolProfilePolicy> = {
       "sessions_history",
       "sessions_send",
       "session_status",
+      "collaborate",
     ],
   },
   full: {},
