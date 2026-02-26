@@ -269,11 +269,15 @@ export async function handleCollaborate(params: {
   const fromBotUserId =
     params.fromBotUserId ?? (fromAgentId ? getBotUserIdForAgent(fromAgentId) : undefined);
 
+  // Resolve which Discord account should send messages (the calling agent's account)
+  const sendAccountId = params.accountId ?? resolvedFromAgent;
+  const sendOpts = sendAccountId !== "unknown" ? { accountId: sendAccountId } : {};
+
   try {
     // ── Path A: Send to existing thread (explicit) ──
     if (threadId) {
       logVerbose("collaborate: sending to existing thread " + threadId);
-      const result = await sendMessageDiscord(`channel:${threadId}`, fullContent);
+      const result = await sendMessageDiscord(`channel:${threadId}`, fullContent, sendOpts);
       const messageId = result.messageId;
 
       registerAndTrack({
@@ -325,7 +329,7 @@ export async function handleCollaborate(params: {
     // ── Path B-1: Router found an existing thread ──
     if (routerThreadId) {
       logVerbose("collaborate: router matched existing thread " + routerThreadId);
-      const result = await sendMessageDiscord(`channel:${routerThreadId}`, fullContent);
+      const result = await sendMessageDiscord(`channel:${routerThreadId}`, fullContent, sendOpts);
       const messageId = result.messageId;
 
       registerAndTrack({
@@ -360,10 +364,10 @@ export async function handleCollaborate(params: {
     logVerbose("collaborate: creating thread in channel " + resolvedChannelId);
     const name = resolvedThreadName ?? `[협업] ${resolvedFromAgent} · ${targetAgent}`.slice(0, 100);
 
-    const thread = await createThreadDiscord(resolvedChannelId, { name });
+    const thread = await createThreadDiscord(resolvedChannelId, { name }, sendOpts);
     const newThreadId = thread.id;
 
-    const sendResult = await sendMessageDiscord(`channel:${newThreadId}`, fullContent);
+    const sendResult = await sendMessageDiscord(`channel:${newThreadId}`, fullContent, sendOpts);
     const messageId = sendResult.messageId;
 
     registerAndTrack({
