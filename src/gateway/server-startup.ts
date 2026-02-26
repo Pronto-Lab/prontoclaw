@@ -17,6 +17,7 @@ import type { CliDeps } from "../cli/deps.js";
 import { resolveA2AConcurrencyConfig } from "../config/agent-limits.js";
 import type { loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
+import { startA2aRetryScheduler } from "../discord/a2a-retry/index.js";
 import { startDmRetryScheduler } from "../discord/dm-retry/scheduler.js";
 import { startGmailWatcherWithLogs } from "../hooks/gmail-watcher-lifecycle.js";
 import {
@@ -190,6 +191,13 @@ export async function startGatewaySidecars(params: {
     startDmRetryScheduler(params.cfg);
   } catch (err) {
     params.log.warn(`dm-retry scheduler failed to start: ${String(err)}`);
+  }
+
+  // Start A2A mention retry scheduler for Discord thread communication.
+  try {
+    startA2aRetryScheduler(params.cfg);
+  } catch (err) {
+    params.log.warn(`a2a-retry scheduler failed to start: ${String(err)}`);
   }
 
   // Start task tracker for automatic CURRENT_TASK.md updates.

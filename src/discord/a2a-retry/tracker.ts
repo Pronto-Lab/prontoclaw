@@ -1,0 +1,174 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import JSON5 from "json5";
+import { resolveStateDir } from "../../config/paths.js";
+
+export type TrackedMentionStatus = "pending" | "responded" | "failed";
+
+export interface TrackedMention {
+  id: string;
+  messageId: string;
+  threadId: string;
+  fromAgentId: string;
+  targetAgentId: string;
+  targetBotId: string;
+  originalText: string;
+  status: TrackedMentionStatus;
+  sentAt: number;
+  attempts: number;
+  lastAttemptAt: number;
+  respondedAt?: number;
+}
+
+export interface A2aMentionStore {
+  version: number;
+  tracked: Record<string, TrackedMention>;
+}
+
+const STORE_VERSION = 1;
+const STORE_FILENAME = "a2a-mention-tracking.json";
+
+function getStorePath(): string {
+  return path.join(resolveStateDir(), STORE_FILENAME);
+}
+
+function createEmptyStore(): A2aMentionStore {
+  return { version: STORE_VERSION, tracked: {} };
+}
+
+function isValidStore(value: unknown): value is A2aMentionStore {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "version" in value &&
+    "tracked" in value &&
+    typeof (value as A2aMentionStore).tracked === "object"
+  );
+}
+
+export function loadA2aMentionStore(): A2aMentionStore {
+  const storePath = getStorePath();
+  try {
+    const raw = fs.readFileSync(storePath, "utf-8");
+    const parsed = JSON5.parse(raw);
+    if (isValidStore(parsed)) {
+      return parsed;
+    }
+    return createEmptyStore();
+  } catch {
+    return createEmptyStore();
+  }
+}
+
+async function saveA2aMentionStore(store: A2aMentionStore): Promise<void> {
+  const storePath = getStorePath();
+  await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
+  const json = JSON.stringify(store, null, 2);
+  const tmp = `${storePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fs.promises.writeFile(tmp, json, { mode: 0o600, encoding: "utf-8" });
+    await fs.promises.rename(tmp, storePath);
+  } finally {
+    await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+  }
+}
+
+export async function trackOutboundMention(params: {
+  messageId: string;
+  threadId: string;
+  fromAgentId: string;
+  targetAgentId: string;
+  targetBotId: string;
+  originalText: string;
+}): Promise<TrackedMention> {
+  const store = loadA2aMentionStore();
+  const now = Date.now();
+  const mention: TrackedMention = {
+    id: crypto.randomUUID(),
+    messageId: params.messageId,
+    threadId: params.threadId,
+    fromAgentId: params.fromAgentId,
+    targetAgentId: params.targetAgentId,
+    targetBotId: params.targetBotId,
+    originalText: params.originalText,
+    sentAt: now,
+    attempts: 1,
+    lastAttemptAt: now,
+    status: "pending",
+  };
+  store.tracked[mention.id] = mention;
+  await saveA2aMentionStore(store);
+  return mention;
+}
+
+export async function markMentionResponded(
+  threadId: string,
+  responderAgentId: string,
+): Promise<number> {
+  const store = loadA2aMentionStore();
+  let count = 0;
+  const now = Date.now();
+  for (const mention of Object.values(store.tracked)) {
+    if (
+      mention.threadId === threadId &&
+      mention.status === "pending" &&
+      mention.targetAgentId === responderAgentId
+    ) {
+      mention.status = "responded";
+      mention.respondedAt = now;
+      count++;
+    }
+  }
+  if (count > 0) {
+    await saveA2aMentionStore(store);
+  }
+  return count;
+}
+
+export function getTimedOutMentions(timeoutMs: number): TrackedMention[] {
+  const store = loadA2aMentionStore();
+  const now = Date.now();
+  return Object.values(store.tracked).filter(
+    (mention) => mention.status === "pending" && now - mention.lastAttemptAt >= timeoutMs,
+  );
+}
+
+export async function incrementMentionAttempt(id: string): Promise<TrackedMention | null> {
+  const store = loadA2aMentionStore();
+  const mention = store.tracked[id];
+  if (!mention) {
+    return null;
+  }
+  mention.attempts += 1;
+  mention.lastAttemptAt = Date.now();
+  await saveA2aMentionStore(store);
+  return mention;
+}
+
+export async function markMentionFailed(id: string): Promise<TrackedMention | null> {
+  const store = loadA2aMentionStore();
+  const mention = store.tracked[id];
+  if (!mention) {
+    return null;
+  }
+  mention.status = "failed";
+  await saveA2aMentionStore(store);
+  return mention;
+}
+
+export async function cleanupOldEntries(maxAgeMs: number): Promise<number> {
+  const store = loadA2aMentionStore();
+  const now = Date.now();
+  let count = 0;
+  for (const [id, mention] of Object.entries(store.tracked)) {
+    if (mention.status !== "pending" && now - mention.lastAttemptAt > maxAgeMs) {
+      delete store.tracked[id];
+      count++;
+    }
+  }
+  if (count > 0) {
+    await saveA2aMentionStore(store);
+  }
+  return count;
+}

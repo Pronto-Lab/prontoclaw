@@ -150,6 +150,39 @@ export type DiscordUiConfig = {
   components?: DiscordUiComponentsConfig;
 };
 
+/**
+ * Configuration for A2A (agent-to-agent) mention retry behavior.
+ * When enabled, outbound agent mentions in threads are tracked and auto-retried if no response is received.
+ */
+export type A2aRetryConfig = {
+  /** Enable A2A mention retry tracking. Default: false. */
+  enabled?: boolean;
+  /** Timeout in ms before considering a mention unresponded. Default: 300000 (5 min). */
+  responseTimeoutMs?: number;
+  /** Maximum retry attempts before marking as failed. Default: 3. */
+  maxAttempts?: number;
+  /** Polling interval in ms for checking timed-out mentions. Default: 60000 (1 min). */
+  checkIntervalMs?: number;
+  /** Max age in ms before cleaning up old entries. Default: 86400000 (24h). */
+  cleanupMaxAgeMs?: number;
+  /** Discord user ID to mention when all retries fail (escalation). */
+  escalationMentionId?: string;
+  /** Notify in thread when all retries fail. Default: true. */
+  notifyOnFailure?: boolean;
+};
+
+/**
+ * Configuration for Discord thread-based agent-to-agent communication.
+ * When enabled, sibling bot mentions in threads are processed through the agent pipeline
+ * instead of being dropped by the bot filter.
+ */
+export type ThreadCommunicationConfig = {
+  /** Enable thread-based A2A communication. Default: false. */
+  enabled?: boolean;
+  /** Allow sibling bot mentions in threads to trigger agent processing. Default: true (when enabled). */
+  allowSiblingMentionsInThreads?: boolean;
+};
+
 export type DiscordAccountConfig = {
   /** Optional display name for this account (used in CLI/UI lists). */
   name?: string;
@@ -215,6 +248,10 @@ export type DiscordAccountConfig = {
    */
   allowFrom?: string[];
   dm?: DiscordDmConfig;
+  /** Thread-based agent-to-agent communication configuration. */
+  threadCommunication?: ThreadCommunicationConfig;
+  /** A2A mention retry configuration for thread communication. */
+  a2aRetry?: A2aRetryConfig;
   /** New per-guild config keyed by guild id or slug. */
   guilds?: Record<string, DiscordGuildEntry>;
   /** Heartbeat visibility settings for this channel. */

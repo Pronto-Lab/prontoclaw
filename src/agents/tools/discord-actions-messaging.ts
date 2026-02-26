@@ -1,6 +1,5 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { DiscordActionConfig } from "../../config/config.js";
-import type { DiscordSendComponents, DiscordSendEmbeds } from "../../discord/send.shared.js";
 import { readDiscordComponentSpec } from "../../discord/components.js";
 import {
   createThreadDiscord,
@@ -24,6 +23,7 @@ import {
   sendVoiceMessageDiscord,
   unpinMessageDiscord,
 } from "../../discord/send.js";
+import type { DiscordSendComponents, DiscordSendEmbeds } from "../../discord/send.shared.js";
 import { resolveDiscordChannelId } from "../../discord/targets.js";
 import { withNormalizedTimestamp } from "../date-time.js";
 import { assertMediaNotDataUrl } from "../sandbox-paths.js";
@@ -34,6 +34,7 @@ import {
   readStringArrayParam,
   readStringParam,
 } from "./common.js";
+import { handleDiscordSend } from "./discord-send-tool.js";
 
 function parseDiscordMessageLink(link: string) {
   const normalized = link.trim();
@@ -515,6 +516,29 @@ export async function handleDiscordMessagingAction(
           messages: normalizedMessages,
         },
       });
+    }
+    case "agentSend": {
+      if (!isActionEnabled("threads")) {
+        throw new Error("Discord threads are disabled.");
+      }
+      const targetAgentId = readStringParam(params, "targetAgentId", { required: true });
+      const content = readStringParam(params, "content", { required: true });
+      const threadId = readStringParam(params, "threadId");
+      const channelId = readStringParam(params, "channelId");
+      const threadName = readStringParam(params, "threadName");
+      const urgent = params.urgent === true;
+      const fromAgentId = readStringParam(params, "__agentId");
+      const result = await handleDiscordSend({
+        targetAgentId,
+        message: content,
+        threadId: threadId ?? undefined,
+        channelId: channelId ?? undefined,
+        threadName: threadName ?? undefined,
+        urgent,
+        fromAgentId: fromAgentId ?? undefined,
+        accountId: accountId ?? undefined,
+      });
+      return jsonResult(result);
     }
     default:
       throw new Error(`Unknown action: ${action}`);

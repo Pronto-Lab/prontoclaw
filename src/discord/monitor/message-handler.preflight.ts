@@ -1,8 +1,4 @@
 import { ChannelType, MessageType, type User } from "@buape/carbon";
-import type {
-  DiscordMessagePreflightContext,
-  DiscordMessagePreflightParams,
-} from "./message-handler.preflight.types.js";
 import { hasControlCommand } from "../../auto-reply/command-detection.js";
 import { shouldHandleTextCommands } from "../../auto-reply/commands-registry.js";
 import {
@@ -29,6 +25,7 @@ import {
   upsertChannelPairingRequest,
 } from "../../pairing/pairing-store.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
+import { markMentionResponded } from "../a2a-retry/index.js";
 import { checkA2ARateLimit } from "../loop-guard.js";
 import { fetchPluralKitMessageInfo } from "../pluralkit.js";
 import { sendMessageDiscord } from "../send.js";
@@ -49,9 +46,13 @@ import {
   resolveDiscordSystemLocation,
   resolveTimestampMs,
 } from "./format.js";
+import type {
+  DiscordMessagePreflightContext,
+  DiscordMessagePreflightParams,
+} from "./message-handler.preflight.types.js";
 import { resolveDiscordChannelInfo, resolveDiscordMessageText } from "./message-utils.js";
 import { resolveDiscordSenderIdentity, resolveDiscordWebhookId } from "./sender-identity.js";
-import { isSiblingBot } from "./sibling-bots.js";
+import { isSiblingBot, getAgentIdForBot } from "./sibling-bots.js";
 import { resolveDiscordSystemEvent } from "./system-events.js";
 import { resolveDiscordThreadChannel, resolveDiscordThreadParentInfo } from "./threading.js";
 
@@ -113,6 +114,16 @@ export async function preflightDiscordMessage(
           `discord: drop sibling bot message (A2A rate limit exceeded: ${author.id} <-> ${params.botUserId})`,
         );
         return null;
+      }
+    }
+
+    // Track A2A responses: when a sibling bot posts, mark pending mentions as responded
+    if (siblingBypass) {
+      const responderAgentId = getAgentIdForBot(author.id);
+      if (responderAgentId) {
+        markMentionResponded(message.channelId, responderAgentId).catch((err) => {
+          logVerbose(`discord: a2a-retry mark responded failed: ${String(err)}`);
+        });
       }
     }
 

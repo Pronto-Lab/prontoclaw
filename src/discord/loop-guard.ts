@@ -66,7 +66,16 @@ export function isSelfMessage(
  * Record an A2A message and check if the rate limit is exceeded.
  * Returns true if the message should be BLOCKED (rate exceeded).
  */
-export function checkA2ARateLimit(fromId: string, toId: string, config?: LoopGuardConfig): boolean {
+export function checkA2ARateLimit(
+  fromId: string,
+  toId: string,
+  config?: LoopGuardConfig & { isSystemRetry?: boolean },
+): boolean {
+  // System retries (from A2A retry scheduler) bypass rate limiting
+  if (config?.isSystemRetry) {
+    return false; // never block system retries
+  }
+
   const key = channelKey(fromId, toId);
   const pairConfig = config?.overrides?.[key];
   const maxMessages =

@@ -475,6 +475,15 @@ const A2A_BOOTSTRAP_ALLOWLIST = new Set([
   DEFAULT_IDENTITY_FILENAME,
 ]);
 
+// Discord thread sessions get full context but HEARTBEAT.md causes agents
+// to respond with HEARTBEAT_OK instead of meaningful A2A replies.
+const THREAD_SESSION_DENYLIST = new Set([DEFAULT_HEARTBEAT_FILENAME]);
+
+/** Check if a session key is a Discord channel/thread session (agent:*:discord:channel:*). */
+function isDiscordChannelSessionKey(sessionKey: string): boolean {
+  return /^agent:[^:]+:discord:channel:/.test(sessionKey);
+}
+
 export function filterBootstrapFilesForSession(
   files: WorkspaceBootstrapFile[],
   sessionKey?: string,
@@ -487,6 +496,10 @@ export function filterBootstrapFilesForSession(
   }
   if (isSubagentSessionKey(sessionKey) || isCronSessionKey(sessionKey)) {
     return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
+  }
+  // Discord thread sessions: full context minus HEARTBEAT.md
+  if (isDiscordChannelSessionKey(sessionKey)) {
+    return files.filter((file) => !THREAD_SESSION_DENYLIST.has(file.name));
   }
   return files;
 }
