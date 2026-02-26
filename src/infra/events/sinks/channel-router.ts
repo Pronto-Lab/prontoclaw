@@ -390,7 +390,7 @@ export class ChannelRouter {
           stopReason: response.stopReason,
           textLen: text.length,
           text: text.slice(0, 300),
-          contentTypes: response.content.map((b: Record<string, unknown>) => b.type).join(","),
+          contentTypes: response.content.map((b: { type: string }) => b.type).join(","),
         });
         return this.parseResponse(text);
       }
