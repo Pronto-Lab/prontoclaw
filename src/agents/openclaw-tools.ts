@@ -270,6 +270,7 @@ export function createOpenClawTools(options?: {
   const collaborateTool = createCollaborateTool({
     agentSessionKey: options?.agentSessionKey,
     agentAccountId: options?.agentAccountId,
+    currentChannelId: options?.currentChannelId,
   });
   tools.push(collaborateTool);
 

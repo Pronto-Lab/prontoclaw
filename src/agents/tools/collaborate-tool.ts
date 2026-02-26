@@ -212,8 +212,7 @@ export async function handleCollaborate(params: {
     if (!channelId) {
       return {
         success: false,
-        error:
-          "threadId 또는 channelId가 필요합니다. " + "새 스레드를 만들려면 channelId를 지정하세요.",
+        error: "threadId 또는 channelId가 필요합니다. 새 스레드를 만들려면 channelId를 지정하세요.",
       };
     }
 
@@ -259,6 +258,7 @@ export async function handleCollaborate(params: {
 export function createCollaborateTool(opts?: {
   agentSessionKey?: string;
   agentAccountId?: string;
+  currentChannelId?: string;
 }): AnyAgentTool {
   return {
     label: "Collaborate",
@@ -271,7 +271,7 @@ export function createCollaborateTool(opts?: {
       const targetAgent = readStringParam(params, "targetAgent", { required: true });
       const message = readStringParam(params, "message", { required: true });
       const threadId = readStringParam(params, "threadId") ?? undefined;
-      const channelId = readStringParam(params, "channelId") ?? undefined;
+      const channelId = readStringParam(params, "channelId") ?? opts?.currentChannelId ?? undefined;
       const threadName = readStringParam(params, "threadName") ?? undefined;
 
       // BUG-4 fix: use proper session key parser instead of split(":")[0]
