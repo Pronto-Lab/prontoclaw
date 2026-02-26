@@ -280,7 +280,7 @@ function validateChannel(channelId: string): boolean {
   - "B가 스레드에서 응답" → A가 그 응답을 읽고 다시 collaborate(B) 호출 → 금지
   - 같은 스레드 내에서는 일반 메시지로 대화 (collaborate 재호출 불필요)
 - 추가: 에이전트간 핑퐁 감지
-  - 같은 (A, B) 쌍이 5분 내 3회 이상 collaborate 호출 → 경고 + 4회째부터 차단
+  - 같은 (A, B) 쌍이 5분 내 10회 이상 collaborate 호출 → 경고 + 11회째부터 차단
 
 ---
 
@@ -342,7 +342,7 @@ if (isSiblingBot(authorId) && isInThread) {
     observerHistoryTTL: 24 * 60 * 60 * 1000,    // 24시간 (ms)
     participantTTL: 24 * 60 * 60 * 1000,        // 참여자 만료 24시간
     loopGuard: {
-      maxCollaboratePerPair: 3,                  // 5분 내 같은 쌍 최대 3회
+      maxCollaboratePerPair: 10,                 // 5분 내 같은 쌍 최대 10회
       windowMs: 5 * 60 * 1000,
     },
     rateLimit: {

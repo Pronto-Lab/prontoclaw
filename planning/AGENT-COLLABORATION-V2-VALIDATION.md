@@ -49,7 +49,7 @@
 | L1  | discord-conversation-sink가 올린 메시지                             | 어떤 봇도 LLM 호출 안 함 (0회)                               | sink 메시지 후 모든 봇의 로그에서 LLM 호출 없음 확인 |
 | L2  | Sink 스레드의 메시지가 Handler로 재진입                             | 재진입 없음 (드랍)                                           | sink 스레드 메시지 처리 로그 확인                    |
 | L3  | 에이전트 A가 B에게 collaborate → B가 응답 → A가 다시 collaborate(B) | 스레드 내에서는 일반 대화로 처리 (collaborate 재호출 불필요) | collaborate 호출 횟수 확인                           |
-| L4  | 같은 (A, B) 쌍이 5분 내 4회 collaborate 호출                        | 4회째에서 차단 + 경고                                        | collaborate 실패 + 경고 메시지 확인                  |
+| L4  | 같은 (A, B) 쌍이 5분 내 11회 collaborate 호출                       | 11회째에서 차단 + 경고                                       | collaborate 실패 + 경고 메시지 확인                  |
 | L5  | 스레드에서 6msg/60s 초과                                            | Loop Guard 발동, 스레드 일시 중단                            | 빠른 메시지 연속 전송 후 차단 확인                   |
 
 ---
