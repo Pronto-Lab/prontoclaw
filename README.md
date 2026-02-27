@@ -1,5 +1,21 @@
 # Pronto-Lab OpenClaw — Multi-Agent AI Platform
 
+<p align="center">
+    <picture>
+        <source media="(prefers-color-scheme: light)" srcset="docs/assets/openclaw-logo-text-dark.png">
+        <img src="docs/assets/openclaw-logo-text.png" alt="Pronto-Lab OpenClaw" width="500">
+    </picture>
+</p>
+
+<p align="center">
+  <strong>멀티 에이전트 AI 협업 플랫폼</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Pronto-Lab/prontoclaw"><img src="https://img.shields.io/badge/Fork-OpenClaw-orange?style=for-the-badge" alt="Fork of OpenClaw"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
+</p>
+
 > [OpenClaw](https://github.com/openclaw/openclaw) 기반 멀티 에이전트 AI 플랫폼
 
 ## 개요
@@ -79,8 +95,8 @@ Gateway가 Discord 이벤트를 수신하면 ChannelRouter가 LLM을 호출해 �
 
 ```bash
 # 클론 및 의존성 설치
-git clone https://github.com/Pronto-Lab/prontolab-openclaw.git
-cd prontolab-openclaw
+git clone https://github.com/Pronto-Lab/prontoclaw.git
+cd prontoclaw
 npm install
 
 # 빌드
@@ -142,11 +158,11 @@ Upstream(openclaw/openclaw)과의 충돌 발생 시 ProntoLab 변경사항을 �
 
 ## Git 정보
 
-| 항목     | 주소                                             |
-| -------- | ------------------------------------------------ |
-| Upstream | https://github.com/openclaw/openclaw             |
-| Fork     | https://github.com/Pronto-Lab/prontolab-openclaw |
-| Branch   | main                                             |
+| 항목     | 주소                                     |
+| -------- | ---------------------------------------- |
+| Upstream | https://github.com/openclaw/openclaw     |
+| Fork     | https://github.com/Pronto-Lab/prontoclaw |
+| Branch   | main                                     |
 
 ---
 
