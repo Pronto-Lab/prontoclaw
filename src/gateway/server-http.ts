@@ -268,7 +268,9 @@ export function createHooksRequestHandler(
     if (!hooksConfig) {
       return false;
     }
-    const url = new URL(req.url ?? "/", `http://${bindHost}:${port}`);
+    // Only pathname/search are used here; keep the base host fixed so bind-host
+    // representation (e.g. IPv6 wildcards) cannot break request parsing.
+    const url = new URL(req.url ?? "/", "http://localhost");
     const basePath = hooksConfig.basePath;
     if (url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`)) {
       return false;

@@ -22,6 +22,20 @@ const CHANNEL_ID = "irc" as const;
 
 const escapeIrcRegexLiteral = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+function resolveIrcEffectiveAllowlists(params: {
+  configAllowFrom: string[];
+  configGroupAllowFrom: string[];
+  storeAllowList: string[];
+}): {
+  effectiveAllowFrom: string[];
+  effectiveGroupAllowFrom: string[];
+} {
+  const effectiveAllowFrom = [...params.configAllowFrom, ...params.storeAllowList].filter(Boolean);
+  // Pairing-store entries are DM approvals and must not widen group sender authorization.
+  const effectiveGroupAllowFrom = [...params.configGroupAllowFrom].filter(Boolean);
+  return { effectiveAllowFrom, effectiveGroupAllowFrom };
+}
+
 async function deliverIrcReply(params: {
   payload: { text?: string; mediaUrls?: string[]; mediaUrl?: string; replyToId?: string };
   target: string;
@@ -110,8 +124,11 @@ export async function handleIrcInbound(params: {
   const groupAllowFrom =
     directGroupAllowFrom.length > 0 ? directGroupAllowFrom : wildcardGroupAllowFrom;
 
-  const effectiveAllowFrom = [...configAllowFrom, ...storeAllowList].filter(Boolean);
-  const effectiveGroupAllowFrom = [...configGroupAllowFrom, ...storeAllowList].filter(Boolean);
+  const { effectiveAllowFrom, effectiveGroupAllowFrom } = resolveIrcEffectiveAllowlists({
+    configAllowFrom,
+    configGroupAllowFrom,
+    storeAllowList,
+  });
 
   const allowTextCommands = core.channel.commands.shouldHandleTextCommands({
     cfg: config as OpenClawConfig,
@@ -332,3 +349,7 @@ export async function handleIrcInbound(params: {
     },
   });
 }
+
+export const __testing = {
+  resolveIrcEffectiveAllowlists,
+};

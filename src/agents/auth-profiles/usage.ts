@@ -290,8 +290,8 @@ function computeNextProfileUsageStats(params: {
     lastFailureAt: params.now,
   };
 
-  if (params.reason === "billing") {
-    const billingCount = failureCounts.billing ?? 1;
+  if (params.reason === "billing" || params.reason === "auth_permanent") {
+    const billingCount = failureCounts[params.reason] ?? 1;
     const backoffMs = calculateAuthProfileBillingDisableMsWithConfig({
       errorCount: billingCount,
       baseMs: params.cfgResolved.billingBackoffMs,
@@ -308,8 +308,9 @@ function computeNextProfileUsageStats(params: {
 }
 
 /**
- * Mark a profile as failed for a specific reason. Billing failures are treated
- * as "disabled" (longer backoff) vs the regular cooldown window.
+ * Mark a profile as failed for a specific reason. Billing and permanent-auth
+ * failures are treated as "disabled" (longer backoff) vs the regular cooldown
+ * window.
  */
 export async function markAuthProfileFailure(params: {
   store: AuthProfileStore;

@@ -154,7 +154,7 @@ export async function applyPatch(
     }
 
     if (hunk.kind === "delete") {
-      const target = await resolvePatchPath(hunk.path, options, "unlink");
+      const target = await resolvePatchPath(hunk.path, options, PATH_ALIAS_POLICIES.unlinkTarget);
       await fileOps.remove(target.resolved);
       recordSummary(summary, seen, "deleted", target.display);
       continue;
@@ -253,7 +253,7 @@ async function ensureDir(filePath: string, ops: PatchFileOps) {
 async function resolvePatchPath(
   filePath: string,
   options: ApplyPatchOptions,
-  purpose: "readWrite" | "unlink" = "readWrite",
+  aliasPolicy: PathAliasPolicy = PATH_ALIAS_POLICIES.strict,
 ): Promise<{ resolved: string; display: string }> {
   if (options.sandbox) {
     const resolved = options.sandbox.bridge.resolvePath({
@@ -273,7 +273,8 @@ async function resolvePatchPath(
           filePath,
           cwd: options.cwd,
           root: options.cwd,
-          allowFinalSymlink: purpose === "unlink",
+          allowFinalSymlinkForUnlink: aliasPolicy.allowFinalSymlinkForUnlink,
+          allowFinalHardlinkForUnlink: aliasPolicy.allowFinalHardlinkForUnlink,
         })
       ).resolved
     : resolvePathFromCwd(filePath, options.cwd);

@@ -52,10 +52,12 @@ export async function updateSessionStoreAfterAgentRun(params: {
     ...entry,
     sessionId,
     updatedAt: Date.now(),
-    modelProvider: providerUsed,
-    model: modelUsed,
     contextTokens,
   };
+  setSessionRuntimeModel(next, {
+    provider: providerUsed,
+    model: modelUsed,
+  });
   if (isCliProvider(providerUsed, cfg)) {
     const cliSessionId = result.meta.agentMeta?.sessionId?.trim();
     if (cliSessionId) {

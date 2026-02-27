@@ -35,6 +35,7 @@ export function createExecApprovalHandlers(
       const p = params as {
         id?: string;
         command: string;
+        commandArgv?: string[];
         cwd?: string;
         host?: string;
         security?: string;
@@ -59,6 +60,7 @@ export function createExecApprovalHandlers(
       }
       const request = {
         command: p.command,
+        commandArgv,
         cwd: p.cwd ?? null,
         host: p.host ?? null,
         security: p.security ?? null,

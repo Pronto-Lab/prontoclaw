@@ -30,6 +30,10 @@ import {
   queueEmbeddedPiMessage,
   waitForEmbeddedPiRunEnd,
 } from "./pi-embedded.js";
+import {
+  runSubagentAnnounceDispatch,
+  type SubagentAnnounceDeliveryResult,
+} from "./subagent-announce-dispatch.js";
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
@@ -500,27 +504,6 @@ async function maybeQueueSubagentAnnounce(params: {
   }
 
   return "none";
-}
-
-function queueOutcomeToDeliveryResult(
-  outcome: "steered" | "queued" | "none",
-): SubagentAnnounceDeliveryResult {
-  if (outcome === "steered") {
-    return {
-      delivered: true,
-      path: "steered",
-    };
-  }
-  if (outcome === "queued") {
-    return {
-      delivered: true,
-      path: "queued",
-    };
-  }
-  return {
-    delivered: false,
-    path: "none",
-  };
 }
 
 async function sendSubagentAnnounceDirectly(params: {

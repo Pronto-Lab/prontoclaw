@@ -343,6 +343,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         reasoningLevel: entry?.reasoningLevel,
         responseUsage: entry?.responseUsage,
         model: entry?.model,
+        modelProvider: entry?.modelProvider,
         contextTokens: entry?.contextTokens,
         sendPolicy: entry?.sendPolicy,
         label: entry?.label,

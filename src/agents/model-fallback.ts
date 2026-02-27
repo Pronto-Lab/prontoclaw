@@ -58,7 +58,8 @@ function shouldRethrowAbort(err: unknown): boolean {
 
 function createModelCandidateCollector(allowlist: Set<string> | null | undefined): {
   candidates: ModelCandidate[];
-  addCandidate: (candidate: ModelCandidate, enforceAllowlist: boolean) => void;
+  addExplicitCandidate: (candidate: ModelCandidate) => void;
+  addAllowlistedCandidate: (candidate: ModelCandidate) => void;
 } {
   const seen = new Set<string>();
   const candidates: ModelCandidate[] = [];
@@ -78,7 +79,14 @@ function createModelCandidateCollector(allowlist: Set<string> | null | undefined
     candidates.push(candidate);
   };
 
-  return { candidates, addCandidate };
+  const addExplicitCandidate = (candidate: ModelCandidate) => {
+    addCandidate(candidate, false);
+  };
+  const addAllowlistedCandidate = (candidate: ModelCandidate) => {
+    addCandidate(candidate, true);
+  };
+
+  return { candidates, addExplicitCandidate, addAllowlistedCandidate };
 }
 
 type ModelFallbackErrorHandler = (attempt: {
@@ -129,9 +137,10 @@ function resolveImageFallbackCandidates(params: {
     cfg: params.cfg,
     defaultProvider: params.defaultProvider,
   });
-  const { candidates, addCandidate } = createModelCandidateCollector(allowlist);
+  const { candidates, addExplicitCandidate, addAllowlistedCandidate } =
+    createModelCandidateCollector(allowlist);
 
-  const addRaw = (raw: string, enforceAllowlist: boolean) => {
+  const addRaw = (raw: string, opts?: { allowlist?: boolean }) => {
     const resolved = resolveModelRefFromString({
       raw: String(raw ?? ""),
       defaultProvider: params.defaultProvider,
@@ -140,11 +149,15 @@ function resolveImageFallbackCandidates(params: {
     if (!resolved) {
       return;
     }
-    addCandidate(resolved.ref, enforceAllowlist);
+    if (opts?.allowlist) {
+      addAllowlistedCandidate(resolved.ref);
+      return;
+    }
+    addExplicitCandidate(resolved.ref);
   };
 
   if (params.modelOverride?.trim()) {
-    addRaw(params.modelOverride, false);
+    addRaw(params.modelOverride);
   } else {
     const imageModel = params.cfg?.agents?.defaults?.imageModel as
       | { primary?: string }
@@ -152,7 +165,7 @@ function resolveImageFallbackCandidates(params: {
       | undefined;
     const primary = typeof imageModel === "string" ? imageModel.trim() : imageModel?.primary;
     if (primary?.trim()) {
-      addRaw(primary, false);
+      addRaw(primary);
     }
   }
 
@@ -168,7 +181,9 @@ function resolveImageFallbackCandidates(params: {
   })();
 
   for (const raw of imageFallbacks) {
-    addRaw(raw, true);
+    // Explicitly configured image fallbacks should remain reachable even when a
+    // model allowlist is present.
+    addRaw(raw);
   }
 
   return candidates;
@@ -201,9 +216,9 @@ function resolveFallbackCandidates(params: {
     cfg: params.cfg,
     defaultProvider,
   });
-  const { candidates, addCandidate } = createModelCandidateCollector(allowlist);
+  const { candidates, addExplicitCandidate } = createModelCandidateCollector(allowlist);
 
-  addCandidate(normalizedPrimary, false);
+  addExplicitCandidate(normalizedPrimary);
 
   const modelFallbacks = (() => {
     if (params.fallbacksOverride !== undefined) {
@@ -228,11 +243,13 @@ function resolveFallbackCandidates(params: {
     if (!resolved) {
       continue;
     }
-    addCandidate(resolved.ref, true);
+    // Fallbacks are explicit user intent; do not silently filter them by the
+    // model allowlist.
+    addExplicitCandidate(resolved.ref);
   }
 
   if (params.fallbacksOverride === undefined && primary?.provider && primary.model) {
-    addCandidate({ provider: primary.provider, model: primary.model }, false);
+    addExplicitCandidate({ provider: primary.provider, model: primary.model });
   }
 
   return candidates;
@@ -421,24 +438,29 @@ export async function runWithModelFallback<T>(params: {
           provider: candidate.provider,
           model: candidate.model,
         }) ?? err;
-      if (!isFailoverError(normalized)) {
+
+      // Even unrecognized errors should not abort the fallback loop when
+      // there are remaining candidates.  Only abort/context-overflow errors
+      // (handled above) are truly non-retryable.
+      const isKnownFailover = isFailoverError(normalized);
+      if (!isKnownFailover && i === candidates.length - 1) {
         throw err;
       }
 
-      lastError = normalized;
+      lastError = isKnownFailover ? normalized : err;
       const described = describeFailoverError(normalized);
       attempts.push({
         provider: candidate.provider,
         model: candidate.model,
         error: described.message,
-        reason: described.reason,
+        reason: described.reason ?? "unknown",
         status: described.status,
         code: described.code,
       });
       await params.onError?.({
         provider: candidate.provider,
         model: candidate.model,
-        error: normalized,
+        error: isKnownFailover ? normalized : err,
         attempt: i + 1,
         total: candidates.length,
       });

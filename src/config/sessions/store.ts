@@ -21,7 +21,11 @@ import {
 import { getFileMtimeMs, isCacheEnabled, resolveCacheTtlMs } from "../cache-utils.js";
 import { loadConfig } from "../config.js";
 import { deriveSessionMetaPatch } from "./metadata.js";
-import { mergeSessionEntry, type SessionEntry } from "./types.js";
+import {
+  mergeSessionEntry,
+  normalizeSessionRuntimeModelFields,
+  type SessionEntry,
+} from "./types.js";
 
 const log = createSubsystemLogger("sessions/store");
 
@@ -111,7 +115,7 @@ function normalizeSessionStore(store: Record<string, SessionEntry>): void {
     if (!entry) {
       continue;
     }
-    const normalized = normalizeSessionEntryDelivery(entry);
+    const normalized = normalizeSessionEntryDelivery(normalizeSessionRuntimeModelFields(entry));
     if (normalized !== entry) {
       store[key] = normalized;
     }

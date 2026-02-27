@@ -8,6 +8,7 @@ import { callGatewayTool } from "./tools/gateway.js";
 export type RequestExecApprovalDecisionParams = {
   id: string;
   command: string;
+  commandArgv?: string[];
   cwd: string;
   host: "gateway" | "node";
   security: ExecSecurity;
@@ -26,6 +27,7 @@ export async function requestExecApprovalDecision(
     {
       id: params.id,
       command: params.command,
+      commandArgv: params.commandArgv,
       cwd: params.cwd,
       host: params.host,
       security: params.security,

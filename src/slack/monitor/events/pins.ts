@@ -22,32 +22,26 @@ async function handleSlackPinEvent(params: {
 
     const payload = event as SlackPinEvent;
     const channelId = payload.channel_id;
-    const channelInfo = channelId ? await ctx.resolveChannelName(channelId) : {};
-    if (
-      !ctx.isChannelAllowed({
-        channelId,
-        channelName: channelInfo?.name,
-        channelType: channelInfo?.type,
-      })
-    ) {
+    const ingressContext = await authorizeAndResolveSlackSystemEventContext({
+      ctx,
+      senderId: payload.user,
+      channelId,
+      eventKind: "pin",
+    });
+    if (!ingressContext) {
       return;
     }
-    const label = resolveSlackChannelLabel({
-      channelId,
-      channelName: channelInfo?.name,
-    });
     const userInfo = payload.user ? await ctx.resolveUserName(payload.user) : {};
     const userLabel = userInfo?.name ?? payload.user ?? "someone";
     const itemType = payload.item?.type ?? "item";
     const messageId = payload.item?.message?.ts ?? payload.event_ts;
-    const sessionKey = ctx.resolveSlackSystemEventSessionKey({
-      channelId,
-      channelType: channelInfo?.type ?? undefined,
-    });
-    enqueueSystemEvent(`Slack: ${userLabel} ${action} a ${itemType} in ${label}.`, {
-      sessionKey,
-      contextKey: `slack:pin:${contextKeySuffix}:${channelId ?? "unknown"}:${messageId ?? "unknown"}`,
-    });
+    enqueueSystemEvent(
+      `Slack: ${userLabel} ${action} a ${itemType} in ${ingressContext.channelLabel}.`,
+      {
+        sessionKey: ingressContext.sessionKey,
+        contextKey: `slack:pin:${contextKeySuffix}:${channelId ?? "unknown"}:${messageId ?? "unknown"}`,
+      },
+    );
   } catch (err) {
     ctx.runtime.error?.(danger(`slack ${errorLabel} handler failed: ${String(err)}`));
   }

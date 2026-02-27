@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyFailoverReason,
   isAuthErrorMessage,
+  isAuthPermanentErrorMessage,
   isBillingErrorMessage,
   isCloudCodeAssistFormatError,
   isCloudflareOrHtmlErrorPage,
@@ -15,6 +16,39 @@ import {
   parseImageDimensionError,
   parseImageSizeError,
 } from "./pi-embedded-helpers.js";
+
+describe("isAuthPermanentErrorMessage", () => {
+  it("matches permanent auth failure patterns", () => {
+    const samples = [
+      "invalid_api_key",
+      "api key revoked",
+      "api key deactivated",
+      "key has been disabled",
+      "key has been revoked",
+      "account has been deactivated",
+      "could not authenticate api key",
+      "could not validate credentials",
+      "API_KEY_REVOKED",
+      "api_key_deleted",
+    ];
+    for (const sample of samples) {
+      expect(isAuthPermanentErrorMessage(sample)).toBe(true);
+    }
+  });
+  it("does not match transient auth errors", () => {
+    const samples = [
+      "unauthorized",
+      "invalid token",
+      "authentication failed",
+      "forbidden",
+      "access denied",
+      "token has expired",
+    ];
+    for (const sample of samples) {
+      expect(isAuthPermanentErrorMessage(sample)).toBe(false);
+    }
+  });
+});
 
 describe("isAuthErrorMessage", () => {
   it("matches credential validation errors", () => {
@@ -354,6 +388,12 @@ describe("classifyFailoverReason", () => {
     expect(classifyFailoverReason("no api key found")).toBe("auth");
     expect(classifyFailoverReason("429 too many requests")).toBe("rate_limit");
     expect(classifyFailoverReason("resource has been exhausted")).toBe("rate_limit");
+    expect(
+      classifyFailoverReason("model_cooldown: All credentials for model gpt-5 are cooling down"),
+    ).toBe("rate_limit");
+    expect(classifyFailoverReason("all credentials for model x are cooling down")).toBe(
+      "rate_limit",
+    );
     expect(
       classifyFailoverReason(
         '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',

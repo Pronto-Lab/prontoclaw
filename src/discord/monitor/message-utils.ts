@@ -241,6 +241,10 @@ export function resolveDiscordMessageText(
   message: Message,
   options?: { fallbackText?: string; includeForwarded?: boolean },
 ): string {
+  const embedText = resolveDiscordEmbedText(
+    (message.embeds?.[0] as { title?: string | null; description?: string | null } | undefined) ??
+      null,
+  );
   const baseText =
     message.content?.trim() ||
     buildDiscordAttachmentPlaceholder(message.attachments) ||

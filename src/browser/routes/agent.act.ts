@@ -1,5 +1,7 @@
 import type { BrowserFormField } from "../client-actions-core.js";
 import type { BrowserRouteContext } from "../server-context.js";
+import { registerBrowserAgentActDownloadRoutes } from "./agent.act.download.js";
+import { registerBrowserAgentActHookRoutes } from "./agent.act.hooks.js";
 import {
   type ActKind,
   isActKind,
@@ -20,31 +22,6 @@ import {
 } from "./path-output.js";
 import type { BrowserResponse, BrowserRouteRegistrar } from "./types.js";
 import { jsonError, toBoolean, toNumber, toStringArray, toStringOrEmpty } from "./utils.js";
-
-function resolveDownloadPathOrRespond(res: BrowserResponse, requestedPath: string): string | null {
-  const downloadPathResult = resolvePathWithinRoot({
-    rootDir: DEFAULT_DOWNLOAD_DIR,
-    requestedPath,
-    scopeLabel: "downloads directory",
-  });
-  if (!downloadPathResult.ok) {
-    res.status(400).json({ error: downloadPathResult.error });
-    return null;
-  }
-  return downloadPathResult.path;
-}
-
-function buildDownloadRequestBase(cdpUrl: string, targetId: string, timeoutMs: number | undefined) {
-  return {
-    cdpUrl,
-    targetId,
-    timeoutMs: timeoutMs ?? undefined,
-  };
-}
-
-function respondWithDownloadResult(res: BrowserResponse, targetId: string, result: unknown) {
-  res.json({ ok: true, targetId, download: result });
-}
 
 export function registerBrowserAgentActRoutes(
   app: BrowserRouteRegistrar,

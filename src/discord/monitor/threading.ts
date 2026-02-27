@@ -168,7 +168,7 @@ export async function resolveDiscordThreadStarter(params: {
       Routes.channelMessage(messageChannelId, params.channel.id),
     )) as {
       content?: string | null;
-      embeds?: Array<{ description?: string | null }>;
+      embeds?: Array<{ title?: string | null; description?: string | null }>;
       member?: { nick?: string | null; displayName?: string | null };
       author?: {
         id?: string | null;
@@ -180,7 +180,9 @@ export async function resolveDiscordThreadStarter(params: {
     if (!starter) {
       return null;
     }
-    const text = starter.content?.trim() ?? starter.embeds?.[0]?.description?.trim() ?? "";
+    const content = starter.content?.trim() ?? "";
+    const embedText = resolveDiscordEmbedText(starter.embeds?.[0]);
+    const text = content || embedText;
     if (!text) {
       return null;
     }

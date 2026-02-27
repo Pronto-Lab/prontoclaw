@@ -39,7 +39,7 @@ function createHooksConfig(): HooksConfigResolved {
 function createRequest(): IncomingMessage {
   return {
     method: "POST",
-    url: "/hooks/wake",
+    url: params?.url ?? "/hooks/wake",
     headers: {
       host: "127.0.0.1:18789",
       authorization: "Bearer hook-secret",

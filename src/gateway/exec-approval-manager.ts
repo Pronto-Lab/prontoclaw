@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { ExecApprovalDecision } from "../infra/exec-approvals.js";
+import type {
+  ExecApprovalDecision,
+  ExecApprovalRequestPayload as InfraExecApprovalRequestPayload,
+} from "../infra/exec-approvals.js";
 
 // Grace period to keep resolved entries for late awaitDecision calls
 const RESOLVED_ENTRY_GRACE_MS = 15_000;

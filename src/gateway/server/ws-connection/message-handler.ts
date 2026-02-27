@@ -86,6 +86,8 @@ export function attachGatewayWsMessageHandler(params: {
   resolvedAuth: ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
+  /** Browser-origin fallback limiter (loopback is never exempt). */
+  browserRateLimiter?: AuthRateLimiter;
   gatewayMethods: string[];
   events: string[];
   extraHandlers: GatewayRequestHandlers;
@@ -117,6 +119,7 @@ export function attachGatewayWsMessageHandler(params: {
     connectNonce,
     resolvedAuth,
     rateLimiter,
+    browserRateLimiter,
     gatewayMethods,
     events,
     extraHandlers,
@@ -311,7 +314,7 @@ export function attachGatewayWsMessageHandler(params: {
 
         const isControlUi = connectParams.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
         const isWebchat = isWebchatConnect(connectParams);
-        if (isControlUi || isWebchat) {
+        if (enforceOriginCheckForAnyClient || isControlUi || isWebchat) {
           const originCheck = checkBrowserOrigin({
             requestHost,
             origin: requestOrigin,
@@ -649,6 +652,13 @@ export function attachGatewayWsMessageHandler(params: {
           const requirePairing = async (
             reason: "not-paired" | "role-upgrade" | "scope-upgrade",
           ) => {
+            const allowSilentLocalPairing = shouldAllowSilentLocalPairing({
+              isLocalClient,
+              hasBrowserOriginHeader,
+              isControlUi,
+              isWebchat,
+              reason,
+            });
             const pairing = await requestDevicePairing({
               deviceId: device.id,
               publicKey: devicePublicKey,

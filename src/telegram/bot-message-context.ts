@@ -33,7 +33,12 @@ import { recordChannelActivity } from "../infra/channel-activity.js";
 import { resolveAgentRoute } from "../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../routing/session-key.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
-import { firstDefined, isSenderAllowed, normalizeAllowFromWithStore } from "./bot-access.js";
+import {
+  firstDefined,
+  isSenderAllowed,
+  normalizeAllowFrom,
+  normalizeAllowFromWithStore,
+} from "./bot-access.js";
 import {
   buildGroupLabel,
   buildSenderLabel,

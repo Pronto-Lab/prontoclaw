@@ -94,6 +94,45 @@ const makeConfig = (opts?: { fallbacks?: string[]; apiKey?: string }): OpenClawC
     },
   }) satisfies OpenClawConfig;
 
+const makeAgentOverrideOnlyFallbackConfig = (agentId: string): OpenClawConfig =>
+  ({
+    agents: {
+      defaults: {
+        model: {
+          fallbacks: [],
+        },
+      },
+      list: [
+        {
+          id: agentId,
+          model: {
+            fallbacks: ["openai/mock-2"],
+          },
+        },
+      ],
+    },
+    models: {
+      providers: {
+        openai: {
+          api: "openai-responses",
+          apiKey: "sk-test",
+          baseUrl: "https://example.com",
+          models: [
+            {
+              id: "mock-1",
+              name: "Mock 1",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 16_000,
+              maxTokens: 2048,
+            },
+          ],
+        },
+      },
+    },
+  }) satisfies OpenClawConfig;
+
 const writeAuthStore = async (
   agentDir: string,
   opts?: {

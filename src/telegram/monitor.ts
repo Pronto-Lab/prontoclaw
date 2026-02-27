@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { resolveAgentMaxConcurrent } from "../config/agent-limits.js";
 import { loadConfig } from "../config/config.js";
+import { waitForAbortSignal } from "../infra/abort-signal.js";
 import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { formatDurationPrecise } from "../infra/format-time/format-duration.ts";
@@ -44,8 +45,9 @@ export function createTelegramRunnerOptions(cfg: OpenClawConfig): RunOptions<unk
       },
       // Suppress grammY getUpdates stack traces; we log concise errors ourselves.
       silent: true,
-      // Retry transient failures for a limited window before surfacing errors.
-      maxRetryTime: 5 * 60 * 1000,
+      // Keep grammY retrying for a long outage window. If polling still
+      // stops, the outer monitor loop restarts it with backoff.
+      maxRetryTime: 60 * 60 * 1000,
       retryInterval: "exponential",
     },
   };
@@ -57,6 +59,8 @@ const TELEGRAM_POLL_RESTART_POLICY = {
   factor: 1.8,
   jitter: 0.25,
 };
+
+type TelegramBot = ReturnType<typeof createTelegramBot>;
 
 const isGetUpdatesConflict = (err: unknown) => {
   if (!err || typeof err !== "object") {
@@ -192,23 +196,34 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
         if (!isConflict && !isRecoverable) {
           throw err;
         }
-        restartAttempts += 1;
-        const delayMs = computeBackoff(TELEGRAM_POLL_RESTART_POLICY, restartAttempts);
         const reason = isConflict ? "getUpdates conflict" : "network error";
         const errMsg = formatErrorMessage(err);
-        (opts.runtime?.error ?? console.error)(
-          `Telegram ${reason}: ${errMsg}; retrying in ${formatDurationPrecise(delayMs)}.`,
+        const shouldRestart = await waitBeforeRestart(
+          (delay) => `Telegram ${reason}: ${errMsg}; retrying in ${delay}.`,
         );
-        try {
-          await sleepWithAbort(delayMs, opts.abortSignal);
-        } catch (sleepErr) {
-          if (opts.abortSignal?.aborted) {
-            return;
-          }
-          throw sleepErr;
-        }
+        return shouldRestart ? "continue" : "exit";
       } finally {
         opts.abortSignal?.removeEventListener("abort", stopOnAbort);
+      }
+    };
+
+    while (!opts.abortSignal?.aborted) {
+      const bot = await createPollingBot();
+      if (!bot) {
+        continue;
+      }
+
+      const cleanupState = await ensureWebhookCleanup(bot);
+      if (cleanupState === "retry") {
+        continue;
+      }
+      if (cleanupState === "exit") {
+        return;
+      }
+
+      const state = await runPollingCycle(bot);
+      if (state === "exit") {
+        return;
       }
     }
   } finally {

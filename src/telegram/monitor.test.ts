@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { monitorTelegramProvider } from "./monitor.js";
 
 type MockCtx = {
@@ -42,6 +42,36 @@ const { computeBackoff, sleepWithAbort } = vi.hoisted(() => ({
 const { startTelegramWebhookSpy } = vi.hoisted(() => ({
   startTelegramWebhookSpy: vi.fn(async () => ({ server: { close: vi.fn() }, stop: vi.fn() })),
 }));
+
+type RunnerStub = {
+  task: () => Promise<void>;
+  stop: ReturnType<typeof vi.fn<() => void | Promise<void>>>;
+  isRunning: () => boolean;
+};
+
+const makeRunnerStub = (overrides: Partial<RunnerStub> = {}): RunnerStub => ({
+  task: overrides.task ?? (() => Promise.resolve()),
+  stop: overrides.stop ?? vi.fn<() => void | Promise<void>>(),
+  isRunning: overrides.isRunning ?? (() => false),
+});
+
+async function monitorWithAutoAbort(
+  opts: Omit<Parameters<typeof monitorTelegramProvider>[0], "abortSignal"> = {},
+) {
+  const abort = new AbortController();
+  runSpy.mockImplementationOnce(() =>
+    makeRunnerStub({
+      task: async () => {
+        abort.abort();
+      },
+    }),
+  );
+  await monitorTelegramProvider({
+    token: "tok",
+    ...opts,
+    abortSignal: abort.signal,
+  });
+}
 
 vi.mock("../config/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config/config.js")>();
@@ -98,13 +128,19 @@ vi.mock("../auto-reply/reply.js", () => ({
 }));
 
 describe("monitorTelegramProvider (grammY)", () => {
+  let consoleErrorSpy: { mockRestore: () => void } | undefined;
+
   beforeEach(() => {
     loadConfig.mockReturnValue({
       agents: { defaults: { maxConcurrent: 2 } },
       channels: { telegram: {} },
     });
     initSpy.mockClear();
-    runSpy.mockClear();
+    runSpy.mockReset().mockImplementation(() =>
+      makeRunnerStub({
+        task: () => Promise.reject(new Error("runSpy called without explicit test stub")),
+      }),
+    );
     computeBackoff.mockClear();
     sleepWithAbort.mockClear();
     startTelegramWebhookSpy.mockClear();
@@ -114,7 +150,7 @@ describe("monitorTelegramProvider (grammY)", () => {
     Object.values(api).forEach((fn) => {
       fn?.mockReset?.();
     });
-    await monitorTelegramProvider({ token: "tok" });
+    await monitorWithAutoAbort();
     expect(handlers.message).toBeDefined();
     await handlers.message?.({
       message: {
@@ -137,7 +173,7 @@ describe("monitorTelegramProvider (grammY)", () => {
       channels: { telegram: {} },
     });
 
-    await monitorTelegramProvider({ token: "tok" });
+    await monitorWithAutoAbort();
 
     expect(runSpy).toHaveBeenCalledWith(
       expect.anything(),
@@ -145,7 +181,7 @@ describe("monitorTelegramProvider (grammY)", () => {
         sink: { concurrency: 3 },
         runner: expect.objectContaining({
           silent: true,
-          maxRetryTime: 5 * 60 * 1000,
+          maxRetryTime: 60 * 60 * 1000,
           retryInterval: "exponential",
         }),
       }),
@@ -156,7 +192,7 @@ describe("monitorTelegramProvider (grammY)", () => {
     Object.values(api).forEach((fn) => {
       fn?.mockReset?.();
     });
-    await monitorTelegramProvider({ token: "tok" });
+    await monitorWithAutoAbort();
     await handlers.message?.({
       message: {
         message_id: 2,
@@ -181,7 +217,7 @@ describe("monitorTelegramProvider (grammY)", () => {
         stop: vi.fn(),
       }));
 
-    await monitorTelegramProvider({ token: "tok" });
+    await monitorTelegramProvider({ token: "tok", abortSignal: abort.signal });
 
     expect(computeBackoff).toHaveBeenCalled();
     expect(sleepWithAbort).toHaveBeenCalled();

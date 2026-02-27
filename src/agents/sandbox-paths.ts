@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,11 +57,19 @@ export async function assertSandboxPath(params: {
   filePath: string;
   cwd: string;
   root: string;
-  allowFinalSymlink?: boolean;
+  allowFinalSymlinkForUnlink?: boolean;
+  allowFinalHardlinkForUnlink?: boolean;
 }) {
   const resolved = resolveSandboxPath(params);
-  await assertNoSymlinkEscape(resolved.relative, path.resolve(params.root), {
-    allowFinalSymlink: params.allowFinalSymlink,
+  const policy: PathAliasPolicy = {
+    allowFinalSymlinkForUnlink: params.allowFinalSymlinkForUnlink,
+    allowFinalHardlinkForUnlink: params.allowFinalHardlinkForUnlink,
+  };
+  await assertNoPathAliasEscape({
+    absolutePath: resolved.resolved,
+    rootPath: path.resolve(params.root),
+    boundaryLabel: "sandbox root",
+    policy,
   });
   return resolved;
 }

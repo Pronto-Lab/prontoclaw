@@ -88,6 +88,7 @@ async function expectBestEffortTelegramNotDelivered(
 
     expect(res.status).toBe("ok");
     expect(res.delivered).toBe(false);
+    expect(res.deliveryAttempted).toBe(true);
     expect(runSubagentAnnounceFlow).not.toHaveBeenCalled();
     expect(deps.sendMessageTelegram).toHaveBeenCalledTimes(1);
   });

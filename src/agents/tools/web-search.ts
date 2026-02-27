@@ -53,12 +53,14 @@ const WebSearchSchema = Type.Object({
   ),
   search_lang: Type.Optional(
     Type.String({
-      description: "ISO language code for search results (e.g., 'de', 'en', 'fr').",
+      description:
+        "Short ISO language code for search results (e.g., 'de', 'en', 'fr', 'tr'). Must be a 2-letter code, NOT a locale.",
     }),
   ),
   ui_lang: Type.Optional(
     Type.String({
-      description: "ISO language code for UI elements.",
+      description:
+        "Locale code for UI elements in language-region format (e.g., 'en-US', 'de-DE', 'fr-FR', 'tr-TR'). Must include region subtag.",
     }),
   ),
   freshness: Type.Optional(
@@ -374,6 +376,62 @@ function resolveSearchCount(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" && Number.isFinite(value) ? value : fallback;
   const clamped = Math.max(1, Math.min(MAX_SEARCH_COUNT, Math.floor(parsed)));
   return clamped;
+}
+
+function normalizeBraveSearchLang(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed || !BRAVE_SEARCH_LANG_CODE.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed.toLowerCase();
+}
+
+function normalizeBraveUiLang(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const match = trimmed.match(BRAVE_UI_LANG_LOCALE);
+  if (!match) {
+    return undefined;
+  }
+  const [, language, region] = match;
+  return `${language.toLowerCase()}-${region.toUpperCase()}`;
+}
+
+function normalizeBraveLanguageParams(params: { search_lang?: string; ui_lang?: string }): {
+  search_lang?: string;
+  ui_lang?: string;
+  invalidField?: "search_lang" | "ui_lang";
+} {
+  const rawSearchLang = params.search_lang?.trim() || undefined;
+  const rawUiLang = params.ui_lang?.trim() || undefined;
+  let searchLangCandidate = rawSearchLang;
+  let uiLangCandidate = rawUiLang;
+
+  // Recover common LLM mix-up: locale in search_lang + short code in ui_lang.
+  if (normalizeBraveUiLang(rawSearchLang) && normalizeBraveSearchLang(rawUiLang)) {
+    searchLangCandidate = rawUiLang;
+    uiLangCandidate = rawSearchLang;
+  }
+
+  const search_lang = normalizeBraveSearchLang(searchLangCandidate);
+  if (searchLangCandidate && !search_lang) {
+    return { invalidField: "search_lang" };
+  }
+
+  const ui_lang = normalizeBraveUiLang(uiLangCandidate);
+  if (uiLangCandidate && !ui_lang) {
+    return { invalidField: "ui_lang" };
+  }
+
+  return { search_lang, ui_lang };
 }
 
 function normalizeFreshness(value: string | undefined): string | undefined {
@@ -751,8 +809,29 @@ export function createWebSearchTool(options?: {
       const count =
         readNumberParam(params, "count", { integer: true }) ?? search?.maxResults ?? undefined;
       const country = readStringParam(params, "country");
-      const search_lang = readStringParam(params, "search_lang");
-      const ui_lang = readStringParam(params, "ui_lang");
+      const rawSearchLang = readStringParam(params, "search_lang");
+      const rawUiLang = readStringParam(params, "ui_lang");
+      const normalizedBraveLanguageParams =
+        provider === "brave"
+          ? normalizeBraveLanguageParams({ search_lang: rawSearchLang, ui_lang: rawUiLang })
+          : { search_lang: rawSearchLang, ui_lang: rawUiLang };
+      if (normalizedBraveLanguageParams.invalidField === "search_lang") {
+        return jsonResult({
+          error: "invalid_search_lang",
+          message:
+            "search_lang must be a 2-letter ISO language code like 'en' (not a locale like 'en-US').",
+          docs: "https://docs.openclaw.ai/tools/web",
+        });
+      }
+      if (normalizedBraveLanguageParams.invalidField === "ui_lang") {
+        return jsonResult({
+          error: "invalid_ui_lang",
+          message: "ui_lang must be a language-region locale like 'en-US'.",
+          docs: "https://docs.openclaw.ai/tools/web",
+        });
+      }
+      const search_lang = normalizedBraveLanguageParams.search_lang;
+      const ui_lang = normalizedBraveLanguageParams.ui_lang;
       const rawFreshness = readStringParam(params, "freshness");
       if (rawFreshness && provider !== "brave" && provider !== "perplexity") {
         return jsonResult({
@@ -811,6 +890,7 @@ export const __testing = {
   resolvePerplexityBaseUrl,
   isDirectPerplexityBaseUrl,
   resolvePerplexityRequestModel,
+  normalizeBraveLanguageParams,
   normalizeFreshness,
   freshnessToPerplexityRecency,
   resolveGrokApiKey,

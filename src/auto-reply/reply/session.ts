@@ -54,6 +54,21 @@ export type SessionInitResult = {
   triggerBodyNormalized: string;
 };
 
+/**
+ * Default max parent token count beyond which thread/session parent forking is skipped.
+ * This prevents new thread sessions from inheriting near-full parent context.
+ * See #26905.
+ */
+const DEFAULT_PARENT_FORK_MAX_TOKENS = 100_000;
+
+function resolveParentForkMaxTokens(cfg: OpenClawConfig): number {
+  const configured = cfg.session?.parentForkMaxTokens;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured >= 0) {
+    return Math.floor(configured);
+  }
+  return DEFAULT_PARENT_FORK_MAX_TOKENS;
+}
+
 function forkSessionFromParent(params: {
   parentEntry: SessionEntry;
   agentId: string;
@@ -120,6 +135,7 @@ export async function initSessionState(params: {
   const resetTriggers = sessionCfg?.resetTriggers?.length
     ? sessionCfg.resetTriggers
     : DEFAULT_RESET_TRIGGERS;
+  const parentForkMaxTokens = resolveParentForkMaxTokens(cfg);
   const sessionScope = sessionCfg?.scope ?? "per-sender";
   const storePath = resolveStorePath(sessionCfg?.store, { agentId });
 

@@ -19,6 +19,12 @@ import {
 } from "./monitor.js";
 import { DiscordMessageListener, DiscordReactionListener } from "./monitor/listeners.js";
 
+const readAllowFromStoreMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../pairing/pairing-store.js", () => ({
+  readChannelAllowFromStore: (...args: unknown[]) => readAllowFromStoreMock(...args),
+}));
+
 const fakeGuild = (id: string, name: string) => ({ id, name }) as Guild;
 
 const makeEntries = (
@@ -891,9 +897,77 @@ describe("discord DM reaction handling", () => {
     expect(enqueueSystemEventSpy).toHaveBeenCalledOnce();
   });
 
+  it("blocks DM reactions when dmPolicy is disabled", async () => {
+    const data = makeReactionEvent({ botAsAuthor: true });
+    const client = makeReactionClient({ channelType: ChannelType.DM });
+    const listener = new DiscordReactionListener(
+      makeReactionListenerParams({ dmPolicy: "disabled" }),
+    );
+
+    await listener.handle(data, client);
+
+    expect(enqueueSystemEventSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks DM reactions for unauthorized sender in allowlist mode", async () => {
+    const data = makeReactionEvent({ botAsAuthor: true, userId: "user-1" });
+    const client = makeReactionClient({ channelType: ChannelType.DM });
+    const listener = new DiscordReactionListener(
+      makeReactionListenerParams({
+        dmPolicy: "allowlist",
+        allowFrom: ["user:user-2"],
+      }),
+    );
+
+    await listener.handle(data, client);
+
+    expect(enqueueSystemEventSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows DM reactions for authorized sender in allowlist mode", async () => {
+    const data = makeReactionEvent({ botAsAuthor: true, userId: "user-1" });
+    const client = makeReactionClient({ channelType: ChannelType.DM });
+    const listener = new DiscordReactionListener(
+      makeReactionListenerParams({
+        dmPolicy: "allowlist",
+        allowFrom: ["user:user-1"],
+      }),
+    );
+
+    await listener.handle(data, client);
+
+    expect(enqueueSystemEventSpy).toHaveBeenCalledOnce();
+  });
+
+  it("blocks group DM reactions when group DMs are disabled", async () => {
+    const data = makeReactionEvent({ botAsAuthor: true });
+    const client = makeReactionClient({ channelType: ChannelType.GroupDM });
+    const listener = new DiscordReactionListener(
+      makeReactionListenerParams({ groupDmEnabled: false }),
+    );
+
+    await listener.handle(data, client);
+
+    expect(enqueueSystemEventSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks guild reactions when groupPolicy is disabled", async () => {
+    const data = makeReactionEvent({
+      guildId: "guild-123",
+      botAsAuthor: true,
+      guild: { id: "guild-123", name: "Guild" },
+    });
+    const client = makeReactionClient({ channelType: ChannelType.GuildText });
+    const listener = new DiscordReactionListener(
+      makeReactionListenerParams({ groupPolicy: "disabled" }),
+    );
+
+    await listener.handle(data, client);
+
+    expect(enqueueSystemEventSpy).not.toHaveBeenCalled();
+  });
+
   it("still processes guild reactions (no regression)", async () => {
-    enqueueSystemEventSpy.mockClear();
-    resolveAgentRouteMock.mockClear();
     resolveAgentRouteMock.mockReturnValueOnce({
       agentId: "default",
       channel: "discord",

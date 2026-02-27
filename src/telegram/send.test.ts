@@ -252,6 +252,40 @@ describe("sendMessageTelegram", () => {
     });
   });
 
+  it("fails when Telegram text send returns no message_id", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      chat: { id: "123" },
+    });
+    const api = { sendMessage } as unknown as {
+      sendMessage: typeof sendMessage;
+    };
+
+    await expect(
+      sendMessageTelegram("123", "hi", {
+        token: "tok",
+        api,
+      }),
+    ).rejects.toThrow(/returned no message_id/i);
+  });
+
+  it("fails when Telegram media send returns no message_id", async () => {
+    mockLoadedMedia({ contentType: "image/png", fileName: "photo.png" });
+    const sendPhoto = vi.fn().mockResolvedValue({
+      chat: { id: "123" },
+    });
+    const api = { sendPhoto } as unknown as {
+      sendPhoto: typeof sendPhoto;
+    };
+
+    await expect(
+      sendMessageTelegram("123", "caption", {
+        token: "tok",
+        api,
+        mediaUrl: "https://example.com/photo.png",
+      }),
+    ).rejects.toThrow(/returned no message_id/i);
+  });
+
   it("uses native fetch for BAN compatibility when api is omitted", async () => {
     const originalFetch = globalThis.fetch;
     const originalBun = (globalThis as { Bun?: unknown }).Bun;
@@ -1446,6 +1480,20 @@ describe("sendPollTelegram", () => {
     ).rejects.toThrow(/durationHours is not supported/i);
 
     expect(api.sendPoll).not.toHaveBeenCalled();
+  });
+
+  it("fails when poll send returns no message_id", async () => {
+    const api = {
+      sendPoll: vi.fn(async () => ({ chat: { id: 555 }, poll: { id: "p1" } })),
+    };
+
+    await expect(
+      sendPollTelegram(
+        "123",
+        { question: "Q", options: ["A", "B"] },
+        { token: "t", api: api as unknown as Bot["api"] },
+      ),
+    ).rejects.toThrow(/returned no message_id/i);
   });
 });
 

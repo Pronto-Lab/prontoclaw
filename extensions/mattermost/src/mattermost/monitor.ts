@@ -895,11 +895,9 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
         const storeAllowFrom = normalizeAllowList(
           await core.channel.pairing.readAllowFromStore("mattermost").catch(() => []),
         );
-        const effectiveGroupAllowFrom = Array.from(
-          new Set([
-            ...(configGroupAllowFrom.length > 0 ? configGroupAllowFrom : configAllowFrom),
-            ...storeAllowFrom,
-          ]),
+      } else {
+        logVerboseMessage(
+          `mattermost: drop reaction (groupPolicy=${groupPolicy} sender=${userId} reason=${reactionAccess.reason} channel=${channelId})`,
         );
         // Drop when allowlist is empty (same as normal message handler)
         const allowed =
@@ -914,6 +912,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           return;
         }
       }
+      return;
     }
 
     const teamId = channelInfo?.team_id ?? undefined;
