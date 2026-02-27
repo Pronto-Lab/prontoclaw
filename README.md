@@ -1,10 +1,7 @@
 # Pronto-Lab OpenClaw — Multi-Agent AI Platform
 
 <p align="center">
-    <picture>
-        <source media="(prefers-color-scheme: light)" srcset="docs/assets/openclaw-logo-text-dark.png">
-        <img src="docs/assets/openclaw-logo-text.png" alt="Pronto-Lab OpenClaw" width="500">
-    </picture>
+    <img src="docs/assets/prontoclaw-logo.png" alt="ProntoClaw" width="500">
 </p>
 
 <p align="center">
