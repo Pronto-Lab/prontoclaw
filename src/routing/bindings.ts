@@ -83,6 +83,30 @@ export function resolveDefaultAgentBoundAccountId(
   return null;
 }
 
+export function resolveAgentBoundAccountId(
+  cfg: OpenClawConfig,
+  agentId: string,
+  channelId: string,
+): string | null {
+  const normalizedChannel = normalizeBindingChannelId(channelId);
+  if (!normalizedChannel) {
+    return null;
+  }
+  const targetAgentId = normalizeAgentId(agentId);
+  for (const binding of listBindings(cfg)) {
+    const resolved = resolveNormalizedBindingMatch(binding);
+    if (
+      !resolved ||
+      resolved.channelId !== normalizedChannel ||
+      resolved.agentId !== targetAgentId
+    ) {
+      continue;
+    }
+    return resolved.accountId;
+  }
+  return null;
+}
+
 export function buildChannelAccountBindings(cfg: OpenClawConfig) {
   const map = new Map<string, Map<string, string[]>>();
   for (const binding of listBindings(cfg)) {
