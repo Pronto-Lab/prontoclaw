@@ -23,7 +23,7 @@ export function resolveA2aRetryConfig(
   cfg: OpenClawConfig,
   accountId?: string,
 ): A2aRetryResolvedConfig {
-  const discordCfg = (cfg as Record<string, unknown>).discord as
+  const discordCfg = (cfg.channels?.discord ?? (cfg as Record<string, unknown>).discord) as
     | Record<string, unknown>
     | undefined;
   const accountCfg = accountId
