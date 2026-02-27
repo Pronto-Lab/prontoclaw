@@ -1,8 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AuthProfileCredential } from "./auth-profiles/types.js";
 import { ensureAuthProfileStore } from "./auth-profiles.js";
-import { normalizeProviderId } from "./model-selection.js";
+import {
+  piCredentialsEqual,
+  resolvePiCredentialMapFromStore,
+  type PiCredential,
+} from "./pi-auth-credentials.js";
 
 /**
  * @deprecated Legacy bridge for older flows that still expect `agentDir/auth.json`.

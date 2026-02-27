@@ -154,3 +154,31 @@ export async function sendDiscordWebhook(
     channelId: lastResult.channel_id,
   };
 }
+
+export type DiscordWebhookMessageOpts = {
+  webhookId: string;
+  webhookToken: string;
+  accountId?: string;
+  threadId?: string;
+  replyTo?: string;
+  username?: string;
+  avatarUrl?: string;
+  maxLinesPerMessage?: number;
+  chunkMode?: ChunkMode;
+};
+
+export async function sendWebhookMessageDiscord(
+  text: string,
+  opts: DiscordWebhookMessageOpts,
+): Promise<DiscordSendResult> {
+  const { webhookId, webhookToken, threadId, replyTo, username, avatarUrl, maxLinesPerMessage, chunkMode } = opts;
+  const baseUrl = `https://discord.com/api/webhooks/${webhookId}/${webhookToken}`;
+  const webhookUrl = threadId ? `${baseUrl}?thread_id=${threadId}` : baseUrl;
+  return sendDiscordWebhook(webhookUrl, text, {
+    username,
+    avatarUrl,
+    replyTo,
+    maxLinesPerMessage,
+    chunkMode,
+  });
+}

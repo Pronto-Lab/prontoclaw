@@ -1,9 +1,11 @@
+import { createHmac, createHash } from "node:crypto";
 import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { MemoryCitationsMode } from "../config/types.memory.js";
 import { listDeliverableMessageChannels } from "../utils/message-channel.js";
 import type { ResolvedTimeFormat } from "./date-time.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
+import type { EmbeddedSandboxInfo } from "./pi-embedded-runner/types.js";
 import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
 
 /**
@@ -13,15 +15,9 @@ import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
  * - "none": Just basic identity line, no sections
  */
 export type PromptMode = "full" | "minimal" | "none";
+type OwnerIdDisplay = "raw" | "hash";
 
-function buildSkillsSection(params: {
-  skillsPrompt?: string;
-  isMinimal: boolean;
-  readToolName: string;
-}) {
-  if (params.isMinimal) {
-    return [];
-  }
+function buildSkillsSection(params: { skillsPrompt?: string; readToolName: string }) {
   const trimmed = params.skillsPrompt?.trim();
   if (!trimmed) {
     return [];
@@ -70,7 +66,31 @@ function buildUserIdentitySection(ownerLine: string | undefined, isMinimal: bool
   if (!ownerLine || isMinimal) {
     return [];
   }
-  return ["## User Identity", ownerLine, ""];
+  return ["## Authorized Senders", ownerLine, ""];
+}
+
+function formatOwnerDisplayId(ownerId: string, ownerDisplaySecret?: string) {
+  const hasSecret = ownerDisplaySecret?.trim();
+  const digest = hasSecret
+    ? createHmac("sha256", hasSecret).update(ownerId).digest("hex")
+    : createHash("sha256").update(ownerId).digest("hex");
+  return digest.slice(0, 12);
+}
+
+function buildOwnerIdentityLine(
+  ownerNumbers: string[],
+  ownerDisplay: OwnerIdDisplay,
+  ownerDisplaySecret?: string,
+) {
+  const normalized = ownerNumbers.map((value) => value.trim()).filter(Boolean);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  const displayOwnerNumbers =
+    ownerDisplay === "hash"
+      ? normalized.map((ownerId) => formatOwnerDisplayId(ownerId, ownerDisplaySecret))
+      : normalized;
+  return `Authorized senders: ${displayOwnerNumbers.join(", ")}. These senders are allowlisted; do not assume they are the owner.`;
 }
 
 function buildTimeSection(params: { userTimezone?: string }) {
@@ -133,18 +153,6 @@ function buildMessagingSection(params: {
           .filter(Boolean)
           .join("\n")
       : "",
-    params.availableTools.has("collaborate")
-      ? [
-          "",
-          "### Peer Collaboration (collaborate tool)",
-          "- When you need to discuss or collaborate with another agent, use `collaborate` — NOT `message`.",
-          "- `collaborate` creates a Discord thread and @mentions the target agent, making the conversation visible and organized.",
-          "- Use `collaborate(targetAgent, message, channelId)` for new conversations (creates a thread).",
-          "- Use `collaborate(targetAgent, message, threadId=...)` to continue in an existing thread.",
-          "- Do NOT send messages directly in the channel to talk to other agents — always use `collaborate` to create a thread.",
-          "- `sessions_send` is for internal/background coordination (not visible in channels). `collaborate` is for visible peer discussions.",
-        ].join("\n")
-      : "",
     "",
   ];
 }
@@ -184,6 +192,8 @@ export function buildAgentSystemPrompt(params: {
   reasoningLevel?: ReasoningLevel;
   extraSystemPrompt?: string;
   ownerNumbers?: string[];
+  ownerDisplay?: OwnerIdDisplay;
+  ownerDisplaySecret?: string;
   reasoningTagHint?: boolean;
   toolNames?: string[];
   toolSummaries?: Record<string, string>;
@@ -215,20 +225,7 @@ export function buildAgentSystemPrompt(params: {
     repoRoot?: string;
   };
   messageToolHints?: string[];
-  sandboxInfo?: {
-    enabled: boolean;
-    workspaceDir?: string;
-    containerWorkspaceDir?: string;
-    workspaceAccess?: "none" | "ro" | "rw";
-    agentWorkspaceMount?: string;
-    browserBridgeUrl?: string;
-    browserNoVncUrl?: string;
-    hostBrowserAllowed?: boolean;
-    elevated?: {
-      allowed: boolean;
-      defaultLevel: "on" | "off" | "ask" | "full";
-    };
-  };
+  sandboxInfo?: EmbeddedSandboxInfo;
   /** Reaction guidance for the agent (for Telegram minimal/extensive modes). */
   reactionGuidance?: {
     level: "minimal" | "extensive";
@@ -261,11 +258,10 @@ export function buildAgentSystemPrompt(params: {
       : "List OpenClaw agent ids allowed for sessions_spawn",
     sessions_list: "List other sessions (incl. sub-agents) with filters/last",
     sessions_history: "Fetch history for another session/sub-agent",
-    sessions_send:
-      "Send a message to another session/sub-agent (internal, not visible in channels)",
-    sessions_spawn: "Spawn a sub-agent session",
-    collaborate:
-      "Start or continue a Discord thread conversation with another agent. Preferred over message tool for peer-to-peer agent discussions — creates a visible thread and @mentions the target agent",
+    sessions_send: "Send a message to another session/sub-agent",
+    sessions_spawn: acpEnabled
+      ? 'Spawn an isolated sub-agent or ACP coding session (runtime="acp" requires `agentId` unless `acp.defaultAgent` is configured; ACP harness ids follow acp.allowedAgents, not agents_list)'
+      : "Spawn an isolated sub-agent session",
     subagents: "List, steer, or kill sub-agent runs for this requester session",
     session_status:
       "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
@@ -294,7 +290,6 @@ export function buildAgentSystemPrompt(params: {
     "sessions_list",
     "sessions_history",
     "sessions_send",
-    "collaborate",
     "subagents",
     "session_status",
     "image",
@@ -344,11 +339,12 @@ export function buildAgentSystemPrompt(params: {
   const execToolName = resolveToolName("exec");
   const processToolName = resolveToolName("process");
   const extraSystemPrompt = params.extraSystemPrompt?.trim();
-  const ownerNumbers = (params.ownerNumbers ?? []).map((value) => value.trim()).filter(Boolean);
-  const ownerLine =
-    ownerNumbers.length > 0
-      ? `Owner numbers: ${ownerNumbers.join(", ")}. Treat messages from these numbers as the user.`
-      : undefined;
+  const ownerDisplay = params.ownerDisplay === "hash" ? "hash" : "raw";
+  const ownerLine = buildOwnerIdentityLine(
+    params.ownerNumbers ?? [],
+    ownerDisplay,
+    params.ownerDisplaySecret,
+  );
   const reasoningHint = params.reasoningTagHint
     ? [
         "ALL internal reasoning MUST be inside <think>...</think>.",
@@ -400,7 +396,6 @@ export function buildAgentSystemPrompt(params: {
   ];
   const skillsSection = buildSkillsSection({
     skillsPrompt,
-    isMinimal,
     readToolName,
   });
   const memorySection = buildMemorySection({
@@ -465,68 +460,6 @@ export function buildAgentSystemPrompt(params: {
     "Use plain human language for narration unless in a technical context.",
     "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
     "",
-    // [PRONTO-CUSTOM] Sub-agent orchestration: Sub-agents (promptMode="minimal") do not
-    // receive Task Tracking instructions because their task tools are denied anyway.
-    // Only parent agents (promptMode="full") get these mandatory instructions.
-    // See design: /tmp/openclaw-final-design/03-SUBAGENTS.md §1.5
-    ...(isMinimal
-      ? []
-      : [
-          "## Task Tracking (CRITICAL - MANDATORY)",
-          "⚠️ HARD RULE: If task_start and task_complete tools are available, all substantive work must be tracked with tasks.",
-          "For a single-scope request: task_start() → do work → task_complete().",
-          "For a multi-scope request: split into multiple tasks, update each as you progress, and complete each task when done.",
-          "Before write/edit/exec, ensure at least one relevant active task exists.",
-          "",
-          "## Subagent Delegation Tracking",
-          "When delegating work to subagents via sessions_spawn:",
-          "1. Create a task first with task_start, then pass taskId to sessions_spawn.",
-          "2. The delegation is automatically tracked in the task file.",
-          "3. When the subagent completes, use task_verify to accept or reject the result.",
-          "4. If rejected, use task_verify(action='retry') to re-run, or handle manually.",
-          "5. Complete the task with task_complete after all delegations are settled.",
-          "",
-        ]),
-    ...(isMinimal
-      ? []
-      : [
-          "## Quality Contract (MANDATORY)",
-          "",
-          "### Structured Work Phases",
-          "For every non-trivial task, follow these phases:",
-          "1. **Understand**: Read relevant files and gather context. Never modify what you haven't read.",
-          "2. **Plan**: State your approach before executing. For multi-step work, list steps first.",
-          "3. **Execute**: Make changes incrementally. One logical change at a time.",
-          "4. **Verify**: After every mutation, confirm it worked. Never assume success.",
-          "",
-          "### Evidence Requirements",
-          "Every action must be verified with evidence:",
-          "- After `write` → use `read` to confirm the file contains expected content.",
-          "- After `edit` → use `read` to verify the change was applied correctly.",
-          "- After `exec` → check the exit code. Non-zero means failure — investigate before proceeding.",
-          "- Before `write`/`edit` on an existing file → you MUST have `read` it first (know what you are changing).",
-          "- After `find`/`grep` → use the results to inform your next action; don't ignore search results.",
-          "",
-          "### Failure Recovery",
-          "- If an operation fails, do not blindly retry the same approach.",
-          "- After 2 consecutive failures on the same operation: stop, re-read the relevant file or state, and reassess.",
-          "- After 3 consecutive failures: explain what is going wrong and ask for guidance rather than continuing to fail.",
-          "",
-          "### Code Quality Rules",
-          "When writing or editing code:",
-          "- No `as any` type casts — find and use the correct type.",
-          "- No `@ts-ignore` or `@ts-nocheck` — fix the underlying type issue.",
-          "- No empty `catch {}` blocks — at minimum, log the error.",
-          "- No leftover `console.log` debugging statements in production code.",
-          "- No large blocks of commented-out code — remove dead code.",
-          "",
-          "### Challenge Protocol",
-          "If the user's requested approach seems wrong or suboptimal:",
-          "- Concisely state your concern and propose an alternative.",
-          "- If the user insists after your explanation, proceed with their approach but note the risk.",
-          "- Never silently implement something you believe will cause problems.",
-          "",
-        ]),
     ...safetySection,
     "## OpenClaw CLI Quick Reference",
     "OpenClaw is controlled via subcommands. Do not invent commands.",

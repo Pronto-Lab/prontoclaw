@@ -67,6 +67,9 @@ function isGoogleModelNotFoundError(err: unknown): boolean {
   if (!/not found/i.test(msg)) {
     return false;
   }
+  if (/\b404\b/.test(msg)) {
+    return true;
+  }
   if (/models\/.+ is not found for api version/i.test(msg)) {
     return true;
   }
@@ -515,6 +518,18 @@ describeLive("live models (profile keys)", () => {
             if (
               ok.text.length === 0 &&
               allowNotFoundSkip &&
+              (model.provider === "minimax" || model.provider === "zai")
+            ) {
+              skipped.push({
+                model: id,
+                reason: "no text returned (provider returned empty content)",
+              });
+              logProgress(`${progressLabel}: skip (empty response)`);
+              break;
+            }
+            if (
+              ok.text.length === 0 &&
+              allowNotFoundSkip &&
               (model.provider === "google-antigravity" || model.provider === "openai-codex")
             ) {
               skipped.push({
@@ -546,7 +561,10 @@ describeLive("live models (profile keys)", () => {
               logProgress(`${progressLabel}: skip (anthropic billing)`);
               break;
             }
-            if (model.provider === "google" && isGoogleModelNotFoundError(err)) {
+            if (
+              (model.provider === "google" || model.provider === "google-gemini-cli") &&
+              isGoogleModelNotFoundError(err)
+            ) {
               skipped.push({ model: id, reason: message });
               logProgress(`${progressLabel}: skip (google model not found)`);
               break;
@@ -558,6 +576,15 @@ describeLive("live models (profile keys)", () => {
             ) {
               skipped.push({ model: id, reason: message });
               logProgress(`${progressLabel}: skip (minimax empty response)`);
+              break;
+            }
+            if (
+              allowNotFoundSkip &&
+              (model.provider === "minimax" || model.provider === "zai") &&
+              isRateLimitErrorMessage(message)
+            ) {
+              skipped.push({ model: id, reason: message });
+              logProgress(`${progressLabel}: skip (rate limit)`);
               break;
             }
             if (

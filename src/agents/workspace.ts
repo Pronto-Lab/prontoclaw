@@ -5,7 +5,7 @@ import path from "node:path";
 import { openBoundaryFile } from "../infra/boundary-file-read.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { runCommandWithTimeout } from "../process/exec.js";
-import { isA2ASessionKey, isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
+import { isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveWorkspaceTemplateDir } from "./workspace-templates.js";
 
@@ -38,6 +38,54 @@ const WORKSPACE_STATE_VERSION = 1;
 const workspaceTemplateCache = new Map<string, Promise<string>>();
 let gitAvailabilityPromise: Promise<boolean> | null = null;
 const MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES = 2 * 1024 * 1024;
+
+// File content cache keyed by stable file identity to avoid stale reads.
+const workspaceFileCache = new Map<string, { content: string; identity: string }>();
+
+/**
+ * Read workspace files via boundary-safe open and cache by inode/dev/size/mtime identity.
+ */
+type WorkspaceGuardedReadResult =
+  | { ok: true; content: string }
+  | { ok: false; reason: "path" | "validation" | "io"; error?: unknown };
+
+function workspaceFileIdentity(stat: syncFs.Stats, canonicalPath: string): string {
+  return `${canonicalPath}|${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+}
+
+async function readWorkspaceFileWithGuards(params: {
+  filePath: string;
+  workspaceDir: string;
+}): Promise<WorkspaceGuardedReadResult> {
+  const opened = await openBoundaryFile({
+    absolutePath: params.filePath,
+    rootPath: params.workspaceDir,
+    boundaryLabel: "workspace root",
+    maxBytes: MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
+  });
+  if (!opened.ok) {
+    workspaceFileCache.delete(params.filePath);
+    return opened;
+  }
+
+  const identity = workspaceFileIdentity(opened.stat, opened.path);
+  const cached = workspaceFileCache.get(params.filePath);
+  if (cached && cached.identity === identity) {
+    syncFs.closeSync(opened.fd);
+    return { ok: true, content: cached.content };
+  }
+
+  try {
+    const content = syncFs.readFileSync(opened.fd, "utf-8");
+    workspaceFileCache.set(params.filePath, { content, identity });
+    return { ok: true, content };
+  } catch (error) {
+    workspaceFileCache.delete(params.filePath);
+    return { ok: false, reason: "io", error };
+  } finally {
+    syncFs.closeSync(opened.fd);
+  }
+}
 
 function stripFrontMatter(content: string): string {
   if (!content.startsWith("---")) {
@@ -488,8 +536,11 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
 
   const result: WorkspaceBootstrapFile[] = [];
   for (const entry of entries) {
-    try {
-      const content = await fs.readFile(entry.filePath, "utf-8");
+    const loaded = await readWorkspaceFileWithGuards({
+      filePath: entry.filePath,
+      workspaceDir: resolvedDir,
+    });
+    if (loaded.ok) {
       result.push({
         name: entry.name,
         path: entry.filePath,
@@ -503,43 +554,22 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
   return result;
 }
 
-const MINIMAL_BOOTSTRAP_ALLOWLIST = new Set([DEFAULT_AGENTS_FILENAME, DEFAULT_TOOLS_FILENAME]);
-
-// A2A sessions need identity + collaboration context, but NOT heartbeat/boot files
-// which cause agents to respond with HEARTBEAT_OK instead of meaningful replies.
-const A2A_BOOTSTRAP_ALLOWLIST = new Set([
+const MINIMAL_BOOTSTRAP_ALLOWLIST = new Set([
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_TOOLS_FILENAME,
+  DEFAULT_SOUL_FILENAME,
   DEFAULT_IDENTITY_FILENAME,
+  DEFAULT_USER_FILENAME,
 ]);
-
-// Discord thread sessions get full context but HEARTBEAT.md causes agents
-// to respond with HEARTBEAT_OK instead of meaningful A2A replies.
-const THREAD_SESSION_DENYLIST = new Set([DEFAULT_HEARTBEAT_FILENAME]);
-
-/** Check if a session key is a Discord channel/thread session (agent:*:discord:channel:*). */
-function isDiscordChannelSessionKey(sessionKey: string): boolean {
-  return /^agent:[^:]+:discord:channel:/.test(sessionKey);
-}
 
 export function filterBootstrapFilesForSession(
   files: WorkspaceBootstrapFile[],
   sessionKey?: string,
 ): WorkspaceBootstrapFile[] {
-  if (!sessionKey) {
+  if (!sessionKey || (!isSubagentSessionKey(sessionKey) && !isCronSessionKey(sessionKey))) {
     return files;
   }
-  if (isA2ASessionKey(sessionKey)) {
-    return files.filter((file) => A2A_BOOTSTRAP_ALLOWLIST.has(file.name));
-  }
-  if (isSubagentSessionKey(sessionKey) || isCronSessionKey(sessionKey)) {
-    return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
-  }
-  // Discord thread sessions: full context minus HEARTBEAT.md
-  if (isDiscordChannelSessionKey(sessionKey)) {
-    return files.filter((file) => !THREAD_SESSION_DENYLIST.has(file.name));
-  }
-  return files;
+  return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
 }
 
 export async function loadExtraBootstrapFiles(
@@ -594,22 +624,12 @@ export async function loadExtraBootstrapFilesWithDiagnostics(
       });
       continue;
     }
-    try {
-      // Resolve symlinks and verify the real path is still within workspace
-      const realFilePath = await fs.realpath(filePath);
-      if (
-        !realFilePath.startsWith(realResolvedDir + path.sep) &&
-        realFilePath !== realResolvedDir
-      ) {
-        continue;
-      }
-      // Only load files whose basename is a recognized bootstrap filename
-      const baseName = path.basename(relPath);
-      if (!VALID_BOOTSTRAP_NAMES.has(baseName)) {
-        continue;
-      }
-      const content = await fs.readFile(realFilePath, "utf-8");
-      result.push({
+    const loaded = await readWorkspaceFileWithGuards({
+      filePath,
+      workspaceDir: resolvedDir,
+    });
+    if (loaded.ok) {
+      files.push({
         name: baseName as WorkspaceBootstrapFileName,
         path: filePath,
         content: loaded.content,

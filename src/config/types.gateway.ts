@@ -89,7 +89,16 @@ export type GatewayControlUiConfig = {
   root?: string;
   /** Allowed browser origins for Control UI/WebChat websocket connections. */
   allowedOrigins?: string[];
-  /** Allow token-only auth over insecure HTTP (default: false). */
+  /**
+   * DANGEROUS: Keep Host-header origin fallback behavior.
+   * Supported long-term for deployments that intentionally rely on this policy.
+   */
+  dangerouslyAllowHostHeaderOriginFallback?: boolean;
+  /**
+   * Insecure-auth toggle.
+   * Control UI still requires secure context + device identity unless
+   * dangerouslyDisableDeviceAuth is enabled.
+   */
   allowInsecureAuth?: boolean;
   /** DANGEROUS: Disable device identity checks for the Control UI (default: false). */
   dangerouslyDisableDeviceAuth?: boolean;
@@ -270,8 +279,19 @@ export type GatewayHttpEndpointsConfig = {
   responses?: GatewayHttpResponsesConfig;
 };
 
+export type GatewayHttpSecurityHeadersConfig = {
+  /**
+   * Value for the Strict-Transport-Security response header.
+   * Set to false to disable explicitly.
+   *
+   * Example: "max-age=31536000; includeSubDomains"
+   */
+  strictTransportSecurity?: string | false;
+};
+
 export type GatewayHttpConfig = {
   endpoints?: GatewayHttpEndpointsConfig;
+  securityHeaders?: GatewayHttpSecurityHeadersConfig;
 };
 
 export type GatewayNodesConfig = {
@@ -331,10 +351,15 @@ export type GatewayConfig = {
   nodes?: GatewayNodesConfig;
   /**
    * IPs of trusted reverse proxies (e.g. Traefik, nginx). When a connection
-   * arrives from one of these IPs, the Gateway trusts `x-forwarded-for` (or
-   * `x-real-ip`) to determine the client IP for local pairing and HTTP checks.
+   * arrives from one of these IPs, the Gateway trusts `x-forwarded-for`
+   * to determine the client IP for local pairing and HTTP checks.
    */
   trustedProxies?: string[];
+  /**
+   * Allow `x-real-ip` as a fallback only when `x-forwarded-for` is missing.
+   * Default: false (safer fail-closed behavior).
+   */
+  allowRealIpFallback?: boolean;
   /** Tool access restrictions for HTTP /tools/invoke endpoint. */
   tools?: GatewayToolsConfig;
   /**

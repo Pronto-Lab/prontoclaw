@@ -1,17 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import {
   listAgentIds,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
 } from "../../agents/agent-scope.js";
-import {
-  findActiveTask,
-  findBlockedTasks,
-  findPendingTasks,
-  findPendingApprovalTasks,
-} from "../../agents/tools/task-tool.js";
 import {
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_BOOTSTRAP_FILENAME,
@@ -53,6 +46,7 @@ import {
   validateAgentsUpdateParams,
 } from "../protocol/index.js";
 import { listAgentsForGateway } from "../session-utils.js";
+import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 
 const BOOTSTRAP_FILE_NAMES = [
   DEFAULT_AGENTS_FILENAME,
@@ -736,119 +730,6 @@ export const agentsHandlers: GatewayRequestHandlers = {
           size: meta?.size,
           updatedAtMs: meta?.updatedAtMs,
           content,
-        },
-      },
-      undefined,
-    );
-  },
-  "agents.tasks": async ({ params, respond }) => {
-    const cfg = loadConfig();
-    const agentIdParam =
-      params && typeof params === "object" && "agentId" in params
-        ? typeof params.agentId === "string"
-          ? params.agentId
-          : ""
-        : "";
-
-    if (agentIdParam) {
-      const agentId = resolveAgentIdOrError(agentIdParam, cfg);
-      if (!agentId) {
-        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unknown agent id"));
-        return;
-      }
-      const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const activeTask = await findActiveTask(workspaceDir);
-      const blockedTasks = await findBlockedTasks(workspaceDir);
-      const pendingTasks = await findPendingTasks(workspaceDir);
-      const pendingApprovalTasks = await findPendingApprovalTasks(workspaceDir);
-
-      respond(
-        true,
-        {
-          agentId,
-          activeTask: activeTask
-            ? {
-                id: activeTask.id,
-                status: activeTask.status,
-                priority: activeTask.priority,
-                description: activeTask.description,
-                lastActivity: activeTask.lastActivity,
-                progressCount: activeTask.progress.length,
-              }
-            : null,
-          blockedTasks: blockedTasks.map((t) => ({
-            id: t.id,
-            status: t.status,
-            priority: t.priority,
-            description: t.description,
-            blockedReason: t.blockedReason,
-            unblockedBy: t.unblockedBy,
-            unblockedAction: t.unblockedAction,
-            unblockRequestCount: t.unblockRequestCount,
-            escalationState: t.escalationState,
-            lastUnblockerIndex: t.lastUnblockerIndex,
-            lastUnblockRequestAt: t.lastUnblockRequestAt,
-            lastActivity: t.lastActivity,
-          })),
-          pendingTasks: pendingTasks.length,
-          pendingApprovalTasks: pendingApprovalTasks.length,
-        },
-        undefined,
-      );
-      return;
-    }
-
-    const agentIds = listAgentIds(cfg);
-    const allAgentTasks: Array<{
-      agentId: string;
-      activeTask: unknown;
-      blockedTasks: unknown[];
-      pendingCount: number;
-      pendingApprovalCount: number;
-    }> = [];
-
-    for (const agentId of agentIds) {
-      const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const activeTask = await findActiveTask(workspaceDir);
-      const blockedTasks = await findBlockedTasks(workspaceDir);
-      const pendingTasks = await findPendingTasks(workspaceDir);
-      const pendingApprovalTasks = await findPendingApprovalTasks(workspaceDir);
-
-      allAgentTasks.push({
-        agentId,
-        activeTask: activeTask
-          ? {
-              id: activeTask.id,
-              status: activeTask.status,
-              priority: activeTask.priority,
-              description: activeTask.description,
-              lastActivity: activeTask.lastActivity,
-            }
-          : null,
-        blockedTasks: blockedTasks.map((t) => ({
-          id: t.id,
-          description: t.description,
-          blockedReason: t.blockedReason,
-          unblockedBy: t.unblockedBy,
-          unblockedAction: t.unblockedAction,
-          unblockRequestCount: t.unblockRequestCount,
-          escalationState: t.escalationState,
-          lastUnblockerIndex: t.lastUnblockerIndex,
-          lastUnblockRequestAt: t.lastUnblockRequestAt,
-        })),
-        pendingCount: pendingTasks.length,
-        pendingApprovalCount: pendingApprovalTasks.length,
-      });
-    }
-
-    respond(
-      true,
-      {
-        agents: allAgentTasks,
-        summary: {
-          totalAgents: agentIds.length,
-          agentsWithBlockedTasks: allAgentTasks.filter((a) => a.blockedTasks.length > 0).length,
-          totalBlockedTasks: allAgentTasks.reduce((sum, a) => sum + a.blockedTasks.length, 0),
         },
       },
       undefined,

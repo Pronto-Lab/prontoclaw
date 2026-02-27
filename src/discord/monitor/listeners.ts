@@ -1,4 +1,3 @@
-import type { VoicePlugin } from "@buape/carbon/voice";
 import {
   ChannelType,
   type Client,
@@ -6,17 +5,17 @@ import {
   MessageReactionAddListener,
   MessageReactionRemoveListener,
   PresenceUpdateListener,
-  VoiceStateUpdateListener,
-  VoiceServerUpdateListener,
   type User,
 } from "@buape/carbon";
-import type { VoicePipelineHandle } from "../voice/voice-commands.js";
-import { danger } from "../../globals.js";
+import { danger, logVerbose } from "../../globals.js";
 import { formatDurationSeconds } from "../../infra/format-time/format-duration.ts";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
-import { handleVoiceStateUpdate } from "../voice/voice-commands.js";
+import {
+  readStoreAllowFromForDmPolicy,
+  resolveDmGroupAccessWithLists,
+} from "../../security/dm-policy-shared.js";
 import {
   isDiscordGroupAllowedByPolicy,
   normalizeDiscordAllowList,
@@ -46,6 +45,13 @@ type DiscordReactionListenerParams = {
   accountId: string;
   runtime: RuntimeEnv;
   botUserId?: string;
+  dmEnabled: boolean;
+  groupDmEnabled: boolean;
+  groupDmChannels: string[];
+  dmPolicy: "open" | "pairing" | "allowlist" | "disabled";
+  allowFrom: string[];
+  groupPolicy: "open" | "allowlist" | "disabled";
+  allowNameMatching: boolean;
   guildEntries?: Record<string, import("./allow-list.js").DiscordGuildEntryResolved>;
   logger: Logger;
 };
@@ -77,6 +83,32 @@ function logSlowDiscordListener(params: {
   });
 }
 
+async function runDiscordListenerWithSlowLog(params: {
+  logger: Logger | undefined;
+  listener: string;
+  event: string;
+  run: () => Promise<void>;
+  onError?: (err: unknown) => void;
+}) {
+  const startedAt = Date.now();
+  try {
+    await params.run();
+  } catch (err) {
+    if (params.onError) {
+      params.onError(err);
+      return;
+    }
+    throw err;
+  } finally {
+    logSlowDiscordListener({
+      logger: params.logger,
+      listener: params.listener,
+      event: params.event,
+      durationMs: Date.now() - startedAt,
+    });
+  }
+}
+
 export function registerDiscordListener(listeners: Array<object>, listener: object) {
   if (listeners.some((existing) => existing.constructor === listener.constructor)) {
     return false;
@@ -94,21 +126,16 @@ export class DiscordMessageListener extends MessageCreateListener {
   }
 
   async handle(data: DiscordMessageEvent, client: Client) {
-    const startedAt = Date.now();
-    const task = Promise.resolve(this.handler(data, client));
-    void task
-      .catch((err) => {
+    await runDiscordListenerWithSlowLog({
+      logger: this.logger,
+      listener: this.constructor.name,
+      event: this.type,
+      run: () => this.handler(data, client),
+      onError: (err) => {
         const logger = this.logger ?? discordEventQueueLog;
         logger.error(danger(`discord handler failed: ${String(err)}`));
-      })
-      .finally(() => {
-        logSlowDiscordListener({
-          logger: this.logger,
-          listener: this.constructor.name,
-          event: this.type,
-          durationMs: Date.now() - startedAt,
-        });
-      });
+      },
+    });
   }
 }
 
@@ -154,26 +181,29 @@ async function runDiscordReactionHandler(params: {
   listener: string;
   event: string;
 }): Promise<void> {
-  const startedAt = Date.now();
-  try {
-    await handleDiscordReactionEvent({
-      data: params.data,
-      client: params.client,
-      action: params.action,
-      cfg: params.handlerParams.cfg,
-      accountId: params.handlerParams.accountId,
-      botUserId: params.handlerParams.botUserId,
-      guildEntries: params.handlerParams.guildEntries,
-      logger: params.handlerParams.logger,
-    });
-  } finally {
-    logSlowDiscordListener({
-      logger: params.handlerParams.logger,
-      listener: params.listener,
-      event: params.event,
-      durationMs: Date.now() - startedAt,
-    });
-  }
+  await runDiscordListenerWithSlowLog({
+    logger: params.handlerParams.logger,
+    listener: params.listener,
+    event: params.event,
+    run: () =>
+      handleDiscordReactionEvent({
+        data: params.data,
+        client: params.client,
+        action: params.action,
+        cfg: params.handlerParams.cfg,
+        accountId: params.handlerParams.accountId,
+        botUserId: params.handlerParams.botUserId,
+        dmEnabled: params.handlerParams.dmEnabled,
+        groupDmEnabled: params.handlerParams.groupDmEnabled,
+        groupDmChannels: params.handlerParams.groupDmChannels,
+        dmPolicy: params.handlerParams.dmPolicy,
+        allowFrom: params.handlerParams.allowFrom,
+        groupPolicy: params.handlerParams.groupPolicy,
+        allowNameMatching: params.handlerParams.allowNameMatching,
+        guildEntries: params.handlerParams.guildEntries,
+        logger: params.handlerParams.logger,
+      }),
+  });
 }
 
 type DiscordReactionIngressAuthorizationParams = {
@@ -278,6 +308,13 @@ async function handleDiscordReactionEvent(params: {
   cfg: LoadedConfig;
   accountId: string;
   botUserId?: string;
+  dmEnabled: boolean;
+  groupDmEnabled: boolean;
+  groupDmChannels: string[];
+  dmPolicy: "open" | "pairing" | "allowlist" | "disabled";
+  allowFrom: string[];
+  groupPolicy: "open" | "allowlist" | "disabled";
+  allowNameMatching: boolean;
   guildEntries?: Record<string, import("./allow-list.js").DiscordGuildEntryResolved>;
   logger: Logger;
 }) {
@@ -401,6 +438,7 @@ async function handleDiscordReactionEvent(params: {
         userName: user.username,
         userTag: formatDiscordUserTag(user),
         allowlist: guildInfo?.users,
+        allowNameMatching: params.allowNameMatching,
       });
     const emitReactionWithAuthor = (message: { author?: User } | null) => {
       const { baseText } = resolveReactionBase();
@@ -622,108 +660,6 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
     } catch (err) {
       const logger = this.logger ?? discordEventQueueLog;
       logger.error(danger(`discord presence handler failed: ${String(err)}`));
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Voice State Listener — auto-join / auto-leave voice pipeline
-// ---------------------------------------------------------------------------
-
-export type VoiceStateContext = {
-  botUserId: string;
-  targetChannelId: string;
-  voicePlugin: VoicePlugin;
-  getCurrentPipeline: () => VoicePipelineHandle | null;
-  onJoinNeeded: (guildId: string, channelId: string, userId: string) => Promise<void>;
-  onLeaveNeeded: () => void;
-};
-
-/**
- * Track per-user voice channel membership so we can derive old/new transitions
- * from the single channel_id field in VOICE_STATE_UPDATE.
- */
-const userVoiceChannels = new Map<string, string | null>();
-
-export class DiscordVoiceStateListener extends VoiceStateUpdateListener {
-  constructor(
-    private context: VoiceStateContext,
-    private logger?: Logger,
-  ) {
-    super();
-  }
-
-  async handle(data: Parameters<VoiceStateUpdateListener["handle"]>[0], _client: Client) {
-    const startedAt = Date.now();
-    try {
-      const userId = data.user_id;
-      const guildId = data.guild_id;
-      if (!userId || !guildId) {
-        return;
-      }
-
-      // Derive old/new channel from tracked state
-      const oldChannelId = userVoiceChannels.get(userId) ?? undefined;
-      const newChannelId = data.channel_id ?? undefined;
-
-      // Update tracked state
-      userVoiceChannels.set(userId, data.channel_id ?? null);
-
-      // Forward raw event to @discordjs/voice adapter (Carbon does not do this)
-      const adapter = this.context.voicePlugin.adapters.get(guildId);
-      if (adapter) {
-        const voiceStateData = data as Parameters<typeof adapter.onVoiceStateUpdate>[0];
-        adapter.onVoiceStateUpdate(voiceStateData);
-      }
-
-      handleVoiceStateUpdate({
-        oldChannelId,
-        newChannelId,
-        userId,
-        guildId,
-        botUserId: this.context.botUserId,
-        targetChannelId: this.context.targetChannelId,
-        currentPipeline: this.context.getCurrentPipeline(),
-        onJoinNeeded: () =>
-          this.context.onJoinNeeded(guildId, this.context.targetChannelId, userId),
-        onLeaveNeeded: () => this.context.onLeaveNeeded(),
-      });
-    } catch (err) {
-      const logger = this.logger ?? discordEventQueueLog;
-      logger.error(danger("discord voice state handler failed: " + String(err)));
-    } finally {
-      logSlowDiscordListener({
-        logger: this.logger,
-        listener: this.constructor.name,
-        event: this.type,
-        durationMs: Date.now() - startedAt,
-      });
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Voice Server Update Listener — forward to @discordjs/voice adapter
-// ---------------------------------------------------------------------------
-
-export class DiscordVoiceServerListener extends VoiceServerUpdateListener {
-  constructor(
-    private voicePlugin: VoicePlugin,
-    private logger?: Logger,
-  ) {
-    super();
-  }
-
-  async handle(data: Parameters<VoiceServerUpdateListener["handle"]>[0], _client: Client) {
-    const guildId = data.guild_id;
-    if (!guildId) {
-      return;
-    }
-
-    const adapter = this.voicePlugin.adapters.get(guildId);
-    if (adapter) {
-      const voiceServerData = data as Parameters<typeof adapter.onVoiceServerUpdate>[0];
-      adapter.onVoiceServerUpdate(voiceServerData);
     }
   }
 }

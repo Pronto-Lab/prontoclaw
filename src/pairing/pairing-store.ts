@@ -2,8 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ChannelId, ChannelPairingAdapter } from "../channels/plugins/types.js";
 import { getPairingAdapter } from "../channels/plugins/pairing.js";
+import type { ChannelId, ChannelPairingAdapter } from "../channels/plugins/types.js";
 import { resolveOAuthDir, resolveStateDir } from "../config/paths.js";
 import { withFileLock as withPathLock } from "../infra/file-lock.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
@@ -286,6 +286,34 @@ async function readAllowFromStateForPathWithExists(
   return { entries, exists };
 }
 
+function readAllowFromStateForPathSync(channel: PairingChannel, filePath: string): string[] {
+  return readAllowFromStateForPathSyncWithExists(channel, filePath).entries;
+}
+
+function readAllowFromStateForPathSyncWithExists(
+  channel: PairingChannel,
+  filePath: string,
+): { entries: string[]; exists: boolean } {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === "ENOENT") {
+      return { entries: [], exists: false };
+    }
+    return { entries: [], exists: false };
+  }
+  try {
+    const parsed = JSON.parse(raw) as AllowFromStore;
+    const entries = normalizeAllowFromList(channel, parsed);
+    return { entries, exists: true };
+  } catch {
+    // Keep parity with async reads: malformed JSON still means the file exists.
+    return { entries: [], exists: true };
+  }
+}
+
 async function readAllowFromState(params: {
   channel: PairingChannel;
   entry: string | number;
@@ -388,6 +416,36 @@ export async function readChannelAllowFromStore(
   return dedupePreserveOrder([...scopedEntries, ...legacyEntries]);
 }
 
+export function readLegacyChannelAllowFromStoreSync(
+  channel: PairingChannel,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const filePath = resolveAllowFromPath(channel, env);
+  return readAllowFromStateForPathSync(channel, filePath);
+}
+
+export function readChannelAllowFromStoreSync(
+  channel: PairingChannel,
+  env: NodeJS.ProcessEnv = process.env,
+  accountId: string,
+): string[] {
+  const normalizedAccountId = accountId.trim().toLowerCase();
+  const resolvedAccountId = normalizedAccountId || DEFAULT_ACCOUNT_ID;
+
+  if (!shouldIncludeLegacyAllowFromEntries(resolvedAccountId)) {
+    return readNonDefaultAccountAllowFromSync({
+      channel,
+      env,
+      accountId: resolvedAccountId,
+    });
+  }
+  const scopedPath = resolveAllowFromPath(channel, env, resolvedAccountId);
+  const scopedEntries = readAllowFromStateForPathSync(channel, scopedPath);
+  const legacyPath = resolveAllowFromPath(channel, env);
+  const legacyEntries = readAllowFromStateForPathSync(channel, legacyPath);
+  return dedupePreserveOrder([...scopedEntries, ...legacyEntries]);
+}
+
 type AllowFromStoreEntryUpdateParams = {
   channel: PairingChannel;
   entry: string | number;
@@ -395,9 +453,14 @@ type AllowFromStoreEntryUpdateParams = {
   env?: NodeJS.ProcessEnv;
 };
 
+type ChannelAllowFromStoreEntryMutation = (
+  current: string[],
+  normalized: string,
+) => string[] | null;
+
 async function updateChannelAllowFromStore(
   params: {
-    apply: (current: string[], normalized: string) => string[] | null;
+    apply: ChannelAllowFromStoreEntryMutation;
   } & AllowFromStoreEntryUpdateParams,
 ): Promise<{ changed: boolean; allowFrom: string[] }> {
   return await updateAllowFromStoreEntry({
@@ -409,38 +472,36 @@ async function updateChannelAllowFromStore(
   });
 }
 
-export async function addChannelAllowFromStoreEntry(params: {
-  channel: PairingChannel;
-  entry: string | number;
-  accountId?: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{ changed: boolean; allowFrom: string[] }> {
+async function mutateChannelAllowFromStoreEntry(
+  params: AllowFromStoreEntryUpdateParams,
+  apply: ChannelAllowFromStoreEntryMutation,
+): Promise<{ changed: boolean; allowFrom: string[] }> {
   return await updateChannelAllowFromStore({
     ...params,
-    apply: (current, normalized) => {
-      if (current.includes(normalized)) {
-        return null;
-      }
-      return [...current, normalized];
-    },
+    apply,
   });
 }
 
-export async function removeChannelAllowFromStoreEntry(params: {
-  channel: PairingChannel;
-  entry: string | number;
-  accountId?: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{ changed: boolean; allowFrom: string[] }> {
-  return await updateChannelAllowFromStore({
-    ...params,
-    apply: (current, normalized) => {
-      const next = current.filter((entry) => entry !== normalized);
-      if (next.length === current.length) {
-        return null;
-      }
-      return next;
-    },
+export async function addChannelAllowFromStoreEntry(
+  params: AllowFromStoreEntryUpdateParams,
+): Promise<{ changed: boolean; allowFrom: string[] }> {
+  return await mutateChannelAllowFromStoreEntry(params, (current, normalized) => {
+    if (current.includes(normalized)) {
+      return null;
+    }
+    return [...current, normalized];
+  });
+}
+
+export async function removeChannelAllowFromStoreEntry(
+  params: AllowFromStoreEntryUpdateParams,
+): Promise<{ changed: boolean; allowFrom: string[] }> {
+  return await mutateChannelAllowFromStoreEntry(params, (current, normalized) => {
+    const next = current.filter((entry) => entry !== normalized);
+    if (next.length === current.length) {
+      return null;
+    }
+    return next;
   });
 }
 

@@ -207,13 +207,14 @@ describe("dispatchReplyFromConfig", () => {
   beforeEach(() => {
     acpManagerTesting.resetAcpSessionManagerForTests();
     resetInboundDedupe();
-    diagnosticMocks.logMessageQueued.mockReset();
-    diagnosticMocks.logMessageProcessed.mockReset();
-    diagnosticMocks.logSessionStateChange.mockReset();
-    hookMocks.runner.hasHooks.mockReset();
+    acpMocks.listAcpSessionEntries.mockReset().mockResolvedValue([]);
+    diagnosticMocks.logMessageQueued.mockClear();
+    diagnosticMocks.logMessageProcessed.mockClear();
+    diagnosticMocks.logSessionStateChange.mockClear();
+    hookMocks.runner.hasHooks.mockClear();
     hookMocks.runner.hasHooks.mockReturnValue(false);
-    hookMocks.runner.runMessageReceived.mockReset();
-    internalHookMocks.createInternalHookEvent.mockReset();
+    hookMocks.runner.runMessageReceived.mockClear();
+    internalHookMocks.createInternalHookEvent.mockClear();
     internalHookMocks.createInternalHookEvent.mockImplementation(createInternalHookEventPayload);
     internalHookMocks.triggerInternalHook.mockClear();
     acpMocks.readAcpSessionEntry.mockReset();
@@ -1505,5 +1506,48 @@ describe("dispatchReplyFromConfig", () => {
         reason: "duplicate",
       }),
     );
+  });
+
+  it("suppresses isReasoning payloads from final replies (WhatsApp channel)", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "whatsapp" });
+    const replyResolver = async () =>
+      [
+        { text: "Reasoning:\n_thinking..._", isReasoning: true },
+        { text: "The answer is 42" },
+      ] satisfies ReplyPayload[];
+    await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
+    const finalCalls = (dispatcher.sendFinalReply as ReturnType<typeof vi.fn>).mock.calls;
+    expect(finalCalls).toHaveLength(1);
+    expect(finalCalls[0][0]).toMatchObject({ text: "The answer is 42" });
+  });
+
+  it("suppresses isReasoning payloads from block replies (generic dispatch path)", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ Provider: "whatsapp" });
+    const blockReplySentTexts: string[] = [];
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions,
+    ): Promise<ReplyPayload> => {
+      // Simulate block reply with reasoning payload
+      await opts?.onBlockReply?.({ text: "Reasoning:\n_thinking..._", isReasoning: true });
+      await opts?.onBlockReply?.({ text: "The answer is 42" });
+      return { text: "The answer is 42" };
+    };
+    // Capture what actually gets dispatched as block replies
+    (dispatcher.sendBlockReply as ReturnType<typeof vi.fn>).mockImplementation(
+      (payload: ReplyPayload) => {
+        if (payload.text) {
+          blockReplySentTexts.push(payload.text);
+        }
+        return true;
+      },
+    );
+    await dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
+    expect(blockReplySentTexts).not.toContain("Reasoning:\n_thinking..._");
+    expect(blockReplySentTexts).toContain("The answer is 42");
   });
 });

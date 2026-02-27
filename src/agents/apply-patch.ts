@@ -1,10 +1,14 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@sinclair/typebox";
+import syncFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { Type } from "@sinclair/typebox";
+import { openBoundaryFile, type BoundaryFileOpenResult } from "../infra/boundary-file-read.js";
+import { writeFileWithinRoot } from "../infra/fs-safe.js";
+import { PATH_ALIAS_POLICIES, type PathAliasPolicy } from "../infra/path-alias-guards.js";
 import { applyUpdateHunk } from "./apply-patch-update.js";
 import { assertSandboxPath, resolveSandboxInputPath } from "./sandbox-paths.js";
+import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 
 const BEGIN_PATCH_MARKER = "*** Begin Patch";
 const END_PATCH_MARKER = "*** End Patch";
@@ -288,6 +292,15 @@ async function resolvePatchPath(
       filePath,
       cwd: options.cwd,
     });
+    if (options.workspaceOnly !== false) {
+      await assertSandboxPath({
+        filePath: resolved.hostPath,
+        cwd: options.cwd,
+        root: options.cwd,
+        allowFinalSymlinkForUnlink: aliasPolicy.allowFinalSymlinkForUnlink,
+        allowFinalHardlinkForUnlink: aliasPolicy.allowFinalHardlinkForUnlink,
+      });
+    }
     return {
       resolved: resolved.hostPath,
       display: resolved.relativePath || resolved.hostPath,

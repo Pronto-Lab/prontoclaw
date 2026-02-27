@@ -3,12 +3,6 @@ import { resolveEffectiveMessagesConfig, resolveHumanDelayConfig } from "../../a
 import { createMemoryGetTool, createMemorySearchTool } from "../../agents/tools/memory-tool.js";
 import { handleSlackAction } from "../../agents/tools/slack-actions.js";
 import {
-  createTaskCompleteTool,
-  createTaskStartTool,
-  createTaskStatusTool,
-  createTaskUpdateTool,
-} from "../../agents/tools/task-tool.js";
-import {
   chunkByNewline,
   chunkMarkdownText,
   chunkMarkdownTextWithMode,
@@ -92,8 +86,8 @@ import {
   pushMessageLine,
   pushMessagesLine,
   pushFlexMessage,
-  pushLocationMessage,
   pushTemplateMessage,
+  pushLocationMessage,
   pushTextMessageWithQuickReplies,
   sendMessageLine,
 } from "../../line/send.js";
@@ -288,10 +282,6 @@ function createRuntimeTools(): PluginRuntime["tools"] {
     createMemoryGetTool,
     createMemorySearchTool,
     registerMemoryCli,
-    createTaskStartTool,
-    createTaskUpdateTool,
-    createTaskCompleteTool,
-    createTaskStatusTool,
   };
 }
 

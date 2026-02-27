@@ -30,6 +30,28 @@ import {
   waitForActiveTasks,
 } from "./command-queue.js";
 
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function enqueueBlockedMainTask<T = void>(
+  onRelease?: () => Promise<T> | T,
+): {
+  task: Promise<T>;
+  release: () => void;
+} {
+  const deferred = createDeferred();
+  const task = enqueueCommand(async () => {
+    await deferred.promise;
+    return (await onRelease?.()) as T;
+  });
+  return { task, release: deferred.resolve };
+}
+
 describe("command queue", () => {
   beforeEach(() => {
     resetAllLanes();
@@ -116,18 +138,11 @@ describe("command queue", () => {
   });
 
   it("getActiveTaskCount returns count of currently executing tasks", async () => {
-    let resolve1!: () => void;
-    const blocker = new Promise<void>((r) => {
-      resolve1 = r;
-    });
-
-    const task = enqueueCommand(async () => {
-      await blocker;
-    });
+    const { task, release } = enqueueBlockedMainTask();
 
     expect(getActiveTaskCount()).toBe(1);
 
-    resolve1();
+    release();
     await task;
     expect(getActiveTaskCount()).toBe(0);
   });
@@ -138,21 +153,14 @@ describe("command queue", () => {
   });
 
   it("waitForActiveTasks waits for active tasks to finish", async () => {
-    let resolve1!: () => void;
-    const blocker = new Promise<void>((r) => {
-      resolve1 = r;
-    });
-
-    const task = enqueueCommand(async () => {
-      await blocker;
-    });
+    const { task, release } = enqueueBlockedMainTask();
 
     vi.useFakeTimers();
     try {
       const drainPromise = waitForActiveTasks(5000);
 
       await vi.advanceTimersByTimeAsync(50);
-      resolve1();
+      release();
       await vi.advanceTimersByTimeAsync(50);
 
       const { drained } = await drainPromise;
@@ -164,15 +172,18 @@ describe("command queue", () => {
     }
   });
 
-  it("waitForActiveTasks returns drained=false on timeout", async () => {
-    let resolve1!: () => void;
-    const blocker = new Promise<void>((r) => {
-      resolve1 = r;
-    });
+  it("waitForActiveTasks returns drained=false when timeout is zero and tasks are active", async () => {
+    const { task, release } = enqueueBlockedMainTask();
 
-    const task = enqueueCommand(async () => {
-      await blocker;
-    });
+    const { drained } = await waitForActiveTasks(0);
+    expect(drained).toBe(false);
+
+    release();
+    await task;
+  });
+
+  it("waitForActiveTasks returns drained=false on timeout", async () => {
+    const { task, release } = enqueueBlockedMainTask();
 
     vi.useFakeTimers();
     try {
@@ -181,7 +192,7 @@ describe("command queue", () => {
       const { drained } = await waitPromise;
       expect(drained).toBe(false);
 
-      resolve1();
+      release();
       await task;
     } finally {
       vi.useRealTimers();
@@ -264,16 +275,8 @@ describe("command queue", () => {
   });
 
   it("clearCommandLane rejects pending promises", async () => {
-    let resolve1!: () => void;
-    const blocker = new Promise<void>((r) => {
-      resolve1 = r;
-    });
-
     // First task blocks the lane.
-    const first = enqueueCommand(async () => {
-      await blocker;
-      return "first";
-    });
+    const { task: first, release } = enqueueBlockedMainTask(async () => "first");
 
     // Second task is queued behind the first.
     const second = enqueueCommand(async () => "second");
@@ -285,7 +288,7 @@ describe("command queue", () => {
     await expect(second).rejects.toBeInstanceOf(CommandLaneClearedError);
 
     // Let the active task finish normally.
-    resolve1();
+    release();
     await expect(first).resolves.toBe("first");
   });
 

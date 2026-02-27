@@ -1,6 +1,6 @@
-import type { ConfigFileSnapshot } from "./types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { isSensitiveConfigPath, type ConfigUiHints } from "./schema.hints.js";
+import type { ConfigFileSnapshot } from "./types.openclaw.js";
 
 const log = createSubsystemLogger("config/redaction");
 const ENV_VAR_PLACEHOLDER_PATTERN = /^\$\{[^}]*\}$/;
@@ -17,13 +17,29 @@ function isEnvVarPlaceholder(value: string): boolean {
   return ENV_VAR_PLACEHOLDER_PATTERN.test(value.trim());
 }
 
-function isExtensionPath(path: string): boolean {
-  return (
-    path === "plugins" ||
-    path.startsWith("plugins.") ||
-    path === "channels" ||
-    path.startsWith("channels.")
-  );
+function isWholeObjectSensitivePath(path: string): boolean {
+  const lowered = path.toLowerCase();
+  return lowered.endsWith("serviceaccount") || lowered.endsWith("serviceaccountref");
+}
+
+function collectSensitiveStrings(value: unknown, values: string[]): void {
+  if (typeof value === "string") {
+    if (!isEnvVarPlaceholder(value)) {
+      values.push(value);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectSensitiveStrings(item, values);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      collectSensitiveStrings(item, values);
+    }
+  }
 }
 
 function isExplicitlyNonSensitivePath(hints: ConfigUiHints | undefined, paths: string[]): boolean {
@@ -130,9 +146,8 @@ function redactObjectWithLookup(
   if (Array.isArray(obj)) {
     const path = `${prefix}[]`;
     if (!lookup.has(path)) {
-      if (!isExtensionPath(prefix)) {
-        return obj;
-      }
+      // Keep behavior symmetric with object fallback: if hints miss the path,
+      // still run pattern-based guessing for non-extension arrays.
       return redactObjectGuessing(obj, prefix, values, hints);
     }
     return obj.map((item) => {
@@ -176,7 +191,10 @@ function redactObjectWithLookup(
           break;
         }
       }
-      if (!matched && isExtensionPath(path)) {
+      if (!matched) {
+        // Fall back to pattern-based guessing for paths not covered by schema
+        // hints. This catches dynamic keys inside catchall objects (for example
+        // env.GROQ_API_KEY) and extension/plugin config alike.
         const markedNonSensitive = isExplicitlyNonSensitivePath(hints, [path, wildcardPath]);
         if (
           typeof value === "string" &&
@@ -526,9 +544,8 @@ function restoreRedactedValuesWithLookup(
     // sensitive string array in the config...
     const { incoming: incomingArray, path } = arrayContext;
     if (!lookup.has(path)) {
-      if (!isExtensionPath(prefix)) {
-        return incomingArray;
-      }
+      // Keep behavior symmetric with object fallback: if hints miss the path,
+      // still run pattern-based guessing for non-extension arrays.
       return restoreRedactedValuesGuessing(incomingArray, original, prefix, hints);
     }
     return mapRedactedArray({
@@ -564,7 +581,7 @@ function restoreRedactedValuesWithLookup(
         break;
       }
     }
-    if (!matched && isExtensionPath(path)) {
+    if (!matched) {
       const markedNonSensitive = isExplicitlyNonSensitivePath(hints, [path, wildcardPath]);
       if (!markedNonSensitive && isSensitivePath(path) && value === REDACTED_SENTINEL) {
         result[key] = restoreOriginalValueOrThrow({ key, path, original: orig });

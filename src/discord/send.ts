@@ -44,8 +44,8 @@ export {
   sendVoiceMessageDiscord,
 } from "./send.outbound.js";
 export { sendDiscordComponentMessage } from "./send.components.js";
-export { sendDiscordWebhook } from "./send.webhook.js";
-export type { DiscordWebhookSendOpts } from "./send.webhook.js";
+export { sendDiscordWebhook, sendWebhookMessageDiscord } from "./send.webhook.js";
+export type { DiscordWebhookSendOpts, DiscordWebhookMessageOpts } from "./send.webhook.js";
 export {
   fetchChannelPermissionsDiscord,
   hasAllGuildPermissionsDiscord,

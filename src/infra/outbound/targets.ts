@@ -195,10 +195,21 @@ export function resolveOutboundTarget(params: {
     };
   }
 
-  const allowFrom =
+  const allowFromRaw =
     params.allowFrom ??
     (params.cfg && plugin.config.resolveAllowFrom
       ? plugin.config.resolveAllowFrom({
+          cfg: params.cfg,
+          accountId: params.accountId ?? undefined,
+        })
+      : undefined);
+  const allowFrom = allowFromRaw?.map((entry) => String(entry));
+
+  // Fall back to per-channel defaultTo when no explicit target is provided.
+  const effectiveTo =
+    params.to?.trim() ||
+    (params.cfg && plugin.config.resolveDefaultTo
+      ? plugin.config.resolveDefaultTo({
           cfg: params.cfg,
           accountId: params.accountId ?? undefined,
         })
@@ -208,16 +219,15 @@ export function resolveOutboundTarget(params: {
   if (resolveTarget) {
     return resolveTarget({
       cfg: params.cfg,
-      to: params.to,
+      to: effectiveTo,
       allowFrom,
       accountId: params.accountId ?? undefined,
       mode: params.mode ?? "explicit",
     });
   }
 
-  const trimmed = params.to?.trim();
-  if (trimmed) {
-    return { ok: true, to: trimmed };
+  if (effectiveTo) {
+    return { ok: true, to: effectiveTo };
   }
   const hint = plugin.messaging?.targetResolver?.hint;
   return {
@@ -517,12 +527,16 @@ export function resolveHeartbeatSenderContext(params: {
   const accountId =
     params.delivery.accountId ??
     (provider === params.delivery.lastChannel ? params.delivery.lastAccountId : undefined);
-  const allowFrom = provider
-    ? (getChannelPlugin(provider)?.config.resolveAllowFrom?.({
+  const allowFromRaw = provider
+    ? (resolveOutboundChannelPlugin({
+        channel: provider,
+        cfg: params.cfg,
+      })?.config.resolveAllowFrom?.({
         cfg: params.cfg,
         accountId,
       }) ?? [])
     : [];
+  const allowFrom = allowFromRaw.map((entry) => String(entry));
 
   const sender = resolveHeartbeatSenderId({
     allowFrom,

@@ -1,9 +1,13 @@
 import type { OpenClawConfig } from "../config/config.js";
-import type { FailoverReason } from "./pi-embedded-helpers.js";
+import {
+  resolveAgentModelFallbackValues,
+  resolveAgentModelPrimaryValue,
+} from "../config/model-input.js";
 import {
   ensureAuthProfileStore,
   getSoonestCooldownExpiry,
   isProfileInCooldown,
+  resolveProfilesUnavailableReason,
   resolveAuthProfileOrder,
 } from "./auth-profiles.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
@@ -21,6 +25,7 @@ import {
   resolveConfiguredModelRef,
   resolveModelRefFromString,
 } from "./model-selection.js";
+import type { FailoverReason } from "./pi-embedded-helpers.js";
 import { isLikelyContextOverflowError } from "./pi-embedded-helpers.js";
 
 type ModelCandidate = {
@@ -104,6 +109,10 @@ type ModelFallbackRunResult<T> = {
   attempts: FallbackAttempt[];
 };
 
+function sameModelCandidate(a: ModelCandidate, b: ModelCandidate): boolean {
+  return a.provider === b.provider && a.model === b.model;
+}
+
 function throwFallbackFailureSummary(params: {
   attempts: FallbackAttempt[];
   candidates: ModelCandidate[];
@@ -159,26 +168,13 @@ function resolveImageFallbackCandidates(params: {
   if (params.modelOverride?.trim()) {
     addRaw(params.modelOverride);
   } else {
-    const imageModel = params.cfg?.agents?.defaults?.imageModel as
-      | { primary?: string }
-      | string
-      | undefined;
-    const primary = typeof imageModel === "string" ? imageModel.trim() : imageModel?.primary;
+    const primary = resolveAgentModelPrimaryValue(params.cfg?.agents?.defaults?.imageModel);
     if (primary?.trim()) {
       addRaw(primary);
     }
   }
 
-  const imageFallbacks = (() => {
-    const imageModel = params.cfg?.agents?.defaults?.imageModel as
-      | { fallbacks?: string[] }
-      | string
-      | undefined;
-    if (imageModel && typeof imageModel === "object") {
-      return imageModel.fallbacks ?? [];
-    }
-    return [];
-  })();
+  const imageFallbacks = resolveAgentModelFallbackValues(params.cfg?.agents?.defaults?.imageModel);
 
   for (const raw of imageFallbacks) {
     // Explicitly configured image fallbacks should remain reachable even when a
@@ -208,6 +204,7 @@ function resolveFallbackCandidates(params: {
   const providerRaw = String(params.provider ?? "").trim() || defaultProvider;
   const modelRaw = String(params.model ?? "").trim() || defaultModel;
   const normalizedPrimary = normalizeModelRef(providerRaw, modelRaw);
+  const configuredPrimary = normalizeModelRef(defaultProvider, defaultModel);
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg ?? {},
     defaultProvider,
@@ -224,14 +221,24 @@ function resolveFallbackCandidates(params: {
     if (params.fallbacksOverride !== undefined) {
       return params.fallbacksOverride;
     }
-    const model = params.cfg?.agents?.defaults?.model as
-      | { fallbacks?: string[] }
-      | string
-      | undefined;
-    if (model && typeof model === "object") {
-      return model.fallbacks ?? [];
+    const configuredFallbacks = resolveAgentModelFallbackValues(
+      params.cfg?.agents?.defaults?.model,
+    );
+    // When user runs a different provider than config, only use configured fallbacks
+    // if the current model is already in that chain (e.g. session on first fallback).
+    if (normalizedPrimary.provider !== configuredPrimary.provider) {
+      const isConfiguredFallback = configuredFallbacks.some((raw) => {
+        const resolved = resolveModelRefFromString({
+          raw: String(raw ?? ""),
+          defaultProvider,
+          aliasIndex,
+        });
+        return resolved ? sameModelCandidate(resolved.ref, normalizedPrimary) : false;
+      });
+      return isConfiguredFallback ? configuredFallbacks : [];
     }
-    return [];
+    // Same provider: always use full fallback chain (model version differences within provider).
+    return configuredFallbacks;
   })();
 
   for (const raw of modelFallbacks) {
@@ -291,7 +298,7 @@ function shouldProbePrimaryDuringCooldown(params: {
   return params.now >= soonest - PROBE_MARGIN_MS;
 }
 
-/** @internal - exposed for unit tests only */
+/** @internal – exposed for unit tests only */
 export const _probeThrottleInternals = {
   lastProbeAttempt,
   MIN_PROBE_INTERVAL_MS,
@@ -299,36 +306,74 @@ export const _probeThrottleInternals = {
   resolveProbeThrottleKey,
 } as const;
 
-/**
- * Module-level flag set by runWithModelFallback to signal cross-family fallback.
- * The embedded runner checks this to skip cooldown for the current attempt.
- */
-export let _crossFamilyFallbackActive = false;
+type CooldownDecision =
+  | {
+      type: "skip";
+      reason: FailoverReason;
+      error: string;
+    }
+  | {
+      type: "attempt";
+      reason: FailoverReason;
+      markProbe: boolean;
+    };
 
-/**
- * Extract a model "family" prefix from a model identifier.
- * Models in the same family share quota (e.g., "claude-opus-4-6-thinking" → "claude",
- * "gemini-3-flash" → "gemini"). Models in different families may have independent
- * quotas even under the same provider, so a cooldown caused by one family should
- * not block attempts for another family.
- */
-function extractModelFamily(model: string): string {
-  const normalized = model.toLowerCase();
-  if (normalized.startsWith("claude")) {
-    return "claude";
+function resolveCooldownDecision(params: {
+  candidate: ModelCandidate;
+  isPrimary: boolean;
+  requestedModel: boolean;
+  hasFallbackCandidates: boolean;
+  now: number;
+  probeThrottleKey: string;
+  authStore: ReturnType<typeof ensureAuthProfileStore>;
+  profileIds: string[];
+}): CooldownDecision {
+  const shouldProbe = shouldProbePrimaryDuringCooldown({
+    isPrimary: params.isPrimary,
+    hasFallbackCandidates: params.hasFallbackCandidates,
+    now: params.now,
+    throttleKey: params.probeThrottleKey,
+    authStore: params.authStore,
+    profileIds: params.profileIds,
+  });
+
+  const inferredReason =
+    resolveProfilesUnavailableReason({
+      store: params.authStore,
+      profileIds: params.profileIds,
+      now: params.now,
+    }) ?? "rate_limit";
+  const isPersistentIssue =
+    inferredReason === "auth" ||
+    inferredReason === "auth_permanent" ||
+    inferredReason === "billing";
+  if (isPersistentIssue) {
+    return {
+      type: "skip",
+      reason: inferredReason,
+      error: `Provider ${params.candidate.provider} has ${inferredReason} issue (skipping all models)`,
+    };
   }
-  if (normalized.startsWith("gemini")) {
-    return "gemini";
+
+  // For primary: try when requested model or when probe allows.
+  // For same-provider fallbacks: only relax cooldown on rate_limit, which
+  // is commonly model-scoped and can recover on a sibling model.
+  const shouldAttemptDespiteCooldown =
+    (params.isPrimary && (!params.requestedModel || shouldProbe)) ||
+    (!params.isPrimary && inferredReason === "rate_limit");
+  if (!shouldAttemptDespiteCooldown) {
+    return {
+      type: "skip",
+      reason: inferredReason,
+      error: `Provider ${params.candidate.provider} is in cooldown (all profiles unavailable)`,
+    };
   }
-  if (normalized.startsWith("gpt")) {
-    return "gpt";
-  }
-  if (normalized.startsWith("o1") || normalized.startsWith("o3") || normalized.startsWith("o4")) {
-    return "openai-reasoning";
-  }
-  // Fallback: use the first segment before any dash/digit boundary as family
-  const match = normalized.match(/^([a-z]+)/);
-  return match ? match[1] : normalized;
+
+  return {
+    type: "attempt",
+    reason: inferredReason,
+    markProbe: params.isPrimary && shouldProbe,
+  };
 }
 
 export async function runWithModelFallback<T>(params: {
@@ -367,53 +412,39 @@ export async function runWithModelFallback<T>(params: {
 
       if (profileIds.length > 0 && !isAnyProfileAvailable) {
         // All profiles for this provider are in cooldown.
-        // However, cooldown may have been caused by a specific model family
-        // (e.g., Claude 429). If this candidate is a *different* model family,
-        // the quota might be independent - allow the attempt instead of skipping.
-        const candidateFamily = extractModelFamily(candidate.model);
-        const failedFamilies = attempts
-          .filter((a) => a.provider === candidate.provider && a.reason === "rate_limit")
-          .map((a) => extractModelFamily(a.model));
-        const isSameFamilyAsFailed =
-          failedFamilies.length > 0 && failedFamilies.includes(candidateFamily);
+        const isPrimary = i === 0;
+        const requestedModel =
+          params.provider === candidate.provider && params.model === candidate.model;
+        const now = Date.now();
+        const probeThrottleKey = resolveProbeThrottleKey(candidate.provider, params.agentDir);
+        const decision = resolveCooldownDecision({
+          candidate,
+          isPrimary,
+          requestedModel,
+          hasFallbackCandidates,
+          now,
+          probeThrottleKey,
+          authStore,
+          profileIds,
+        });
 
-        if (isSameFamilyAsFailed || failedFamilies.length === 0) {
-          // Same model family or no prior rate-limit failures.
-          // Probe primary model if cooldown expiry is close.
-          const now = Date.now();
-          const probeThrottleKey = resolveProbeThrottleKey(candidate.provider, params.agentDir);
-          const shouldProbe = shouldProbePrimaryDuringCooldown({
-            isPrimary: i === 0,
-            hasFallbackCandidates,
-            now,
-            throttleKey: probeThrottleKey,
-            authStore,
-            profileIds,
+        if (decision.type === "skip") {
+          attempts.push({
+            provider: candidate.provider,
+            model: candidate.model,
+            error: decision.error,
+            reason: decision.reason,
           });
-          if (!shouldProbe) {
-            // Skip without attempting
-            attempts.push({
-              provider: candidate.provider,
-              model: candidate.model,
-              error: `Provider ${candidate.provider} is in cooldown (all profiles unavailable)`,
-              reason: "rate_limit",
-            });
-            continue;
-          }
-          // Primary model probe: attempt despite cooldown to detect recovery.
+          continue;
+        }
+
+        if (decision.markProbe) {
           lastProbeAttempt.set(probeThrottleKey, now);
         }
-        // Different model family - cooldown likely does not apply; attempt anyway.
       }
     }
-    const isCrossFamilyAttempt =
-      i > 0 &&
-      authStore &&
-      extractModelFamily(candidate.model) !== extractModelFamily(candidates[0].model);
+
     try {
-      if (isCrossFamilyAttempt) {
-        _crossFamilyFallbackActive = true;
-      }
       const result = await params.run(candidate.provider, candidate.model);
       return {
         result,
@@ -464,8 +495,6 @@ export async function runWithModelFallback<T>(params: {
         attempt: i + 1,
         total: candidates.length,
       });
-    } finally {
-      _crossFamilyFallbackActive = false;
     }
   }
 

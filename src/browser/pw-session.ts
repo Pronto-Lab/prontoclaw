@@ -12,7 +12,11 @@ import type { SsrFPolicy } from "../infra/net/ssrf.js";
 import { appendCdpPath, fetchJson, getHeadersWithAuth, withCdpSocket } from "./cdp.helpers.js";
 import { normalizeCdpWsUrl } from "./cdp.js";
 import { getChromeWebSocketUrl } from "./chrome.js";
-import { assertBrowserNavigationAllowed, withBrowserNavigationPolicy } from "./navigation-guard.js";
+import {
+  assertBrowserNavigationAllowed,
+  assertBrowserNavigationResultAllowed,
+  withBrowserNavigationPolicy,
+} from "./navigation-guard.js";
 
 export type BrowserConsoleMessage = {
   type: string;
@@ -93,26 +97,10 @@ const contextStates = new WeakMap<BrowserContext, ContextState>();
 const observedContexts = new WeakSet<BrowserContext>();
 const observedPages = new WeakSet<Page>();
 
-// Session-scoped role ref caches to prevent cross-agent ref leaking in multi-agent setups.
-// Each session key gets its own Map so one agent's snapshot refs never collide with another's.
-const sessionRoleRefCaches = new Map<string, Map<string, RoleRefsCacheEntry>>();
+// Best-effort cache to make role refs stable even if Playwright returns a different Page object
+// for the same CDP target across requests.
+const roleRefsByTarget = new Map<string, RoleRefsCacheEntry>();
 const MAX_ROLE_REFS_CACHE = 50;
-const DEFAULT_SESSION_KEY = "__global__";
-
-function getSessionRoleRefCache(sessionKey?: string): Map<string, RoleRefsCacheEntry> {
-  const key = sessionKey || DEFAULT_SESSION_KEY;
-  let cache = sessionRoleRefCaches.get(key);
-  if (!cache) {
-    cache = new Map<string, RoleRefsCacheEntry>();
-    sessionRoleRefCaches.set(key, cache);
-  }
-  return cache;
-}
-
-/** Clear role ref cache for a specific session. Call on session end to free memory. */
-export function clearSessionRoleRefs(sessionKey: string): void {
-  sessionRoleRefCaches.delete(sessionKey);
-}
 
 const MAX_CONSOLE_MESSAGES = 500;
 const MAX_PAGE_ERRORS = 200;
@@ -145,24 +133,22 @@ export function rememberRoleRefsForTarget(opts: {
   refs: RoleRefs;
   frameSelector?: string;
   mode?: NonNullable<PageState["roleRefsMode"]>;
-  sessionKey?: string;
 }): void {
   const targetId = opts.targetId.trim();
   if (!targetId) {
     return;
   }
-  const cache = getSessionRoleRefCache(opts.sessionKey);
-  cache.set(roleRefsKey(opts.cdpUrl, targetId), {
+  roleRefsByTarget.set(roleRefsKey(opts.cdpUrl, targetId), {
     refs: opts.refs,
     ...(opts.frameSelector ? { frameSelector: opts.frameSelector } : {}),
     ...(opts.mode ? { mode: opts.mode } : {}),
   });
-  while (cache.size > MAX_ROLE_REFS_CACHE) {
-    const first = cache.keys().next();
+  while (roleRefsByTarget.size > MAX_ROLE_REFS_CACHE) {
+    const first = roleRefsByTarget.keys().next();
     if (first.done) {
       break;
     }
-    cache.delete(first.value);
+    roleRefsByTarget.delete(first.value);
   }
 }
 
@@ -173,7 +159,6 @@ export function storeRoleRefsForTarget(opts: {
   refs: RoleRefs;
   frameSelector?: string;
   mode: NonNullable<PageState["roleRefsMode"]>;
-  sessionKey?: string;
 }): void {
   const state = ensurePageState(opts.page);
   state.roleRefs = opts.refs;
@@ -188,7 +173,6 @@ export function storeRoleRefsForTarget(opts: {
     refs: opts.refs,
     frameSelector: opts.frameSelector,
     mode: opts.mode,
-    sessionKey: opts.sessionKey,
   });
 }
 
@@ -196,14 +180,12 @@ export function restoreRoleRefsForTarget(opts: {
   cdpUrl: string;
   targetId?: string;
   page: Page;
-  sessionKey?: string;
 }): void {
   const targetId = opts.targetId?.trim() || "";
   if (!targetId) {
     return;
   }
-  const cache = getSessionRoleRefCache(opts.sessionKey);
-  const cached = cache.get(roleRefsKey(opts.cdpUrl, targetId));
+  const cached = roleRefsByTarget.get(roleRefsKey(opts.cdpUrl, targetId));
   if (!cached) {
     return;
   }
@@ -744,7 +726,6 @@ export async function createPageViaPlaywright(opts: {
   cdpUrl: string;
   url: string;
   ssrfPolicy?: SsrFPolicy;
-  navigationChecked?: boolean;
 }): Promise<{
   targetId: string;
   title: string;
@@ -761,14 +742,17 @@ export async function createPageViaPlaywright(opts: {
   // Navigate to the URL
   const targetUrl = opts.url.trim() || "about:blank";
   if (targetUrl !== "about:blank") {
-    if (!opts.navigationChecked) {
-      await assertBrowserNavigationAllowed({
-        url: targetUrl,
-        ...withBrowserNavigationPolicy(opts.ssrfPolicy),
-      });
-    }
+    const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy);
+    await assertBrowserNavigationAllowed({
+      url: targetUrl,
+      ...navigationPolicy,
+    });
     await page.goto(targetUrl, { timeout: 30_000 }).catch(() => {
       // Navigation might fail for some URLs, but page is still created
+    });
+    await assertBrowserNavigationResultAllowed({
+      url: page.url(),
+      ...navigationPolicy,
     });
   }
 

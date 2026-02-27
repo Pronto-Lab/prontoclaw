@@ -1,9 +1,14 @@
+import { resolveSystemRunApprovalRuntimeContext } from "../infra/system-run-approval-context.js";
+import { resolveSystemRunCommand } from "../infra/system-run-command.js";
+import type { ExecApprovalRecord } from "./exec-approval-manager.js";
 import {
-  formatExecCommand,
-  validateSystemRunCommandConsistency,
-} from "../infra/system-run-command.js";
-import type { ExecApprovalManager, ExecApprovalRecord } from "./exec-approval-manager.js";
-import type { GatewayClient } from "./server-methods/types.js";
+  systemRunApprovalGuardError,
+  systemRunApprovalRequired,
+} from "./node-invoke-system-run-approval-errors.js";
+import {
+  evaluateSystemRunApprovalMatch,
+  toSystemRunApprovalMismatchError,
+} from "./node-invoke-system-run-approval-match.js";
 
 type SystemRunParamsLike = {
   command?: unknown;
@@ -17,6 +22,19 @@ type SystemRunParamsLike = {
   approved?: unknown;
   approvalDecision?: unknown;
   runId?: unknown;
+};
+
+type ApprovalLookup = {
+  getSnapshot: (recordId: string) => ExecApprovalRecord | null;
+  consumeAllowOnce?: (recordId: string) => boolean;
+};
+
+type ApprovalClient = {
+  connId?: string | null;
+  connect?: {
+    scopes?: unknown;
+    device?: { id?: string | null } | null;
+  } | null;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -39,54 +57,9 @@ function normalizeApprovalDecision(value: unknown): "allow-once" | "allow-always
   return s === "allow-once" || s === "allow-always" ? s : null;
 }
 
-function clientHasApprovals(client: GatewayClient | null): boolean {
+function clientHasApprovals(client: ApprovalClient | null): boolean {
   const scopes = Array.isArray(client?.connect?.scopes) ? client?.connect?.scopes : [];
   return scopes.includes("operator.admin") || scopes.includes("operator.approvals");
-}
-
-function getCmdText(params: SystemRunParamsLike): string {
-  const raw = normalizeString(params.rawCommand);
-  if (raw) {
-    return raw;
-  }
-  if (Array.isArray(params.command)) {
-    const parts = params.command.map((v) => String(v));
-    if (parts.length > 0) {
-      return formatExecCommand(parts);
-    }
-  }
-  return "";
-}
-
-function approvalMatchesRequest(params: SystemRunParamsLike, record: ExecApprovalRecord): boolean {
-  if (record.request.host !== "node") {
-    return false;
-  }
-
-  const cmdText = getCmdText(params);
-  if (!cmdText || record.request.command !== cmdText) {
-    return false;
-  }
-
-  const reqCwd = record.request.cwd ?? null;
-  const runCwd = normalizeString(params.cwd) ?? null;
-  if (reqCwd !== runCwd) {
-    return false;
-  }
-
-  const reqAgentId = record.request.agentId ?? null;
-  const runAgentId = normalizeString(params.agentId) ?? null;
-  if (reqAgentId !== runAgentId) {
-    return false;
-  }
-
-  const reqSessionKey = record.request.sessionKey ?? null;
-  const runSessionKey = normalizeString(params.sessionKey) ?? null;
-  if (reqSessionKey !== runSessionKey) {
-    return false;
-  }
-
-  return true;
 }
 
 function pickSystemRunParams(raw: Record<string, unknown>): Record<string, unknown> {
@@ -117,9 +90,10 @@ function pickSystemRunParams(raw: Record<string, unknown>): Record<string, unkno
  * bypassing node-host approvals by injecting control fields into `node.invoke`.
  */
 export function sanitizeSystemRunParamsForForwarding(opts: {
+  nodeId?: string | null;
   rawParams: unknown;
-  client: GatewayClient | null;
-  execApprovalManager?: ExecApprovalManager;
+  client: ApprovalClient | null;
+  execApprovalManager?: ApprovalLookup;
   nowMs?: number;
 }):
   | { ok: true; params: unknown }
@@ -130,26 +104,6 @@ export function sanitizeSystemRunParamsForForwarding(opts: {
   }
 
   const p = obj as SystemRunParamsLike;
-  const argv = Array.isArray(p.command) ? p.command.map((v) => String(v)) : [];
-  const raw = normalizeString(p.rawCommand);
-  if (raw) {
-    if (!Array.isArray(p.command) || argv.length === 0) {
-      return {
-        ok: false,
-        message: "rawCommand requires params.command",
-        details: { code: "MISSING_COMMAND" },
-      };
-    }
-    const validation = validateSystemRunCommandConsistency({ argv, rawCommand: raw });
-    if (!validation.ok) {
-      return {
-        ok: false,
-        message: validation.message,
-        details: validation.details ?? { code: "RAW_COMMAND_MISMATCH" },
-      };
-    }
-  }
-
   const approved = p.approved === true;
   const requestedDecision = normalizeApprovalDecision(p.approvalDecision);
   const wantsApprovalOverride = approved || requestedDecision !== null;
@@ -207,6 +161,30 @@ export function sanitizeSystemRunParamsForForwarding(opts: {
     });
   }
 
+  const targetNodeId = normalizeString(opts.nodeId);
+  if (!targetNodeId) {
+    return systemRunApprovalGuardError({
+      code: "MISSING_NODE_ID",
+      message: "node.invoke requires nodeId",
+      details: { runId },
+    });
+  }
+  const approvalNodeId = normalizeString(snapshot.request.nodeId);
+  if (!approvalNodeId) {
+    return systemRunApprovalGuardError({
+      code: "APPROVAL_NODE_BINDING_MISSING",
+      message: "approval id missing node binding",
+      details: { runId },
+    });
+  }
+  if (approvalNodeId !== targetNodeId) {
+    return systemRunApprovalGuardError({
+      code: "APPROVAL_NODE_MISMATCH",
+      message: "approval id not valid for this node",
+      details: { runId },
+    });
+  }
+
   // Prefer binding by device identity (stable across reconnects / per-call clients like callGateway()).
   // Fallback to connId only when device identity is not available.
   const snapshotDeviceId = snapshot.requestedByDeviceId ?? null;
@@ -230,7 +208,15 @@ export function sanitizeSystemRunParamsForForwarding(opts: {
     });
   }
 
-  if (!approvalMatchesRequest(p, snapshot)) {
+  const runtimeContext = resolveSystemRunApprovalRuntimeContext({
+    planV2: snapshot.request.systemRunPlanV2 ?? null,
+    command: p.command,
+    rawCommand: p.rawCommand,
+    cwd: p.cwd,
+    agentId: p.agentId,
+    sessionKey: p.sessionKey,
+  });
+  if (!runtimeContext.ok) {
     return {
       ok: false,
       message: runtimeContext.message,

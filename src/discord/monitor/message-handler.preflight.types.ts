@@ -53,6 +53,9 @@ export type DiscordMessagePreflightContext = {
   wasMentioned: boolean;
 
   route: ReturnType<typeof resolveAgentRoute>;
+  threadBinding?: SessionBindingRecord;
+  boundSessionKey?: string;
+  boundAgentId?: string;
 
   guildInfo: DiscordGuildEntryResolved | null;
   guildSlug: string;
@@ -81,6 +84,8 @@ export type DiscordMessagePreflightContext = {
   canDetectMention: boolean;
 
   historyEntry?: HistoryEntry;
+  threadBindings: DiscordThreadBindingLookup;
+  discordRestFetch?: typeof fetch;
 };
 
 export type DiscordMessagePreflightParams = {
@@ -102,6 +107,8 @@ export type DiscordMessagePreflightParams = {
   guildEntries?: Record<string, DiscordGuildEntryResolved>;
   ackReactionScope: DiscordMessagePreflightContext["ackReactionScope"];
   groupPolicy: DiscordMessagePreflightContext["groupPolicy"];
+  threadBindings: DiscordThreadBindingLookup;
+  discordRestFetch?: typeof fetch;
   data: DiscordMessageEvent;
   client: Client;
 };

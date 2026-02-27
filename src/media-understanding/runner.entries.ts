@@ -1,24 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { MsgContext } from "../auto-reply/templating.js";
-import type { OpenClawConfig } from "../config/config.js";
-import type {
-  MediaUnderstandingConfig,
-  MediaUnderstandingModelConfig,
-} from "../config/types.tools.js";
-import type {
-  MediaUnderstandingCapability,
-  MediaUnderstandingDecision,
-  MediaUnderstandingModelDecision,
-  MediaUnderstandingOutput,
-  MediaUnderstandingProvider,
-} from "./types.js";
 import {
   collectProviderApiKeysForExecution,
   executeWithApiKeyRotation,
 } from "../agents/api-key-rotation.js";
 import { requireApiKey, resolveApiKeyForProvider } from "../agents/model-auth.js";
+import type { MsgContext } from "../auto-reply/templating.js";
 import { applyTemplate } from "../auto-reply/templating.js";
+import type { OpenClawConfig } from "../config/config.js";
+import type {
+  MediaUnderstandingConfig,
+  MediaUnderstandingModelConfig,
+} from "../config/types.tools.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { runExec } from "../process/exec.js";
@@ -34,6 +27,13 @@ import { extractGeminiResponse } from "./output-extract.js";
 import { describeImageWithModel } from "./providers/image.js";
 import { getMediaUnderstandingProvider, normalizeMediaProviderId } from "./providers/index.js";
 import { resolveMaxBytes, resolveMaxChars, resolvePrompt, resolveTimeoutMs } from "./resolve.js";
+import type {
+  MediaUnderstandingCapability,
+  MediaUnderstandingDecision,
+  MediaUnderstandingModelDecision,
+  MediaUnderstandingOutput,
+  MediaUnderstandingProvider,
+} from "./types.js";
 import { estimateBase64Size, resolveVideoMaxBase64Bytes } from "./video.js";
 
 export type ProviderRegistry = Map<string, MediaUnderstandingProvider>;
@@ -320,6 +320,29 @@ async function resolveProviderExecutionAuth(params: {
   };
 }
 
+async function resolveProviderExecutionContext(params: {
+  providerId: string;
+  cfg: OpenClawConfig;
+  entry: MediaUnderstandingModelConfig;
+  config?: MediaUnderstandingConfig;
+  agentDir?: string;
+}) {
+  const { apiKeys, providerConfig } = await resolveProviderExecutionAuth({
+    providerId: params.providerId,
+    cfg: params.cfg,
+    entry: params.entry,
+    agentDir: params.agentDir,
+  });
+  const baseUrl = params.entry.baseUrl ?? params.config?.baseUrl ?? providerConfig?.baseUrl;
+  const mergedHeaders = {
+    ...providerConfig?.headers,
+    ...params.config?.headers,
+    ...params.entry.headers,
+  };
+  const headers = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
+  return { apiKeys, baseUrl, headers };
+}
+
 export function formatDecisionSummary(decision: MediaUnderstandingDecision): string {
   const total = decision.attachments.length;
   const success = decision.attachments.filter(
@@ -428,19 +451,13 @@ export async function runProviderEntry(params: {
       maxBytes,
       timeoutMs,
     });
-    const { apiKeys, providerConfig } = await resolveProviderExecutionAuth({
+    const { apiKeys, baseUrl, headers } = await resolveProviderExecutionContext({
       providerId,
       cfg,
       entry,
+      config: params.config,
       agentDir: params.agentDir,
     });
-    const baseUrl = entry.baseUrl ?? params.config?.baseUrl ?? providerConfig?.baseUrl;
-    const mergedHeaders = {
-      ...providerConfig?.headers,
-      ...params.config?.headers,
-      ...entry.headers,
-    };
-    const headers = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
     const providerQuery = resolveProviderQuery({
       providerId,
       config: params.config,
@@ -491,10 +508,11 @@ export async function runProviderEntry(params: {
       `Video attachment ${params.attachmentIndex + 1} base64 payload ${estimatedBase64Bytes} exceeds ${maxBase64Bytes}`,
     );
   }
-  const { apiKeys, providerConfig } = await resolveProviderExecutionAuth({
+  const { apiKeys, baseUrl, headers } = await resolveProviderExecutionContext({
     providerId,
     cfg,
     entry,
+    config: params.config,
     agentDir: params.agentDir,
   });
   const result = await executeWithApiKeyRotation({
@@ -506,8 +524,8 @@ export async function runProviderEntry(params: {
         fileName: media.fileName,
         mime: media.mime,
         apiKey,
-        baseUrl: providerConfig?.baseUrl,
-        headers: providerConfig?.headers,
+        baseUrl,
+        headers,
         model: entry.model,
         prompt,
         timeoutMs,

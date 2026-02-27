@@ -121,8 +121,12 @@ describe("createDiscordGatewayPlugin", () => {
   }
 
   beforeEach(() => {
-    proxyAgentSpy.mockReset();
-    webSocketSpy.mockReset();
+    baseRegisterClientSpy.mockClear();
+    restProxyAgentSpy.mockClear();
+    undiciFetchMock.mockClear();
+    undiciProxyAgentSpy.mockClear();
+    wsProxyAgentSpy.mockClear();
+    webSocketSpy.mockClear();
     resetLastAgent();
   });
 

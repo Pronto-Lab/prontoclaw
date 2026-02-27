@@ -1,8 +1,10 @@
 import path from "node:path";
-import type { SandboxContext } from "./types.js";
 import { resolveSandboxInputPath, resolveSandboxPath } from "../sandbox-paths.js";
 import { splitSandboxBindSpec } from "./bind-spec.js";
 import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./constants.js";
+import { resolveSandboxHostPathViaExistingAncestor } from "./host-paths.js";
+import { isPathInsideContainerRoot, normalizeContainerPath } from "./path-utils.js";
+import type { SandboxContext } from "./types.js";
 
 export type SandboxFsMount = {
   hostRoot: string;
@@ -100,10 +102,8 @@ export function resolveSandboxFsPathWithMounts(params: {
   defaultContainerRoot: string;
   mounts: SandboxFsMount[];
 }): SandboxResolvedFsPath {
-  const mountsByContainer = [...params.mounts].toSorted(
-    (a, b) => b.containerRoot.length - a.containerRoot.length,
-  );
-  const mountsByHost = [...params.mounts].toSorted((a, b) => b.hostRoot.length - a.hostRoot.length);
+  const mountsByContainer = [...params.mounts].toSorted(compareMountsByContainerPath);
+  const mountsByHost = [...params.mounts].toSorted(compareMountsByHostPath);
   const input = params.filePath;
   const inputPosix = normalizePosixInput(input);
 
@@ -156,6 +156,34 @@ export function resolveSandboxFsPathWithMounts(params: {
     root: params.defaultWorkspaceRoot,
   });
   throw new Error(`Path escapes sandbox root (${params.defaultWorkspaceRoot}): ${input}`);
+}
+
+function compareMountsByContainerPath(a: SandboxFsMount, b: SandboxFsMount): number {
+  const byLength = b.containerRoot.length - a.containerRoot.length;
+  if (byLength !== 0) {
+    return byLength;
+  }
+  // Keep resolver ordering aligned with docker mount precedence: custom binds can
+  // intentionally shadow default workspace mounts at the same container path.
+  return mountSourcePriority(b.source) - mountSourcePriority(a.source);
+}
+
+function compareMountsByHostPath(a: SandboxFsMount, b: SandboxFsMount): number {
+  const byLength = b.hostRoot.length - a.hostRoot.length;
+  if (byLength !== 0) {
+    return byLength;
+  }
+  return mountSourcePriority(b.source) - mountSourcePriority(a.source);
+}
+
+function mountSourcePriority(source: SandboxFsMount["source"]): number {
+  if (source === "bind") {
+    return 2;
+  }
+  if (source === "agent") {
+    return 1;
+  }
+  return 0;
 }
 
 function dedupeMounts(mounts: SandboxFsMount[]): SandboxFsMount[] {

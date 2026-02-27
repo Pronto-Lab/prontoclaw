@@ -6,8 +6,7 @@ import type { UpdateChannel } from "../infra/update-channels.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveBundledPluginSources } from "./bundled-sources.js";
 import { installPluginFromNpmSpec, resolvePluginInstallDir } from "./install.js";
-import { recordPluginInstall } from "./installs.js";
-import { loadPluginManifest } from "./manifest.js";
+import { buildNpmResolutionInstallFields, recordPluginInstall } from "./installs.js";
 
 export type PluginUpdateLogger = {
   info?: (message: string) => void;
@@ -317,12 +316,7 @@ export async function updateNpmInstalledPlugins(params: {
       spec: record.spec,
       installPath: result.targetDir,
       version: nextVersion,
-      resolvedName: result.npmResolution?.name,
-      resolvedVersion: result.npmResolution?.version,
-      resolvedSpec: result.npmResolution?.resolvedSpec,
-      integrity: result.npmResolution?.integrity,
-      shasum: result.npmResolution?.shasum,
-      resolvedAt: result.npmResolution?.resolvedAt,
+      ...buildNpmResolutionInstallFields(result.npmResolution),
     });
     changed = true;
 
@@ -446,12 +440,7 @@ export async function syncPluginsForUpdateChannel(params: {
         spec,
         installPath: result.targetDir,
         version: result.version,
-        resolvedName: result.npmResolution?.name,
-        resolvedVersion: result.npmResolution?.version,
-        resolvedSpec: result.npmResolution?.resolvedSpec,
-        integrity: result.npmResolution?.integrity,
-        shasum: result.npmResolution?.shasum,
-        resolvedAt: result.npmResolution?.resolvedAt,
+        ...buildNpmResolutionInstallFields(result.npmResolution),
         sourcePath: undefined,
       });
       summary.switchedToNpm.push(pluginId);

@@ -2,180 +2,35 @@ import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../../config/config.js";
 import { callGateway } from "../../gateway/call.js";
-import { getA2AConversationId } from "../../infra/events/a2a-index.js";
-import {
-  isSubagentSessionKey,
-  normalizeAgentId,
-  resolveAgentIdFromSessionKey,
-} from "../../routing/session-key.js";
+import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { SESSION_LABEL_MAX_LENGTH } from "../../sessions/session-label.js";
 import {
   type GatewayMessageChannel,
   INTERNAL_MESSAGE_CHANNEL,
 } from "../../utils/message-channel.js";
-import { resolveAgentWorkspaceDir } from "../agent-scope.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
-import { createAndStartFlow } from "./a2a-job-orchestrator.js";
-import { parseA2APayload } from "./a2a-payload-parser.js";
-import type { A2APayload } from "./a2a-payload-types.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
+  createSessionVisibilityGuard,
   createAgentToAgentPolicy,
   extractAssistantText,
-  resolveInternalSessionKey,
-  resolveMainSessionAlias,
+  isResolvedSessionVisibleToRequester,
+  resolveEffectiveSessionToolsVisibility,
   resolveSessionReference,
+  resolveSandboxedSessionToolContext,
   stripToolMessages,
 } from "./sessions-helpers.js";
 import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
-import { readCurrentTaskId, readTask } from "./task-tool.js";
+import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
 const SessionsSendToolSchema = Type.Object({
   sessionKey: Type.Optional(Type.String()),
   label: Type.Optional(Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH })),
   agentId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-  taskId: Type.Optional(Type.String()),
-  workSessionId: Type.Optional(Type.String()),
-  conversationId: Type.Optional(Type.String()),
-  parentConversationId: Type.Optional(Type.String()),
-  depth: Type.Optional(Type.Number({ minimum: 0 })),
-  hop: Type.Optional(Type.Number({ minimum: 0 })),
   message: Type.String(),
-  payloadJson: Type.Optional(
-    Type.String({
-      description:
-        "Optional structured payload (JSON). " +
-        "One of: task_delegation, status_report, question, answer. " +
-        "When provided, intent classification is more accurate and events include the payload type.",
-    }),
-  ),
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
-  topicId: Type.Optional(Type.String()),
 });
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function normalizeNonNegativeInt(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    return undefined;
-  }
-  return Math.floor(value);
-}
-
-const a2aConversationIdCache = new Map<string, string>();
-
-function buildConversationRouteKey(params: {
-  workSessionId?: string;
-  requesterAgentId: string;
-  targetAgentId: string;
-}): string | undefined {
-  const workSessionId = normalizeOptionalString(params.workSessionId);
-  if (!workSessionId) {
-    return undefined;
-  }
-  const pair = [normalizeAgentId(params.requesterAgentId), normalizeAgentId(params.targetAgentId)]
-    .toSorted()
-    .join("|");
-  return `${workSessionId}::${pair}`;
-}
-
-async function resolveA2AConversationId(params: {
-  explicitConversationId?: string;
-  parentConversationId?: string;
-  workSessionId?: string;
-  requesterAgentId: string;
-  targetAgentId: string;
-}): Promise<string | undefined> {
-  const explicitConversationId = normalizeOptionalString(params.explicitConversationId);
-  const parentConversationId = normalizeOptionalString(params.parentConversationId);
-  const routeKey = buildConversationRouteKey({
-    workSessionId: params.workSessionId,
-    requesterAgentId: params.requesterAgentId,
-    targetAgentId: params.targetAgentId,
-  });
-
-  const cacheConversationId = (value: string | undefined): string | undefined => {
-    if (!value) {
-      return undefined;
-    }
-    if (routeKey) {
-      a2aConversationIdCache.set(routeKey, value);
-    }
-    return value;
-  };
-
-  if (explicitConversationId) {
-    return cacheConversationId(explicitConversationId);
-  }
-  if (parentConversationId) {
-    return cacheConversationId(parentConversationId);
-  }
-  if (!routeKey) {
-    return undefined;
-  }
-
-  const cached = a2aConversationIdCache.get(routeKey);
-  if (cached) {
-    return cached;
-  }
-
-  const fromIndex = await getA2AConversationId(routeKey);
-  return cacheConversationId(fromIndex);
-}
-
-async function resolveSendWorkSessionContext(params: {
-  cfg: ReturnType<typeof loadConfig>;
-  requesterAgentId: string;
-  requestedTaskId?: string;
-  explicitWorkSessionId?: string;
-}): Promise<{ workSessionId?: string; taskId?: string }> {
-  const explicitWorkSessionId = normalizeOptionalString(params.explicitWorkSessionId);
-  let taskId = normalizeOptionalString(params.requestedTaskId);
-  if (explicitWorkSessionId) {
-    return { workSessionId: explicitWorkSessionId, taskId };
-  }
-
-  const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.requesterAgentId);
-
-  const readTaskWorkSessionId = async (candidateTaskId?: string): Promise<string | undefined> => {
-    if (!candidateTaskId) {
-      return undefined;
-    }
-    try {
-      const linkedTask = await readTask(workspaceDir, candidateTaskId);
-      return normalizeOptionalString(linkedTask?.workSessionId);
-    } catch {
-      return undefined;
-    }
-  };
-
-  const fromRequestedTask = await readTaskWorkSessionId(taskId);
-  if (fromRequestedTask) {
-    return { workSessionId: fromRequestedTask, taskId };
-  }
-
-  try {
-    const currentTaskId = await readCurrentTaskId(workspaceDir);
-    if (currentTaskId) {
-      taskId = taskId ?? currentTaskId;
-      const fromCurrentTask = await readTaskWorkSessionId(currentTaskId);
-      if (fromCurrentTask) {
-        return { workSessionId: fromCurrentTask, taskId };
-      }
-    }
-  } catch {
-    // ignore task context resolution errors
-  }
-
-  return { taskId };
-}
 
 export function createSessionsSendTool(opts?: {
   agentSessionKey?: string;
@@ -191,42 +46,19 @@ export function createSessionsSendTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const message = readStringParam(params, "message", { required: true });
-      const rawPayloadJson =
-        typeof params.payloadJson === "string" ? params.payloadJson.trim() : undefined;
-      const parsedPayload: A2APayload | null = rawPayloadJson
-        ? parseA2APayload(rawPayloadJson)
-        : null;
-      const taskIdParam = normalizeOptionalString(readStringParam(params, "taskId"));
-      const explicitWorkSessionId = normalizeOptionalString(
-        readStringParam(params, "workSessionId"),
-      );
-      const explicitConversationId = normalizeOptionalString(
-        readStringParam(params, "conversationId"),
-      );
-      const parentConversationId = normalizeOptionalString(
-        readStringParam(params, "parentConversationId"),
-      );
-      const depth = normalizeNonNegativeInt(params.depth);
-      const hop = normalizeNonNegativeInt(params.hop);
-      const topicIdParam = normalizeOptionalString(readStringParam(params, "topicId"));
       const cfg = loadConfig();
-      const { mainKey, alias } = resolveMainSessionAlias(cfg);
-      const visibility = cfg.agents?.defaults?.sandbox?.sessionToolsVisibility ?? "spawned";
-      const requesterInternalKey =
-        typeof opts?.agentSessionKey === "string" && opts.agentSessionKey.trim()
-          ? resolveInternalSessionKey({
-              key: opts.agentSessionKey,
-              alias,
-              mainKey,
-            })
-          : undefined;
-      const restrictToSpawned =
-        opts?.sandboxed === true &&
-        visibility === "spawned" &&
-        !!requesterInternalKey &&
-        !isSubagentSessionKey(requesterInternalKey);
+      const { mainKey, alias, effectiveRequesterKey, restrictToSpawned } =
+        resolveSandboxedSessionToolContext({
+          cfg,
+          agentSessionKey: opts?.agentSessionKey,
+          sandboxed: opts?.sandboxed,
+        });
 
       const a2aPolicy = createAgentToAgentPolicy(cfg);
+      const sessionVisibility = resolveEffectiveSessionToolsVisibility({
+        cfg,
+        sandboxed: opts?.sandboxed === true,
+      });
 
       const sessionKeyParam = readStringParam(params, "sessionKey");
       const labelParam = readStringParam(params, "label")?.trim() || undefined;
@@ -239,30 +71,14 @@ export function createSessionsSendTool(opts?: {
         });
       }
 
-      const listSessions = async (listParams: Record<string, unknown>) => {
-        const result = await callGateway<{ sessions: Array<{ key: string }> }>({
-          method: "sessions.list",
-          params: listParams,
-          timeoutMs: 10_000,
-        });
-        return Array.isArray(result?.sessions) ? result.sessions : [];
-      };
-
       let sessionKey = sessionKeyParam;
       if (!sessionKey && labelParam) {
-        const requesterAgentId = requesterInternalKey
-          ? resolveAgentIdFromSessionKey(requesterInternalKey)
-          : undefined;
+        const requesterAgentId = resolveAgentIdFromSessionKey(effectiveRequesterKey);
         const requestedAgentId = labelAgentIdParam
           ? normalizeAgentId(labelAgentIdParam)
           : undefined;
 
-        if (
-          restrictToSpawned &&
-          requestedAgentId &&
-          requesterAgentId &&
-          requestedAgentId !== requesterAgentId
-        ) {
+        if (restrictToSpawned && requestedAgentId && requestedAgentId !== requesterAgentId) {
           return jsonResult({
             runId: crypto.randomUUID(),
             status: "forbidden",
@@ -291,7 +107,7 @@ export function createSessionsSendTool(opts?: {
         const resolveParams: Record<string, unknown> = {
           label: labelParam,
           ...(requestedAgentId ? { agentId: requestedAgentId } : {}),
-          ...(restrictToSpawned ? { spawnedBy: requesterInternalKey } : {}),
+          ...(restrictToSpawned ? { spawnedBy: effectiveRequesterKey } : {}),
         };
         let resolvedKey = "";
         try {
@@ -334,22 +150,18 @@ export function createSessionsSendTool(opts?: {
         sessionKey = resolvedKey;
       }
 
-      if (!sessionKey && labelAgentIdParam) {
-        sessionKey = `agent:${normalizeAgentId(labelAgentIdParam)}:main`;
-      }
-
       if (!sessionKey) {
         return jsonResult({
           runId: crypto.randomUUID(),
           status: "error",
-          error: "Either sessionKey, label, or agentId is required",
+          error: "Either sessionKey or label is required",
         });
       }
       const resolvedSession = await resolveSessionReference({
         sessionKey,
         alias,
         mainKey,
-        requesterInternalKey,
+        requesterInternalKey: effectiveRequesterKey,
         restrictToSpawned,
       });
       if (!resolvedSession.ok) {
@@ -364,22 +176,19 @@ export function createSessionsSendTool(opts?: {
       const displayKey = resolvedSession.displayKey;
       const resolvedViaSessionId = resolvedSession.resolvedViaSessionId;
 
-      if (restrictToSpawned && !resolvedViaSessionId) {
-        const sessions = await listSessions({
-          includeGlobal: false,
-          includeUnknown: false,
-          limit: 500,
-          spawnedBy: requesterInternalKey,
+      const visible = await isResolvedSessionVisibleToRequester({
+        requesterSessionKey: effectiveRequesterKey,
+        targetSessionKey: resolvedKey,
+        restrictToSpawned,
+        resolvedViaSessionId,
+      });
+      if (!visible) {
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: "forbidden",
+          error: `Session not visible from this sandboxed agent session: ${sessionKey}`,
+          sessionKey: displayKey,
         });
-        const ok = sessions.some((entry) => entry?.key === resolvedKey);
-        if (!ok) {
-          return jsonResult({
-            runId: crypto.randomUUID(),
-            status: "forbidden",
-            error: `Session not visible from this sandboxed agent session: ${sessionKey}`,
-            sessionKey: displayKey,
-          });
-        }
       }
       const timeoutSeconds =
         typeof params.timeoutSeconds === "number" && Number.isFinite(params.timeoutSeconds)
@@ -389,72 +198,30 @@ export function createSessionsSendTool(opts?: {
       const announceTimeoutMs = timeoutSeconds === 0 ? 30_000 : timeoutMs;
       const idempotencyKey = crypto.randomUUID();
       let runId: string = idempotencyKey;
-      const requesterAgentId = resolveAgentIdFromSessionKey(requesterInternalKey);
-      const targetAgentId = resolveAgentIdFromSessionKey(resolvedKey);
-      const { workSessionId, taskId } = await resolveSendWorkSessionContext({
-        cfg,
-        requesterAgentId,
-        requestedTaskId: taskIdParam,
-        explicitWorkSessionId,
+      const visibilityGuard = await createSessionVisibilityGuard({
+        action: "send",
+        requesterSessionKey: effectiveRequesterKey,
+        visibility: sessionVisibility,
+        a2aPolicy,
       });
-      const depthValue = depth;
-      const hopValue = hop;
-      const isCrossAgent = requesterAgentId !== targetAgentId;
-      if (isCrossAgent) {
-        if (!a2aPolicy.enabled) {
-          return jsonResult({
-            runId: crypto.randomUUID(),
-            status: "forbidden",
-            error:
-              "Agent-to-agent messaging is disabled. Set tools.agentToAgent.enabled=true to allow cross-agent sends.",
-            sessionKey: displayKey,
-          });
-        }
-        if (!a2aPolicy.isAllowed(requesterAgentId, targetAgentId)) {
-          return jsonResult({
-            runId: crypto.randomUUID(),
-            status: "forbidden",
-            error: "Agent-to-agent messaging denied by tools.agentToAgent.allow.",
-            sessionKey: displayKey,
-          });
-        }
+      const access = visibilityGuard.check(resolvedKey);
+      if (!access.allowed) {
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: access.status,
+          error: access.error,
+          sessionKey: displayKey,
+        });
       }
-
-      const routeKey = buildConversationRouteKey({
-        workSessionId,
-        requesterAgentId,
-        targetAgentId,
-      });
-      let conversationId = await resolveA2AConversationId({
-        explicitConversationId,
-        parentConversationId,
-        workSessionId,
-        requesterAgentId,
-        targetAgentId,
-      });
-      if (!conversationId) {
-        conversationId = crypto.randomUUID();
-        if (routeKey) {
-          a2aConversationIdCache.set(routeKey, conversationId);
-        }
-      }
-
-      // Use conversation-scoped session key for cross-agent A2A messages
-      // so each A2A conversation gets its own session lane (parallel execution).
-      const effectiveTargetKey = isCrossAgent
-        ? `agent:${targetAgentId}:a2a:${conversationId}`
-        : resolvedKey;
 
       const agentMessageContext = buildAgentToAgentMessageContext({
         requesterSessionKey: opts?.agentSessionKey,
         requesterChannel: opts?.agentChannel,
         targetSessionKey: displayKey,
-        config: cfg,
-        payload: parsedPayload,
       });
       const sendParams = {
         message,
-        sessionKey: effectiveTargetKey,
+        sessionKey: resolvedKey,
         idempotencyKey,
         deliver: false,
         channel: INTERNAL_MESSAGE_CHANNEL,
@@ -472,26 +239,16 @@ export function createSessionsSendTool(opts?: {
       const maxPingPongTurns = resolvePingPongTurns(cfg);
       const delivery = { status: "pending", mode: "announce" as const };
       const startA2AFlow = (roundOneReply?: string, waitRunId?: string) => {
-        void createAndStartFlow({
-          jobId: runId,
-          targetSessionKey: effectiveTargetKey,
+        void runSessionsSendA2AFlow({
+          targetSessionKey: resolvedKey,
           displayKey,
           message,
-          payloadType: parsedPayload?.type,
-          payloadJson: parsedPayload ? rawPayloadJson : undefined,
           announceTimeoutMs,
           maxPingPongTurns,
           requesterSessionKey,
           requesterChannel,
           roundOneReply,
           waitRunId,
-          conversationId,
-          taskId,
-          workSessionId,
-          parentConversationId,
-          depth: depthValue,
-          hop: hopValue,
-          topicId: topicIdParam,
         });
       };
 
@@ -510,9 +267,6 @@ export function createSessionsSendTool(opts?: {
             runId,
             status: "accepted",
             sessionKey: displayKey,
-            taskId,
-            workSessionId,
-            conversationId,
             delivery,
           });
         } catch (err) {
@@ -572,7 +326,6 @@ export function createSessionsSendTool(opts?: {
       }
 
       if (waitStatus === "timeout") {
-        startA2AFlow(undefined, runId);
         return jsonResult({
           runId,
           status: "timeout",
@@ -581,7 +334,6 @@ export function createSessionsSendTool(opts?: {
         });
       }
       if (waitStatus === "error") {
-        startA2AFlow(undefined, runId);
         return jsonResult({
           runId,
           status: "error",
@@ -592,23 +344,19 @@ export function createSessionsSendTool(opts?: {
 
       const history = await callGateway<{ messages: Array<unknown> }>({
         method: "chat.history",
-        params: { sessionKey: effectiveTargetKey, limit: 50 },
+        params: { sessionKey: resolvedKey, limit: 50 },
       });
       const filtered = stripToolMessages(Array.isArray(history?.messages) ? history.messages : []);
       const last = filtered.length > 0 ? filtered[filtered.length - 1] : undefined;
       const reply = last ? extractAssistantText(last) : undefined;
-      startA2AFlow(reply ?? undefined, runId);
+      startA2AFlow(reply ?? undefined);
 
       return jsonResult({
         runId,
         status: "ok",
         reply,
         sessionKey: displayKey,
-        taskId,
-        workSessionId,
-        conversationId,
         delivery,
-        payloadType: parsedPayload?.type,
       });
     },
   };

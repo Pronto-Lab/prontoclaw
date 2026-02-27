@@ -9,10 +9,12 @@ import {
   writeRestartSentinel,
 } from "../../infra/restart-sentinel.js";
 import { scheduleGatewaySigusr1Restart } from "../../infra/restart.js";
-import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { stringEnum } from "../schema/typebox.js";
 import { type AnyAgentTool, jsonResult, readStringParam } from "./common.js";
 import { callGatewayTool, readGatewayCallOptions } from "./gateway.js";
+
+const log = createSubsystemLogger("gateway-tool");
 
 const DEFAULT_UPDATE_TIMEOUT_MS = 20 * 60_000;
 
@@ -103,7 +105,6 @@ export function createGatewayTool(opts?: {
           status: "ok",
           ts: Date.now(),
           sessionKey,
-          requestingAgentId: sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined,
           deliveryContext,
           threadId,
           message: note ?? reason ?? null,
@@ -118,7 +119,7 @@ export function createGatewayTool(opts?: {
         } catch {
           // ignore: sentinel is best-effort
         }
-        console.info(
+        log.info(
           `gateway tool: restart requested (delayMs=${delayMs ?? "default"}, reason=${reason ?? "none"})`,
         );
         const scheduled = scheduleGatewaySigusr1Restart({

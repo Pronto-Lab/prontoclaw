@@ -42,12 +42,14 @@ export function resetSaveMediaBufferMock() {
 type ApiStub = {
   config: { use: (arg: unknown) => void };
   sendChatAction: Mock;
+  sendMessage: Mock;
   setMyCommands: (commands: Array<{ command: string; description: string }>) => Promise<void>;
 };
 
 const apiStub: ApiStub = {
   config: { use: useSpy },
   sendChatAction: sendChatActionSpy,
+  sendMessage: vi.fn(async () => ({ message_id: 1 })),
   setMyCommands: vi.fn(async () => undefined),
 };
 

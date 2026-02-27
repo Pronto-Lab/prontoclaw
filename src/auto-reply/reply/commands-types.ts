@@ -29,6 +29,7 @@ export type HandleCommandsParams = {
   cfg: OpenClawConfig;
   command: CommandContext;
   agentId?: string;
+  agentDir?: string;
   directives: InlineDirectives;
   elevated: {
     enabled: boolean;

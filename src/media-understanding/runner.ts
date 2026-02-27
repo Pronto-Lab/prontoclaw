@@ -2,26 +2,22 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { MsgContext } from "../auto-reply/templating.js";
-import type { OpenClawConfig } from "../config/config.js";
-import type {
-  MediaUnderstandingConfig,
-  MediaUnderstandingModelConfig,
-} from "../config/types.tools.js";
-import type {
-  MediaAttachment,
-  MediaUnderstandingCapability,
-  MediaUnderstandingDecision,
-  MediaUnderstandingModelDecision,
-  MediaUnderstandingOutput,
-  MediaUnderstandingProvider,
-} from "./types.js";
 import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import {
   findModelInCatalog,
   loadModelCatalog,
   modelSupportsVision,
 } from "../agents/model-catalog.js";
+import type { MsgContext } from "../auto-reply/templating.js";
+import type { OpenClawConfig } from "../config/config.js";
+import {
+  resolveAgentModelFallbackValues,
+  resolveAgentModelPrimaryValue,
+} from "../config/model-input.js";
+import type {
+  MediaUnderstandingConfig,
+  MediaUnderstandingModelConfig,
+} from "../config/types.tools.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import {
   mergeInboundPathRoots,
@@ -56,6 +52,14 @@ import {
   runCliEntry,
   runProviderEntry,
 } from "./runner.entries.js";
+import type {
+  MediaAttachment,
+  MediaUnderstandingCapability,
+  MediaUnderstandingDecision,
+  MediaUnderstandingModelDecision,
+  MediaUnderstandingOutput,
+  MediaUnderstandingProvider,
+} from "./types.js";
 
 export type ActiveMediaModel = {
   provider: string;
@@ -418,27 +422,18 @@ async function resolveKeyEntry(params: {
 }
 
 function resolveImageModelFromAgentDefaults(cfg: OpenClawConfig): MediaUnderstandingModelConfig[] {
-  const imageModel = cfg.agents?.defaults?.imageModel as
-    | { primary?: string; fallbacks?: string[] }
-    | string
-    | undefined;
-  if (!imageModel) {
-    return [];
-  }
   const refs: string[] = [];
-  if (typeof imageModel === "string") {
-    if (imageModel.trim()) {
-      refs.push(imageModel.trim());
+  const primary = resolveAgentModelPrimaryValue(cfg.agents?.defaults?.imageModel);
+  if (primary?.trim()) {
+    refs.push(primary.trim());
+  }
+  for (const fb of resolveAgentModelFallbackValues(cfg.agents?.defaults?.imageModel)) {
+    if (fb?.trim()) {
+      refs.push(fb.trim());
     }
-  } else {
-    if (imageModel.primary?.trim()) {
-      refs.push(imageModel.primary.trim());
-    }
-    for (const fb of imageModel.fallbacks ?? []) {
-      if (fb?.trim()) {
-        refs.push(fb.trim());
-      }
-    }
+  }
+  if (refs.length === 0) {
+    return [];
   }
   const entries: MediaUnderstandingModelConfig[] = [];
   for (const ref of refs) {

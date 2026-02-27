@@ -1,7 +1,7 @@
-import type { OpenClawConfig } from "../config/config.js";
-import type { AgentBinding } from "../config/types.agents.js";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { normalizeChatChannelId } from "../channels/registry.js";
+import type { OpenClawConfig } from "../config/config.js";
+import type { AgentBinding } from "../config/types.agents.js";
 import { normalizeAccountId, normalizeAgentId } from "./session-key.js";
 
 function normalizeBindingChannelId(raw?: string | null): string | null {
@@ -110,31 +110,4 @@ export function resolvePreferredAccountId(params: {
     return params.boundAccounts[0];
   }
   return params.defaultAccountId;
-}
-
-/**
- * Resolves the accountId for an agent based on channel bindings.
- * Used by task-continuation to ensure agents use their bound Discord accounts.
- *
- * @param cfg - OpenClaw configuration
- * @param agentId - The agent ID to look up
- * @param channelId - The channel to look up (defaults to "discord")
- * @returns The first bound accountId for the agent, or undefined if not found
- */
-export function resolveAgentBoundAccountId(
-  cfg: OpenClawConfig,
-  agentId: string,
-  channelId = "discord",
-): string | undefined {
-  const bindings = buildChannelAccountBindings(cfg);
-  const channelBindings = bindings.get(channelId);
-  if (!channelBindings) {
-    return undefined;
-  }
-  const normalizedAgentId = normalizeAgentId(agentId);
-  const accountIds = channelBindings.get(normalizedAgentId);
-  if (!accountIds || accountIds.length === 0) {
-    return undefined;
-  }
-  return accountIds[0];
 }

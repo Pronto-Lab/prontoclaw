@@ -1,5 +1,5 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
-import type { ModelRegistry } from "./pi-model-discovery.js";
+import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { normalizeModelCompat } from "./model-compat.js";
 import { normalizeProviderId } from "./model-selection.js";
@@ -17,29 +17,13 @@ const ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS = ["claude-sonnet-4-5", "claude-sonnet
 const ZAI_GLM5_MODEL_ID = "glm-5";
 const ZAI_GLM5_TEMPLATE_MODEL_IDS = ["glm-4.7"] as const;
 
-const ANTIGRAVITY_OPUS_46_MODEL_ID = "claude-opus-4-6";
-const ANTIGRAVITY_OPUS_46_DOT_MODEL_ID = "claude-opus-4.6";
-const ANTIGRAVITY_OPUS_TEMPLATE_MODEL_IDS = ["claude-opus-4-5", "claude-opus-4.5"] as const;
-const ANTIGRAVITY_OPUS_46_THINKING_MODEL_ID = "claude-opus-4-6-thinking";
-const ANTIGRAVITY_OPUS_46_DOT_THINKING_MODEL_ID = "claude-opus-4.6-thinking";
-const ANTIGRAVITY_OPUS_THINKING_TEMPLATE_MODEL_IDS = [
-  "claude-opus-4-5-thinking",
-  "claude-opus-4.5-thinking",
-] as const;
-
-export const ANTIGRAVITY_OPUS_46_FORWARD_COMPAT_CANDIDATES = [
-  {
-    id: ANTIGRAVITY_OPUS_46_THINKING_MODEL_ID,
-    templatePrefixes: [
-      "google-antigravity/claude-opus-4-5-thinking",
-      "google-antigravity/claude-opus-4.5-thinking",
-    ],
-  },
-  {
-    id: ANTIGRAVITY_OPUS_46_MODEL_ID,
-    templatePrefixes: ["google-antigravity/claude-opus-4-5", "google-antigravity/claude-opus-4.5"],
-  },
-] as const;
+// gemini-3.1-pro-preview / gemini-3.1-flash-preview are not yet in pi-ai's built-in
+// google-gemini-cli catalog. Clone the gemini-3-pro/flash-preview template so users
+// don't get "Unknown model" errors when Google releases a new minor version.
+const GEMINI_3_1_PRO_PREFIX = "gemini-3.1-pro";
+const GEMINI_3_1_FLASH_PREFIX = "gemini-3.1-flash";
+const GEMINI_3_1_PRO_TEMPLATE_IDS = ["gemini-3-pro-preview"] as const;
+const GEMINI_3_1_FLASH_TEMPLATE_IDS = ["gemini-3-flash-preview"] as const;
 
 function cloneFirstTemplateModel(params: {
   normalizedProvider: string;
@@ -258,60 +242,6 @@ function resolveZaiGlm5ForwardCompatModel(
   } as Model<Api>);
 }
 
-function resolveAntigravityOpus46ForwardCompatModel(
-  provider: string,
-  modelId: string,
-  modelRegistry: ModelRegistry,
-): Model<Api> | undefined {
-  const normalizedProvider = normalizeProviderId(provider);
-  if (normalizedProvider !== "google-antigravity") {
-    return undefined;
-  }
-
-  const trimmedModelId = modelId.trim();
-  const lower = trimmedModelId.toLowerCase();
-  const isOpus46 =
-    lower === ANTIGRAVITY_OPUS_46_MODEL_ID ||
-    lower === ANTIGRAVITY_OPUS_46_DOT_MODEL_ID ||
-    lower.startsWith(`${ANTIGRAVITY_OPUS_46_MODEL_ID}-`) ||
-    lower.startsWith(`${ANTIGRAVITY_OPUS_46_DOT_MODEL_ID}-`);
-  const isOpus46Thinking =
-    lower === ANTIGRAVITY_OPUS_46_THINKING_MODEL_ID ||
-    lower === ANTIGRAVITY_OPUS_46_DOT_THINKING_MODEL_ID ||
-    lower.startsWith(`${ANTIGRAVITY_OPUS_46_THINKING_MODEL_ID}-`) ||
-    lower.startsWith(`${ANTIGRAVITY_OPUS_46_DOT_THINKING_MODEL_ID}-`);
-  if (!isOpus46 && !isOpus46Thinking) {
-    return undefined;
-  }
-
-  const templateIds: string[] = [];
-  if (lower.startsWith(ANTIGRAVITY_OPUS_46_MODEL_ID)) {
-    templateIds.push(lower.replace(ANTIGRAVITY_OPUS_46_MODEL_ID, "claude-opus-4-5"));
-  }
-  if (lower.startsWith(ANTIGRAVITY_OPUS_46_DOT_MODEL_ID)) {
-    templateIds.push(lower.replace(ANTIGRAVITY_OPUS_46_DOT_MODEL_ID, "claude-opus-4.5"));
-  }
-  if (lower.startsWith(ANTIGRAVITY_OPUS_46_THINKING_MODEL_ID)) {
-    templateIds.push(
-      lower.replace(ANTIGRAVITY_OPUS_46_THINKING_MODEL_ID, "claude-opus-4-5-thinking"),
-    );
-  }
-  if (lower.startsWith(ANTIGRAVITY_OPUS_46_DOT_THINKING_MODEL_ID)) {
-    templateIds.push(
-      lower.replace(ANTIGRAVITY_OPUS_46_DOT_THINKING_MODEL_ID, "claude-opus-4.5-thinking"),
-    );
-  }
-  templateIds.push(...ANTIGRAVITY_OPUS_TEMPLATE_MODEL_IDS);
-  templateIds.push(...ANTIGRAVITY_OPUS_THINKING_TEMPLATE_MODEL_IDS);
-
-  return cloneFirstTemplateModel({
-    normalizedProvider,
-    trimmedModelId,
-    templateIds,
-    modelRegistry,
-  });
-}
-
 export function resolveForwardCompatModel(
   provider: string,
   modelId: string,
@@ -322,6 +252,6 @@ export function resolveForwardCompatModel(
     resolveAnthropicOpus46ForwardCompatModel(provider, modelId, modelRegistry) ??
     resolveAnthropicSonnet46ForwardCompatModel(provider, modelId, modelRegistry) ??
     resolveZaiGlm5ForwardCompatModel(provider, modelId, modelRegistry) ??
-    resolveAntigravityOpus46ForwardCompatModel(provider, modelId, modelRegistry)
+    resolveGoogleGeminiCli31ForwardCompatModel(provider, modelId, modelRegistry)
   );
 }

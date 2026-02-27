@@ -1,4 +1,3 @@
-import JSZip from "jszip";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,7 +38,7 @@ describe("media store redirects", () => {
   });
 
   beforeEach(() => {
-    mockRequest.mockReset();
+    mockRequest.mockClear();
     setMediaStoreNetworkDepsForTest({
       httpRequest: (...args) => mockRequest(...args),
       httpsRequest: (...args) => mockRequest(...args),

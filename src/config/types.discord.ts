@@ -26,6 +26,7 @@ export type DmRetryConfig = {
 };
 import type { ChannelHeartbeatVisibilityConfig } from "./types.channels.js";
 import type { DmConfig, ProviderCommandsConfig } from "./types.messages.js";
+import type { TtsConfig } from "./types.tts.js";
 import type { GroupToolPolicyBySenderConfig, GroupToolPolicyConfig } from "./types.tools.js";
 
 export type DiscordDmConfig = {
@@ -110,6 +111,27 @@ export type DiscordIntentsConfig = {
   guildMembers?: boolean;
 };
 
+export type DiscordVoiceAutoJoinConfig = {
+  /** Guild ID that owns the voice channel. */
+  guildId: string;
+  /** Voice channel ID to join. */
+  channelId: string;
+};
+
+export type DiscordVoiceConfig = {
+  /** Enable Discord voice channel conversations (default: true). */
+  enabled?: boolean;
+  /** Voice channels to auto-join on startup. */
+  autoJoin?: DiscordVoiceAutoJoinConfig[];
+  /** Enable/disable DAVE end-to-end encryption (default: true; Discord may require this). */
+  daveEncryption?: boolean;
+  /** Consecutive decrypt failures before DAVE session reinitialization (default: 24). */
+  decryptionFailureTolerance?: number;
+  /** Optional TTS overrides for Discord voice output. */
+  tts?: TtsConfig;
+};
+
+
 export type DiscordExecApprovalConfig = {
   /** Enable exec approval forwarding to Discord DMs. Default: false. */
   enabled?: boolean;
@@ -150,6 +172,30 @@ export type DiscordUiConfig = {
   components?: DiscordUiComponentsConfig;
 };
 
+export type DiscordThreadBindingsConfig = {
+  /**
+   * Enable Discord thread binding features (/focus, thread-bound delivery, and
+   * thread-bound subagent session flows). Overrides session.threadBindings.enabled
+   * when set.
+   */
+  enabled?: boolean;
+  /**
+   * Auto-unfocus TTL for thread-bound sessions in hours.
+   * Set to 0 to disable TTL. Default: 24.
+   */
+  ttlHours?: number;
+  /**
+   * Allow `sessions_spawn({ thread: true })` to auto-create + bind Discord
+   * threads for subagent sessions. Default: false (opt-in).
+   */
+  spawnSubagentSessions?: boolean;
+  /**
+   * Allow `/acp spawn` to auto-create + bind Discord threads for ACP
+   * sessions. Default: false (opt-in).
+   */
+  spawnAcpSessions?: boolean;
+};
+
 /**
  * Configuration for A2A (agent-to-agent) mention retry behavior.
  * When enabled, outbound agent mentions in threads are tracked and auto-retried if no response is received.
@@ -169,6 +215,21 @@ export type A2aRetryConfig = {
   escalationMentionId?: string;
   /** Notify in thread when all retries fail. Default: true. */
   notifyOnFailure?: boolean;
+  /**
+   * Auto-unfocus TTL for thread-bound sessions in hours.
+   * Set to 0 to disable TTL. Default: 24.
+   */
+  ttlHours?: number;
+  /**
+   * Allow `sessions_spawn({ thread: true })` to auto-create + bind Discord
+   * threads for subagent sessions. Default: false (opt-in).
+   */
+  spawnSubagentSessions?: boolean;
+  /**
+   * Allow `/acp spawn` to auto-create + bind Discord threads for ACP
+   * sessions. Default: false (opt-in).
+   */
+  spawnAcpSessions?: boolean;
 };
 
 /**
@@ -201,6 +262,11 @@ export type DiscordAccountConfig = {
   proxy?: string;
   /** Allow bot-authored messages to trigger replies (default: false). */
   allowBots?: boolean;
+  /**
+   * Break-glass override: allow mutable identity matching (names/tags/slugs) in allowlists.
+   * Default behavior is ID-only matching.
+   */
+  dangerouslyAllowNameMatching?: boolean;
   /**
    * Controls how guild channel messages are handled:
    * - "open": guild channels bypass allowlists; mention-gating applies
@@ -247,6 +313,8 @@ export type DiscordAccountConfig = {
    * Legacy key: channels.discord.dm.allowFrom.
    */
   allowFrom?: string[];
+  /** Default delivery target for CLI --deliver when no explicit --reply-to is provided. */
+  defaultTo?: string;
   dm?: DiscordDmConfig;
   /** Thread-based agent-to-agent communication configuration. */
   threadCommunication?: ThreadCommunicationConfig;
@@ -264,8 +332,12 @@ export type DiscordAccountConfig = {
   agentComponents?: DiscordAgentComponentsConfig;
   /** Discord UI customization (components, modals, etc.). */
   ui?: DiscordUiConfig;
+  /** Thread binding lifecycle settings (focus/subagent thread sessions). */
+  threadBindings?: DiscordThreadBindingsConfig;
   /** Privileged Gateway Intents (must also be enabled in Discord Developer Portal). */
   intents?: DiscordIntentsConfig;
+  /** Voice channel conversation settings. */
+  voice?: DiscordVoiceConfig;
   /** PluralKit identity resolution for proxied messages. */
   pluralkit?: DiscordPluralKitConfig;
   /** Outbound response prefix override for this channel/account. */

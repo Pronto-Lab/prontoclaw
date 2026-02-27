@@ -1,11 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import type {
-  GatewayAgentRow,
-  GatewaySessionRow,
-  GatewaySessionsDefaults,
-  SessionsListResult,
-} from "./session-utils.types.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { lookupContextTokens } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
@@ -15,7 +9,6 @@ import {
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
 } from "../agents/model-selection.js";
-import { maskConversationTitleOrPreview } from "../channels/sensitive-mask.js";
 import { type OpenClawConfig, loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
@@ -29,14 +22,29 @@ import {
   type SessionEntry,
   type SessionScope,
 } from "../config/sessions.js";
+import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
 import {
   normalizeAgentId,
   normalizeMainKey,
   parseAgentSessionKey,
 } from "../routing/session-key.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
+import {
+  AVATAR_MAX_BYTES,
+  isAvatarDataUrl,
+  isAvatarHttpUrl,
+  isPathWithinRoot,
+  isWorkspaceRelativeAvatarPath,
+  resolveAvatarMime,
+} from "../shared/avatar-policy.js";
 import { normalizeSessionDeliveryFields } from "../utils/delivery-context.js";
 import { readSessionTitleFieldsFromTranscript } from "./session-utils.fs.js";
+import type {
+  GatewayAgentRow,
+  GatewaySessionRow,
+  GatewaySessionsDefaults,
+  SessionsListResult,
+} from "./session-utils.types.js";
 
 export {
   archiveFileOnDisk,
@@ -60,43 +68,13 @@ export type {
 } from "./session-utils.types.js";
 
 const DERIVED_TITLE_MAX_LEN = 60;
-const SESSION_TITLE_FALLBACK = "새 대화";
-const SESSION_PREVIEW_FALLBACK = "안전 텍스트";
-const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
-const AVATAR_DATA_RE = /^data:/i;
-const AVATAR_HTTP_RE = /^https?:\/\//i;
-const AVATAR_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
-const WINDOWS_ABS_RE = /^[a-zA-Z]:[\\/]/;
-
-const AVATAR_MIME_BY_EXT: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".bmp": "image/bmp",
-  ".tif": "image/tiff",
-  ".tiff": "image/tiff",
-};
-
-function resolveAvatarMime(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  return AVATAR_MIME_BY_EXT[ext] ?? "application/octet-stream";
-}
-
-function isWorkspaceRelativePath(value: string): boolean {
-  if (!value) {
-    return false;
+function tryResolveExistingPath(value: string): string | null {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return null;
   }
-  if (value.startsWith("~")) {
-    return false;
-  }
-  if (AVATAR_SCHEME_RE.test(value) && !WINDOWS_ABS_RE.test(value)) {
-    return false;
-  }
-  return true;
 }
 
 function resolveIdentityAvatarUrl(
@@ -111,27 +89,37 @@ function resolveIdentityAvatarUrl(
   if (!trimmed) {
     return undefined;
   }
-  if (AVATAR_DATA_RE.test(trimmed) || AVATAR_HTTP_RE.test(trimmed)) {
+  if (isAvatarDataUrl(trimmed) || isAvatarHttpUrl(trimmed)) {
     return trimmed;
   }
-  if (!isWorkspaceRelativePath(trimmed)) {
+  if (!isWorkspaceRelativeAvatarPath(trimmed)) {
     return undefined;
   }
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-  const workspaceRoot = path.resolve(workspaceDir);
-  const resolved = path.resolve(workspaceRoot, trimmed);
-  const relative = path.relative(workspaceRoot, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  const workspaceRoot = tryResolveExistingPath(workspaceDir) ?? path.resolve(workspaceDir);
+  const resolvedCandidate = path.resolve(workspaceRoot, trimmed);
+  if (!isPathWithinRoot(workspaceRoot, resolvedCandidate)) {
     return undefined;
   }
   try {
-    const stat = fs.statSync(resolved);
-    if (!stat.isFile() || stat.size > AVATAR_MAX_BYTES) {
+    const opened = openBoundaryFileSync({
+      absolutePath: resolvedCandidate,
+      rootPath: workspaceRoot,
+      rootRealPath: workspaceRoot,
+      boundaryLabel: "workspace root",
+      maxBytes: AVATAR_MAX_BYTES,
+      skipLexicalRootCheck: true,
+    });
+    if (!opened.ok) {
       return undefined;
     }
-    const buffer = fs.readFileSync(resolved);
-    const mime = resolveAvatarMime(resolved);
-    return `data:${mime};base64,${buffer.toString("base64")}`;
+    try {
+      const buffer = fs.readFileSync(opened.fd);
+      const mime = resolveAvatarMime(resolvedCandidate);
+      return `data:${mime};base64,${buffer.toString("base64")}`;
+    } finally {
+      fs.closeSync(opened.fd);
+    }
   } catch {
     return undefined;
   }
@@ -185,65 +173,6 @@ export function deriveSessionTitle(
   }
 
   return undefined;
-}
-
-function normalizeSafeText(value?: string | null): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return undefined;
-  }
-  return maskConversationTitleOrPreview(normalized);
-}
-
-function deriveDeterministicTitleSource(
-  entry: SessionEntry | undefined,
-  firstUserMessage?: string | null,
-): string | undefined {
-  if (entry?.displayName?.trim()) {
-    return entry.displayName.trim();
-  }
-
-  if (entry?.subject?.trim()) {
-    return entry.subject.trim();
-  }
-
-  if (firstUserMessage?.trim()) {
-    const normalized = firstUserMessage.replace(/\s+/g, " ").trim();
-    return truncateTitle(normalized, DERIVED_TITLE_MAX_LEN);
-  }
-
-  return undefined;
-}
-
-export function deriveDeterministicSessionTitle(
-  entry: SessionEntry | undefined,
-  firstUserMessage?: string | null,
-): string {
-  return normalizeSafeText(deriveDeterministicTitleSource(entry, firstUserMessage)) ??
-    SESSION_TITLE_FALLBACK;
-}
-
-export function deriveDeterministicSessionPreview(params: {
-  entry?: SessionEntry;
-  firstUserMessage?: string | null;
-  lastMessagePreview?: string | null;
-  fallbackTitle?: string;
-}): string {
-  const titleCandidate =
-    params.fallbackTitle && params.fallbackTitle !== SESSION_TITLE_FALLBACK
-      ? params.fallbackTitle
-      : undefined;
-  return (
-    normalizeSafeText(params.lastMessagePreview) ||
-    normalizeSafeText(params.firstUserMessage) ||
-    normalizeSafeText(params.entry?.subject) ||
-    normalizeSafeText(params.entry?.displayName) ||
-    normalizeSafeText(titleCandidate) ||
-    SESSION_PREVIEW_FALLBACK
-  );
 }
 
 export function loadSessionEntry(sessionKey: string) {
@@ -489,7 +418,7 @@ export function resolveSessionStoreKey(params: {
   cfg: OpenClawConfig;
   sessionKey: string;
 }): string {
-  const raw = params.sessionKey.trim();
+  const raw = (params.sessionKey ?? "").trim();
   if (!raw) {
     return raw;
   }
@@ -727,15 +656,20 @@ export function resolveSessionModelRef(
   const runtimeModel = entry?.model?.trim();
   const runtimeProvider = entry?.modelProvider?.trim();
   if (runtimeModel) {
-    const parsedRuntime = parseModelRef(
-      runtimeModel,
-      runtimeProvider || provider || DEFAULT_PROVIDER,
-    );
+    if (runtimeProvider) {
+      // Provider is explicitly recorded — use it directly. Re-parsing the
+      // model string through parseModelRef would incorrectly split OpenRouter
+      // vendor-prefixed model names (e.g. model="anthropic/claude-haiku-4.5"
+      // with provider="openrouter") into { provider: "anthropic" }, discarding
+      // the stored OpenRouter provider and causing direct API calls to a
+      // provider the user has no credentials for.
+      return { provider: runtimeProvider, model: runtimeModel };
+    }
+    const parsedRuntime = parseModelRef(runtimeModel, provider || DEFAULT_PROVIDER);
     if (parsedRuntime) {
       provider = parsedRuntime.provider;
       model = parsedRuntime.model;
     } else {
-      provider = runtimeProvider || provider;
       model = runtimeModel;
     }
     return { provider, model };
@@ -942,29 +876,23 @@ export function listSessionsFromStore(params: {
     const { entry, ...rest } = s;
     let derivedTitle: string | undefined;
     let lastMessagePreview: string | undefined;
-    if (includeDerivedTitles || includeLastMessage) {
-      const parsed = parseAgentSessionKey(s.key);
-      const agentId =
-        parsed && parsed.agentId ? normalizeAgentId(parsed.agentId) : resolveDefaultAgentId(cfg);
-      const fields = entry?.sessionId
-        ? readSessionTitleFieldsFromTranscript(
-            entry.sessionId,
-            storePath,
-            entry.sessionFile,
-            agentId,
-          )
-        : { firstUserMessage: null, lastMessagePreview: null };
-      const fallbackTitle = deriveDeterministicSessionTitle(entry, fields.firstUserMessage);
-      if (includeDerivedTitles) {
-        derivedTitle = fallbackTitle;
-      }
-      if (includeLastMessage) {
-        lastMessagePreview = deriveDeterministicSessionPreview({
-          entry,
-          firstUserMessage: fields.firstUserMessage,
-          lastMessagePreview: fields.lastMessagePreview,
-          fallbackTitle,
-        });
+    if (entry?.sessionId) {
+      if (includeDerivedTitles || includeLastMessage) {
+        const parsed = parseAgentSessionKey(s.key);
+        const agentId =
+          parsed && parsed.agentId ? normalizeAgentId(parsed.agentId) : resolveDefaultAgentId(cfg);
+        const fields = readSessionTitleFieldsFromTranscript(
+          entry.sessionId,
+          storePath,
+          entry.sessionFile,
+          agentId,
+        );
+        if (includeDerivedTitles) {
+          derivedTitle = deriveSessionTitle(entry, fields.firstUserMessage);
+        }
+        if (includeLastMessage && fields.lastMessagePreview) {
+          lastMessagePreview = fields.lastMessagePreview;
+        }
       }
     }
     return { ...rest, derivedTitle, lastMessagePreview } satisfies GatewaySessionRow;

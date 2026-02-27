@@ -5,7 +5,132 @@ import type { MarkdownTableMode } from "../../config/types.base.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { convertMarkdownTables } from "../../markdown/tables.js";
 import { chunkDiscordTextWithMode } from "../chunk.js";
-import { sendMessageDiscord, sendVoiceMessageDiscord } from "../send.js";
+import { sendMessageDiscord, sendVoiceMessageDiscord, sendWebhookMessageDiscord } from "../send.js";
+import { resolveAgentAvatar } from "../../agents/identity-avatar.js";
+import { loadConfig } from "../../config/io.js";
+
+export type DiscordThreadBindingLookupRecord = {
+  accountId: string;
+  threadId: string;
+  agentId: string;
+  label?: string;
+  webhookId?: string;
+  webhookToken?: string;
+};
+
+export type DiscordThreadBindingLookup = {
+  listBySessionKey: (targetSessionKey: string) => DiscordThreadBindingLookupRecord[];
+};
+
+function resolveTargetChannelId(target: string): string | undefined {
+  if (!target.startsWith("channel:")) {
+    return undefined;
+  }
+  const channelId = target.slice("channel:".length).trim();
+  return channelId || undefined;
+}
+
+function _resolveBoundThreadBinding(params: {
+  threadBindings?: DiscordThreadBindingLookup;
+  sessionKey?: string;
+  target: string;
+}): DiscordThreadBindingLookupRecord | undefined {
+  const sessionKey = params.sessionKey?.trim();
+  if (!params.threadBindings || !sessionKey) {
+    return undefined;
+  }
+  const bindings = params.threadBindings.listBySessionKey(sessionKey);
+  if (bindings.length === 0) {
+    return undefined;
+  }
+  const targetChannelId = resolveTargetChannelId(params.target);
+  if (!targetChannelId) {
+    return undefined;
+  }
+  return bindings.find((entry) => entry.threadId === targetChannelId);
+}
+
+function _resolveBindingPersona(binding: DiscordThreadBindingLookupRecord | undefined): {
+  username?: string;
+  avatarUrl?: string;
+} {
+  if (!binding) {
+    return {};
+  }
+  const baseLabel = binding.label?.trim() || binding.agentId;
+  const username = (`🤖 ${baseLabel}`.trim() || "🤖 agent").slice(0, 80);
+
+  let avatarUrl: string | undefined;
+  try {
+    const avatar = resolveAgentAvatar(loadConfig(), binding.agentId);
+    if (avatar.kind === "remote") {
+      avatarUrl = avatar.url;
+    }
+  } catch {
+    avatarUrl = undefined;
+  }
+  return { username, avatarUrl };
+}
+
+async function _sendDiscordChunkWithFallback(params: {
+  target: string;
+  text: string;
+  token: string;
+  accountId?: string;
+  rest?: RequestClient;
+  replyTo?: string;
+  binding?: DiscordThreadBindingLookupRecord;
+  username?: string;
+  avatarUrl?: string;
+}) {
+  if (!params.text.trim()) {
+    return;
+  }
+  const text = params.text;
+  const binding = params.binding;
+  if (binding?.webhookId && binding?.webhookToken) {
+    try {
+      await sendWebhookMessageDiscord(text, {
+        webhookId: binding.webhookId,
+        webhookToken: binding.webhookToken,
+        accountId: binding.accountId,
+        threadId: binding.threadId,
+        replyTo: params.replyTo,
+        username: params.username,
+        avatarUrl: params.avatarUrl,
+      });
+      return;
+    } catch {
+      // Fall through to the standard bot sender path.
+    }
+  }
+  await sendMessageDiscord(params.target, text, {
+    token: params.token,
+    rest: params.rest,
+    accountId: params.accountId,
+    replyTo: params.replyTo,
+  });
+}
+
+async function _sendAdditionalDiscordMedia(params: {
+  target: string;
+  token: string;
+  rest?: RequestClient;
+  accountId?: string;
+  mediaUrls: string[];
+  resolveReplyTo: () => string | undefined;
+}) {
+  for (const mediaUrl of params.mediaUrls) {
+    const replyTo = params.resolveReplyTo();
+    await sendMessageDiscord(params.target, "", {
+      token: params.token,
+      rest: params.rest,
+      mediaUrl,
+      accountId: params.accountId,
+      replyTo,
+    });
+  }
+}
 
 export async function deliverDiscordReply(params: {
   replies: ReplyPayload[];
@@ -19,6 +144,8 @@ export async function deliverDiscordReply(params: {
   replyToId?: string;
   tableMode?: MarkdownTableMode;
   chunkMode?: ChunkMode;
+  sessionKey?: string;
+  threadBindings?: DiscordThreadBindingLookup;
 }) {
   const chunkLimit = Math.min(params.textLimit, 2000);
   for (const payload of params.replies) {

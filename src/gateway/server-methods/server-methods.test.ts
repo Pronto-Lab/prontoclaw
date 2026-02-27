@@ -225,14 +225,18 @@ describe("sanitizeChatSendMessageInput", () => {
 });
 
 describe("gateway chat transcript writes (guardrail)", () => {
-  it("does not append transcript messages via raw fs.appendFileSync(transcriptPath, ...)", () => {
+  it("routes transcript writes through helper and SessionManager parentId append", () => {
     const chatTs = fileURLToPath(new URL("./chat.ts", import.meta.url));
-    const src = fs.readFileSync(chatTs, "utf-8");
+    const chatSrc = fs.readFileSync(chatTs, "utf-8");
+    const helperTs = fileURLToPath(new URL("./chat-transcript-inject.ts", import.meta.url));
+    const helperSrc = fs.readFileSync(helperTs, "utf-8");
 
-    expect(src.includes("fs.appendFileSync(transcriptPath")).toBe(false);
+    expect(chatSrc.includes("fs.appendFileSync(transcriptPath")).toBe(false);
+    expect(chatSrc).toContain("appendInjectedAssistantMessageToTranscript(");
 
-    expect(src).toContain("SessionManager.open(transcriptPath)");
-    expect(src).toContain("appendMessage(");
+    expect(helperSrc.includes("fs.appendFileSync(params.transcriptPath")).toBe(false);
+    expect(helperSrc).toContain("SessionManager.open(params.transcriptPath)");
+    expect(helperSrc).toContain("appendMessage(messageBody)");
   });
 });
 
@@ -246,12 +250,14 @@ describe("exec approval handlers", () => {
     command: "echo ok",
     commandArgv: ["echo", "ok"],
     cwd: "/tmp",
+    nodeId: "node-1",
     host: "node",
     timeoutMs: 2000,
   } as const;
 
   function toExecApprovalRequestContext(context: {
     broadcast: (event: string, payload: unknown) => void;
+    hasExecApprovalClients?: () => boolean;
   }): ExecApprovalRequestArgs["context"] {
     return context as unknown as ExecApprovalRequestArgs["context"];
   }
@@ -275,7 +281,10 @@ describe("exec approval handlers", () => {
     return params.handlers["exec.approval.request"]({
       params: requestParams,
       respond: params.respond as unknown as ExecApprovalRequestArgs["respond"],
-      context: toExecApprovalRequestContext(params.context),
+      context: toExecApprovalRequestContext({
+        hasExecApprovalClients: () => true,
+        ...params.context,
+      }),
       client: null,
       req: { id: "req-1", type: "req", method: "exec.approval.request" },
       isWebchatConnect: execApprovalNoop,
@@ -307,6 +316,7 @@ describe("exec approval handlers", () => {
       broadcast: (event: string, payload: unknown) => {
         broadcasts.push({ event, payload });
       },
+      hasExecApprovalClients: () => true,
     };
     return { handlers, broadcasts, respond, context };
   }
@@ -316,6 +326,7 @@ describe("exec approval handlers", () => {
       const params = {
         command: "echo hi",
         cwd: "/tmp",
+        nodeId: "node-1",
         host: "node",
       };
       expect(validateExecApprovalRequestParams(params)).toBe(true);
@@ -325,6 +336,7 @@ describe("exec approval handlers", () => {
       const params = {
         command: "echo hi",
         cwd: "/tmp",
+        nodeId: "node-1",
         host: "node",
         resolvedPath: "/usr/bin/echo",
       };
@@ -335,6 +347,7 @@ describe("exec approval handlers", () => {
       const params = {
         command: "echo hi",
         cwd: "/tmp",
+        nodeId: "node-1",
         host: "node",
         resolvedPath: undefined,
       };
@@ -345,11 +358,50 @@ describe("exec approval handlers", () => {
       const params = {
         command: "echo hi",
         cwd: "/tmp",
+        nodeId: "node-1",
         host: "node",
         resolvedPath: null,
       };
       expect(validateExecApprovalRequestParams(params)).toBe(true);
     });
+  });
+
+  it("rejects host=node approval requests without nodeId", async () => {
+    const { handlers, respond, context } = createExecApprovalFixture();
+    await requestExecApproval({
+      handlers,
+      respond,
+      context,
+      params: {
+        nodeId: undefined,
+      },
+    });
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: "nodeId is required for host=node",
+      }),
+    );
+  });
+
+  it("rejects host=node approval requests without commandArgv", async () => {
+    const { handlers, respond, context } = createExecApprovalFixture();
+    await requestExecApproval({
+      handlers,
+      respond,
+      context,
+      params: {
+        commandArgv: undefined,
+      },
+    });
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: "commandArgv is required for host=node",
+      }),
+    );
   });
 
   it("broadcasts request + resolve", async () => {
@@ -525,6 +577,96 @@ describe("exec approval handlers", () => {
       undefined,
     );
     expect(resolveRespond).toHaveBeenCalledWith(true, { ok: true }, undefined);
+  });
+
+  it("forwards turn-source metadata to exec approval forwarding", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new ExecApprovalManager();
+      const forwarder = {
+        handleRequested: vi.fn(async () => false),
+        handleResolved: vi.fn(async () => {}),
+        stop: vi.fn(),
+      };
+      const handlers = createExecApprovalHandlers(manager, { forwarder });
+      const respond = vi.fn();
+      const context = {
+        broadcast: (_event: string, _payload: unknown) => {},
+        hasExecApprovalClients: () => false,
+      };
+
+      const requestPromise = requestExecApproval({
+        handlers,
+        respond,
+        context,
+        params: {
+          timeoutMs: 60_000,
+          turnSourceChannel: "whatsapp",
+          turnSourceTo: "+15555550123",
+          turnSourceAccountId: "work",
+          turnSourceThreadId: "1739201675.123",
+        },
+      });
+      for (let idx = 0; idx < 20; idx += 1) {
+        await Promise.resolve();
+      }
+      expect(forwarder.handleRequested).toHaveBeenCalledTimes(1);
+      expect(forwarder.handleRequested).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request: expect.objectContaining({
+            turnSourceChannel: "whatsapp",
+            turnSourceTo: "+15555550123",
+            turnSourceAccountId: "work",
+            turnSourceThreadId: "1739201675.123",
+          }),
+        }),
+      );
+
+      await vi.runOnlyPendingTimersAsync();
+      await requestPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("expires immediately when no approver clients and no forwarding targets", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new ExecApprovalManager();
+      const forwarder = {
+        handleRequested: vi.fn(async () => false),
+        handleResolved: vi.fn(async () => {}),
+        stop: vi.fn(),
+      };
+      const handlers = createExecApprovalHandlers(manager, { forwarder });
+      const respond = vi.fn();
+      const context = {
+        broadcast: (_event: string, _payload: unknown) => {},
+        hasExecApprovalClients: () => false,
+      };
+      const expireSpy = vi.spyOn(manager, "expire");
+
+      const requestPromise = requestExecApproval({
+        handlers,
+        respond,
+        context,
+        params: { timeoutMs: 60_000 },
+      });
+      for (let idx = 0; idx < 20; idx += 1) {
+        await Promise.resolve();
+      }
+      expect(forwarder.handleRequested).toHaveBeenCalledTimes(1);
+      expect(expireSpy).toHaveBeenCalledTimes(1);
+      await vi.runOnlyPendingTimersAsync();
+      await requestPromise;
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ decision: null }),
+        undefined,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

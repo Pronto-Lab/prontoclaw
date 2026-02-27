@@ -10,6 +10,10 @@ const mocks = vi.hoisted(() => ({
   appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true, sessionFile: "x" })),
   recordSessionMetaFromInbound: vi.fn(async () => ({ ok: true })),
   resolveOutboundTarget: vi.fn(() => ({ ok: true, to: "resolved" })),
+  resolveMessageChannelSelection: vi.fn(),
+  sendPoll: vi.fn(async () => ({ messageId: "poll-1" })),
+  getChannelPlugin: vi.fn(),
+  loadOpenClawPlugins: vi.fn(),
 }));
 
 vi.mock("../../config/config.js", async () => {
@@ -22,7 +26,7 @@ vi.mock("../../config/config.js", async () => {
 });
 
 vi.mock("../../channels/plugins/index.js", () => ({
-  getChannelPlugin: () => ({ outbound: {} }),
+  getChannelPlugin: mocks.getChannelPlugin,
   normalizeChannelId: (value: string) => (value === "webchat" ? null : value),
 }));
 
@@ -58,6 +62,10 @@ vi.mock("../../infra/outbound/targets.js", () => ({
   resolveOutboundTarget: mocks.resolveOutboundTarget,
 }));
 
+vi.mock("../../infra/outbound/channel-selection.js", () => ({
+  resolveMessageChannelSelection: mocks.resolveMessageChannelSelection,
+}));
+
 vi.mock("../../infra/outbound/deliver.js", () => ({
   deliverOutboundPayloads: mocks.deliverOutboundPayloads,
 }));
@@ -91,6 +99,19 @@ async function runSend(params: Record<string, unknown>) {
   return { respond };
 }
 
+async function runPoll(params: Record<string, unknown>) {
+  const respond = vi.fn();
+  await sendHandlers.poll({
+    params: params as never,
+    respond,
+    context: makeContext(),
+    req: { type: "req", id: "1", method: "poll" },
+    client: null,
+    isWebchatConnect: () => false,
+  });
+  return { respond };
+}
+
 function mockDeliverySuccess(messageId: string) {
   mocks.deliverOutboundPayloads.mockResolvedValue([{ messageId, channel: "slack" }]);
 }
@@ -103,6 +124,12 @@ describe("gateway send mirroring", () => {
     registrySeq += 1;
     setActivePluginRegistry(createTestRegistry([]), `send-test-${registrySeq}`);
     mocks.resolveOutboundTarget.mockReturnValue({ ok: true, to: "resolved" });
+    mocks.resolveMessageChannelSelection.mockResolvedValue({
+      channel: "slack",
+      configured: ["slack"],
+    });
+    mocks.sendPoll.mockResolvedValue({ messageId: "poll-1" });
+    mocks.getChannelPlugin.mockReturnValue({ outbound: { sendPoll: mocks.sendPoll } });
   });
 
   it("accepts media-only sends without message", async () => {
@@ -167,6 +194,81 @@ describe("gateway send mirroring", () => {
       undefined,
       expect.objectContaining({
         message: expect.stringContaining("Use `chat.send`"),
+      }),
+    );
+  });
+
+  it("auto-picks the single configured channel for send", async () => {
+    mockDeliverySuccess("m-single-send");
+
+    const { respond } = await runSend({
+      to: "x",
+      message: "hi",
+      idempotencyKey: "idem-missing-channel",
+    });
+
+    expect(mocks.resolveMessageChannelSelection).toHaveBeenCalled();
+    expect(mocks.deliverOutboundPayloads).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ messageId: "m-single-send" }),
+      undefined,
+      expect.objectContaining({ channel: "slack" }),
+    );
+  });
+
+  it("returns invalid request when send channel selection is ambiguous", async () => {
+    mocks.resolveMessageChannelSelection.mockRejectedValueOnce(
+      new Error("Channel is required when multiple channels are configured: telegram, slack"),
+    );
+
+    const { respond } = await runSend({
+      to: "x",
+      message: "hi",
+      idempotencyKey: "idem-missing-channel-ambiguous",
+    });
+
+    expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("Channel is required"),
+      }),
+    );
+  });
+
+  it("auto-picks the single configured channel for poll", async () => {
+    const { respond } = await runPoll({
+      to: "x",
+      question: "Q?",
+      options: ["A", "B"],
+      idempotencyKey: "idem-poll-missing-channel",
+    });
+
+    expect(mocks.resolveMessageChannelSelection).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined, {
+      channel: "slack",
+    });
+  });
+
+  it("returns invalid request when poll channel selection is ambiguous", async () => {
+    mocks.resolveMessageChannelSelection.mockRejectedValueOnce(
+      new Error("Channel is required when multiple channels are configured: telegram, slack"),
+    );
+
+    const { respond } = await runPoll({
+      to: "x",
+      question: "Q?",
+      options: ["A", "B"],
+      idempotencyKey: "idem-poll-missing-channel-ambiguous",
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("Channel is required"),
       }),
     );
   });

@@ -34,7 +34,6 @@ import {
   readStringArrayParam,
   readStringParam,
 } from "./common.js";
-import { handleDiscordSend } from "./discord-send-tool.js";
 
 function parseDiscordMessageLink(link: string) {
   const normalized = link.trim();
@@ -57,6 +56,9 @@ export async function handleDiscordMessagingAction(
   action: string,
   params: Record<string, unknown>,
   isActionEnabled: ActionGate<DiscordActionConfig>,
+  options?: {
+    mediaLocalRoots?: readonly string[];
+  },
 ): Promise<AgentToolResult<unknown>> {
   const resolveChannelId = () =>
     resolveDiscordChannelId(
@@ -309,6 +311,7 @@ export async function handleDiscordMessagingAction(
       const result = await sendMessageDiscord(to, content ?? "", {
         ...(accountId ? { accountId } : {}),
         mediaUrl,
+        mediaLocalRoots: options?.mediaLocalRoots,
         replyTo,
         components,
         embeds,
@@ -417,6 +420,7 @@ export async function handleDiscordMessagingAction(
       const result = await sendMessageDiscord(`channel:${channelId}`, content, {
         ...(accountId ? { accountId } : {}),
         mediaUrl,
+        mediaLocalRoots: options?.mediaLocalRoots,
         replyTo,
       });
       return jsonResult({ ok: true, result });
@@ -516,29 +520,6 @@ export async function handleDiscordMessagingAction(
           messages: normalizedMessages,
         },
       });
-    }
-    case "agentSend": {
-      if (!isActionEnabled("threads")) {
-        throw new Error("Discord threads are disabled.");
-      }
-      const targetAgentId = readStringParam(params, "targetAgentId", { required: true });
-      const content = readStringParam(params, "content", { required: true });
-      const threadId = readStringParam(params, "threadId");
-      const channelId = readStringParam(params, "channelId");
-      const threadName = readStringParam(params, "threadName");
-      const urgent = params.urgent === true;
-      const fromAgentId = readStringParam(params, "__agentId");
-      const result = await handleDiscordSend({
-        targetAgentId,
-        message: content,
-        threadId: threadId ?? undefined,
-        channelId: channelId ?? undefined,
-        threadName: threadName ?? undefined,
-        urgent,
-        fromAgentId: fromAgentId ?? undefined,
-        accountId: accountId ?? undefined,
-      });
-      return jsonResult(result);
     }
     default:
       throw new Error(`Unknown action: ${action}`);

@@ -1,5 +1,4 @@
 import type { Command } from "commander";
-import type { NodesRpcOpts } from "./types.js";
 import { resolveAgentConfig, resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { loadConfig } from "../../config/config.js";
 import { randomIdempotencyKey } from "../../gateway/call.js";
@@ -20,6 +19,7 @@ import { parseEnvPairs, parseTimeoutMs } from "../nodes-run.js";
 import { getNodesTheme, runNodesCommand } from "./cli-utils.js";
 import { parseNodeList } from "./format.js";
 import { callGatewayCli, nodesCallOpts, resolveNodeId, unauthorizedHintForMessage } from "./rpc.js";
+import type { NodesRpcOpts } from "./types.js";
 
 type NodesRunOpts = NodesRpcOpts & {
   node?: string;
@@ -410,67 +410,8 @@ export function registerNodesInvokeCommands(nodes: Command) {
           if (approvals.hostSecurity === "deny") {
             throw new Error("exec denied: host=node security=deny");
           }
-
-          const requiresAsk = hostAsk === "always" || hostAsk === "on-miss";
-          let approvalId: string | null = null;
-          if (requiresAsk) {
-            approvalId = crypto.randomUUID();
-            const approvalTimeoutMs = DEFAULT_EXEC_APPROVAL_TIMEOUT_MS;
-            // The CLI transport timeout (opts.timeout) must be longer than the
-            // gateway-side approval wait so the connection stays alive while the
-            // user decides.  Without this override the default 35 s transport
-            // timeout races — and always loses — against the 120 s approval
-            // timeout, causing "gateway timeout after 35000ms" (#12098).
-            const transportTimeoutMs = Math.max(
-              parseTimeoutMs(opts.timeout) ?? 0,
-              approvalTimeoutMs + 10_000,
-            );
-            const decisionResult = (await callGatewayCli(
-              "exec.approval.request",
-              opts,
-              {
-                id: approvalId,
-                command: rawCommand ?? argv.join(" "),
-                commandArgv: argv,
-                cwd: opts.cwd,
-                host: "node",
-                security: hostSecurity,
-                ask: hostAsk,
-                agentId,
-                resolvedPath: undefined,
-                sessionKey: undefined,
-                timeoutMs: approvalTimeoutMs,
-              },
-              { transportTimeoutMs },
-            )) as { decision?: string } | null;
-            const decision =
-              decisionResult && typeof decisionResult === "object"
-                ? (decisionResult.decision ?? null)
-                : null;
-            if (decision === "deny") {
-              throw new Error("exec denied: user denied");
-            }
-            if (!decision) {
-              if (askFallback === "full") {
-                approvedByAsk = true;
-                approvalDecision = "allow-once";
-              } else if (askFallback === "allowlist") {
-                // defer allowlist enforcement to node host
-              } else {
-                throw new Error("exec denied: approval required (approval UI not available)");
-              }
-            }
-            if (decision === "allow-once") {
-              approvedByAsk = true;
-              approvalDecision = "allow-once";
-            }
-            if (decision === "allow-always") {
-              approvedByAsk = true;
-              approvalDecision = "allow-always";
-            }
-          }
-
-          const invokeParams: Record<string, unknown> = {
+          const approvalResult = await maybeRequestNodesRunApproval({
+            opts,
             nodeId,
             agentId,
             preparedCmdText: preparedContext.prepared.cmdText,

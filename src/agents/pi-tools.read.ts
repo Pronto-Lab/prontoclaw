@@ -1,11 +1,15 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { createEditTool, createReadTool, createWriteTool } from "@mariozechner/pi-coding-agent";
-import type { ImageSanitizationLimits } from "./image-sanitization.js";
-import type { AnyAgentTool } from "./pi-tools.types.js";
-import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import { SafeOpenError, openFileWithinRoot, writeFileWithinRoot } from "../infra/fs-safe.js";
 import { detectMime } from "../media/mime.js";
 import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
+import type { ImageSanitizationLimits } from "./image-sanitization.js";
+import type { AnyAgentTool } from "./pi-tools.types.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
+import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { sanitizeToolResultImages } from "./tool-images.js";
 
 // NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
@@ -351,6 +355,7 @@ export const CLAUDE_PARAM_GROUPS = {
     {
       keys: ["newText", "new_string"],
       label: "newText (newText or new_string)",
+      allowEmpty: true,
     },
   ],
 } as const;
@@ -548,6 +553,68 @@ export function wrapToolParamNormalization(
 }
 
 export function wrapToolWorkspaceRootGuard(tool: AnyAgentTool, root: string): AnyAgentTool {
+  return wrapToolWorkspaceRootGuardWithOptions(tool, root);
+}
+
+function mapContainerPathToWorkspaceRoot(params: {
+  filePath: string;
+  root: string;
+  containerWorkdir?: string;
+}): string {
+  const containerWorkdir = params.containerWorkdir?.trim();
+  if (!containerWorkdir) {
+    return params.filePath;
+  }
+  const normalizedWorkdir = containerWorkdir.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalizedWorkdir.startsWith("/")) {
+    return params.filePath;
+  }
+  if (!normalizedWorkdir) {
+    return params.filePath;
+  }
+
+  let candidate = params.filePath.startsWith("@") ? params.filePath.slice(1) : params.filePath;
+  if (/^file:\/\//i.test(candidate)) {
+    try {
+      candidate = fileURLToPath(candidate);
+    } catch {
+      try {
+        const parsed = new URL(candidate);
+        if (parsed.protocol !== "file:") {
+          return params.filePath;
+        }
+        candidate = decodeURIComponent(parsed.pathname || "");
+        if (!candidate.startsWith("/")) {
+          return params.filePath;
+        }
+      } catch {
+        return params.filePath;
+      }
+    }
+  }
+
+  const normalizedCandidate = candidate.replace(/\\/g, "/");
+  if (normalizedCandidate === normalizedWorkdir) {
+    return path.resolve(params.root);
+  }
+  const prefix = `${normalizedWorkdir}/`;
+  if (!normalizedCandidate.startsWith(prefix)) {
+    return candidate;
+  }
+  const relative = normalizedCandidate.slice(prefix.length);
+  if (!relative) {
+    return path.resolve(params.root);
+  }
+  return path.resolve(params.root, ...relative.split("/").filter(Boolean));
+}
+
+export function wrapToolWorkspaceRootGuardWithOptions(
+  tool: AnyAgentTool,
+  root: string,
+  options?: {
+    containerWorkdir?: string;
+  },
+): AnyAgentTool {
   return {
     ...tool,
     execute: async (toolCallId, args, signal, onUpdate) => {
@@ -557,7 +624,12 @@ export function wrapToolWorkspaceRootGuard(tool: AnyAgentTool, root: string): An
         (args && typeof args === "object" ? (args as Record<string, unknown>) : undefined);
       const filePath = record?.path;
       if (typeof filePath === "string" && filePath.trim()) {
-        await assertSandboxPath({ filePath, cwd: root, root });
+        const sandboxPath = mapContainerPathToWorkspaceRoot({
+          filePath,
+          root,
+          containerWorkdir: options?.containerWorkdir,
+        });
+        await assertSandboxPath({ filePath: sandboxPath, cwd: root, root });
       }
       return tool.execute(toolCallId, normalized ?? args, signal, onUpdate);
     },

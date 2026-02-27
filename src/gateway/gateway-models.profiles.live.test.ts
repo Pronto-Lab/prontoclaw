@@ -1,11 +1,10 @@
-import type { Api, Model } from "@mariozechner/pi-ai";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { describe, it } from "vitest";
-import type { ModelsConfig, OpenClawConfig, ModelProviderConfig } from "../config/types.js";
 import { resolveOpenClawAgentDir } from "../agents/agent-paths.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import {
@@ -23,11 +22,13 @@ import { getApiKeyForModel } from "../agents/model-auth.js";
 import { ensureOpenClawModelsJson } from "../agents/models-config.js";
 import { discoverAuthStorage, discoverModels } from "../agents/pi-model-discovery.js";
 import { loadConfig } from "../config/config.js";
+import type { ModelsConfig, OpenClawConfig, ModelProviderConfig } from "../config/types.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { GatewayClient } from "./client.js";
 import { renderCatNoncePngBase64 } from "./live-image-probe.js";
+import { hasExpectedToolNonce, shouldRetryToolReadProbe } from "./live-tool-probe-utils.js";
 import { startGatewayServer } from "./server.js";
 import { extractPayloadText } from "./test-helpers.agent-results.js";
 
@@ -759,38 +760,75 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
           // Real tool invocation: force the agent to Read a local file and echo a nonce.
           logProgress(`${progressLabel}: tool-read`);
           const runIdTool = randomUUID();
-          const toolProbe = await client.request<AgentFinalPayload>(
-            "agent",
-            {
-              sessionKey,
-              idempotencyKey: `idem-${runIdTool}-tool`,
-              message:
-                "OpenClaw live tool probe (local, safe): " +
-                `use the tool named \`read\` (or \`Read\`) with JSON arguments {"path":"${toolProbePath}"}. ` +
-                "Then reply with the two nonce values you read (include both).",
-              thinking: params.thinkingLevel,
-              deliver: false,
-            },
-            { expectFinal: true },
-          );
-          if (toolProbe?.status !== "ok") {
-            throw new Error(`tool probe failed: status=${String(toolProbe?.status)}`);
-          }
-          const toolText = extractPayloadText(toolProbe?.result);
-          if (
-            isEmptyStreamText(toolText) &&
-            (model.provider === "minimax" || model.provider === "openai-codex")
+          const maxToolReadAttempts = 3;
+          let toolText = "";
+          for (
+            let toolReadAttempt = 0;
+            toolReadAttempt < maxToolReadAttempts;
+            toolReadAttempt += 1
           ) {
-            logProgress(`${progressLabel}: skip (${model.provider} empty response)`);
-            break;
+            const strictReply = toolReadAttempt > 0;
+            const toolProbe = await client.request<AgentFinalPayload>(
+              "agent",
+              {
+                sessionKey,
+                idempotencyKey: `idem-${runIdTool}-tool-${toolReadAttempt + 1}`,
+                message: strictReply
+                  ? "OpenClaw live tool probe (local, safe): " +
+                    `use the tool named \`read\` (or \`Read\`) with JSON arguments {"path":"${toolProbePath}"}. ` +
+                    `Then reply with exactly: ${nonceA} ${nonceB}. No extra text.`
+                  : "OpenClaw live tool probe (local, safe): " +
+                    `use the tool named \`read\` (or \`Read\`) with JSON arguments {"path":"${toolProbePath}"}. ` +
+                    "Then reply with the two nonce values you read (include both).",
+                thinking: params.thinkingLevel,
+                deliver: false,
+              },
+              { expectFinal: true },
+            );
+            if (toolProbe?.status !== "ok") {
+              if (toolReadAttempt + 1 < maxToolReadAttempts) {
+                logProgress(
+                  `${progressLabel}: tool-read retry (${toolReadAttempt + 2}/${maxToolReadAttempts}) status=${String(toolProbe?.status)}`,
+                );
+                continue;
+              }
+              throw new Error(`tool probe failed: status=${String(toolProbe?.status)}`);
+            }
+            toolText = extractPayloadText(toolProbe?.result);
+            if (
+              isEmptyStreamText(toolText) &&
+              (model.provider === "minimax" || model.provider === "openai-codex")
+            ) {
+              logProgress(`${progressLabel}: skip (${model.provider} empty response)`);
+              break;
+            }
+            assertNoReasoningTags({
+              text: toolText,
+              model: modelKey,
+              phase: "tool-read",
+              label: params.label,
+            });
+            if (hasExpectedToolNonce(toolText, nonceA, nonceB)) {
+              break;
+            }
+            if (
+              shouldRetryToolReadProbe({
+                text: toolText,
+                nonceA,
+                nonceB,
+                provider: model.provider,
+                attempt: toolReadAttempt,
+                maxAttempts: maxToolReadAttempts,
+              })
+            ) {
+              logProgress(
+                `${progressLabel}: tool-read retry (${toolReadAttempt + 2}/${maxToolReadAttempts}) malformed tool output`,
+              );
+              continue;
+            }
+            throw new Error(`tool probe missing nonce: ${toolText}`);
           }
-          assertNoReasoningTags({
-            text: toolText,
-            model: modelKey,
-            phase: "tool-read",
-            label: params.label,
-          });
-          if (!toolText.includes(nonceA) || !toolText.includes(nonceB)) {
+          if (!hasExpectedToolNonce(toolText, nonceA, nonceB)) {
             throw new Error(`tool probe missing nonce: ${toolText}`);
           }
 

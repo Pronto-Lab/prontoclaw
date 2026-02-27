@@ -1,30 +1,19 @@
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import type { FollowupRun } from "./queue.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSessionStore, saveSessionStore, type SessionEntry } from "../../config/sessions.js";
+import type { FollowupRun } from "./queue.js";
 import { createMockTypingController } from "./test-helpers.js";
 
 const runEmbeddedPiAgentMock = vi.fn();
 const routeReplyMock = vi.fn();
 const isRoutableChannelMock = vi.fn();
 
-vi.mock("../../agents/model-fallback.js", () => ({
-  runWithModelFallback: async ({
-    provider,
-    model,
-    run,
-  }: {
-    provider: string;
-    model: string;
-    run: (provider: string, model: string) => Promise<unknown>;
-  }) => ({
-    result: await run(provider, model),
-    provider,
-    model,
-  }),
-}));
+vi.mock(
+  "../../agents/model-fallback.js",
+  async () => await import("../../test-utils/model-fallback.mock.js"),
+);
 
 vi.mock("../../agents/pi-embedded.js", () => ({
   runEmbeddedPiAgent: (params: unknown) => runEmbeddedPiAgentMock(params),
@@ -171,6 +160,27 @@ describe("createFollowupRunner compaction", () => {
 });
 
 describe("createFollowupRunner messaging tool dedupe", () => {
+  function createMessagingDedupeRunner(
+    onBlockReply: (payload: unknown) => Promise<void>,
+    overrides: Partial<{
+      sessionEntry: SessionEntry;
+      sessionStore: Record<string, SessionEntry>;
+      sessionKey: string;
+      storePath: string;
+    }> = {},
+  ) {
+    return createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+      sessionEntry: overrides.sessionEntry,
+      sessionStore: overrides.sessionStore,
+      sessionKey: overrides.sessionKey,
+      storePath: overrides.storePath,
+    });
+  }
+
   it("drops payloads already sent via messaging tool", async () => {
     const onBlockReply = vi.fn(async () => {});
     runEmbeddedPiAgentMock.mockResolvedValueOnce({
@@ -179,12 +189,7 @@ describe("createFollowupRunner messaging tool dedupe", () => {
       meta: {},
     });
 
-    const runner = createFollowupRunner({
-      opts: { onBlockReply },
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-5",
-    });
+    const runner = createMessagingDedupeRunner(onBlockReply);
 
     await runner(baseQueuedRun());
 
@@ -199,12 +204,7 @@ describe("createFollowupRunner messaging tool dedupe", () => {
       meta: {},
     });
 
-    const runner = createFollowupRunner({
-      opts: { onBlockReply },
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-5",
-    });
+    const runner = createMessagingDedupeRunner(onBlockReply);
 
     await runner(baseQueuedRun());
 
@@ -220,12 +220,7 @@ describe("createFollowupRunner messaging tool dedupe", () => {
       meta: {},
     });
 
-    const runner = createFollowupRunner({
-      opts: { onBlockReply },
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-5",
-    });
+    const runner = createMessagingDedupeRunner(onBlockReply);
 
     await runner(baseQueuedRun("slack"));
 
@@ -290,12 +285,7 @@ describe("createFollowupRunner messaging tool dedupe", () => {
       meta: {},
     });
 
-    const runner = createFollowupRunner({
-      opts: { onBlockReply },
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-5",
-    });
+    const runner = createMessagingDedupeRunner(onBlockReply);
 
     await runner(baseQueuedRun());
 
@@ -311,12 +301,7 @@ describe("createFollowupRunner messaging tool dedupe", () => {
       meta: {},
     });
 
-    const runner = createFollowupRunner({
-      opts: { onBlockReply },
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-5",
-    });
+    const runner = createMessagingDedupeRunner(onBlockReply);
 
     await runner(baseQueuedRun());
 
@@ -348,15 +333,11 @@ describe("createFollowupRunner messaging tool dedupe", () => {
       },
     });
 
-    const runner = createFollowupRunner({
-      opts: { onBlockReply },
-      typing: createMockTypingController(),
-      typingMode: "instant",
+    const runner = createMessagingDedupeRunner(onBlockReply, {
       sessionEntry,
       sessionStore,
       sessionKey,
       storePath,
-      defaultModel: "anthropic/claude-opus-4-5",
     });
 
     await runner(baseQueuedRun("slack"));
@@ -444,5 +425,117 @@ describe("createFollowupRunner messaging tool dedupe", () => {
       }),
     );
     expect(onBlockReply).not.toHaveBeenCalled();
+  });
+});
+
+describe("createFollowupRunner typing cleanup", () => {
+  it("calls both markRunComplete and markDispatchIdle on NO_REPLY", async () => {
+    const typing = createMockTypingController();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      meta: {},
+    });
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply: vi.fn(async () => {}) },
+      typing,
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    await runner(baseQueuedRun());
+
+    expect(typing.markRunComplete).toHaveBeenCalled();
+    expect(typing.markDispatchIdle).toHaveBeenCalled();
+  });
+
+  it("calls both markRunComplete and markDispatchIdle on empty payloads", async () => {
+    const typing = createMockTypingController();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      meta: {},
+    });
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply: vi.fn(async () => {}) },
+      typing,
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    await runner(baseQueuedRun());
+
+    expect(typing.markRunComplete).toHaveBeenCalled();
+    expect(typing.markDispatchIdle).toHaveBeenCalled();
+  });
+
+  it("calls both markRunComplete and markDispatchIdle on agent error", async () => {
+    const typing = createMockTypingController();
+    runEmbeddedPiAgentMock.mockRejectedValueOnce(new Error("agent exploded"));
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply: vi.fn(async () => {}) },
+      typing,
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    await runner(baseQueuedRun());
+
+    expect(typing.markRunComplete).toHaveBeenCalled();
+    expect(typing.markDispatchIdle).toHaveBeenCalled();
+  });
+
+  it("calls both markRunComplete and markDispatchIdle on successful delivery", async () => {
+    const typing = createMockTypingController();
+    const onBlockReply = vi.fn(async () => {});
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "hello world!" }],
+      meta: {},
+    });
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply },
+      typing,
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    await runner(baseQueuedRun());
+
+    expect(onBlockReply).toHaveBeenCalled();
+    expect(typing.markRunComplete).toHaveBeenCalled();
+    expect(typing.markDispatchIdle).toHaveBeenCalled();
+  });
+});
+
+describe("createFollowupRunner agentDir forwarding", () => {
+  it("passes queued run agentDir to runEmbeddedPiAgent", async () => {
+    runEmbeddedPiAgentMock.mockClear();
+    const onBlockReply = vi.fn(async () => {});
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "hello world!" }],
+      messagingToolSentTexts: ["different message"],
+      meta: {},
+    });
+    const runner = createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+    const agentDir = path.join("/tmp", "agent-dir");
+    const queued = createQueuedRun();
+    await runner({
+      ...queued,
+      run: {
+        ...queued.run,
+        agentDir,
+      },
+    });
+
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+    const call = runEmbeddedPiAgentMock.mock.calls.at(-1)?.[0] as { agentDir?: string };
+    expect(call?.agentDir).toBe(agentDir);
   });
 });

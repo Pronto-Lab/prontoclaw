@@ -1,18 +1,19 @@
-import type { OpenClawConfig } from "../../../config/config.js";
-import type { RuntimeEnv } from "../../../runtime.js";
-import type { AuthChoice, OnboardOptions } from "../../onboard-types.js";
 import { upsertAuthProfile } from "../../../agents/auth-profiles.js";
 import { normalizeProviderId } from "../../../agents/model-selection.js";
 import { parseDurationMs } from "../../../cli/parse-duration.js";
-import { upsertSharedEnvVar } from "../../../infra/env-file.js";
-import { shortenHomePath } from "../../../utils.js";
+import type { OpenClawConfig } from "../../../config/config.js";
+import type { SecretInput } from "../../../config/types.secrets.js";
+import type { RuntimeEnv } from "../../../runtime.js";
+import { resolveDefaultSecretProviderAlias } from "../../../secrets/ref-contract.js";
 import { normalizeSecretInput } from "../../../utils/normalize-secret-input.js";
 import { normalizeSecretInputModeInput } from "../../auth-choice.apply-helpers.js";
 import { buildTokenProfileId, validateAnthropicSetupToken } from "../../auth-token.js";
 import { applyGoogleGeminiModelDefault } from "../../google-gemini-model-default.js";
+import { applyPrimaryModel } from "../../model-picker.js";
 import {
   applyAuthProfileConfig,
   applyCloudflareAiGatewayConfig,
+  applyKilocodeConfig,
   applyQianfanConfig,
   applyKimiCodeConfig,
   applyMinimaxApiConfig,
@@ -28,6 +29,7 @@ import {
   applyHuggingfaceConfig,
   applyVercelAiGatewayConfig,
   applyLitellmConfig,
+  applyMistralConfig,
   applyXaiConfig,
   applyXiaomiConfig,
   applyZaiConfig,
@@ -36,8 +38,10 @@ import {
   setByteplusApiKey,
   setQianfanApiKey,
   setGeminiApiKey,
+  setKilocodeApiKey,
   setKimiCodingApiKey,
   setLitellmApiKey,
+  setMistralApiKey,
   setMinimaxApiKey,
   setMoonshotApiKey,
   setOpenaiApiKey,
@@ -59,6 +63,7 @@ import {
   parseNonInteractiveCustomApiFlags,
   resolveCustomProviderId,
 } from "../../onboard-custom.js";
+import type { AuthChoice, OnboardOptions } from "../../onboard-types.js";
 import { applyOpenAIConfig } from "../../openai-model-default.js";
 import { detectZaiEndpoint } from "../../zai-endpoint-detect.js";
 import { resolveNonInteractiveApiKey } from "../api-keys.js";
@@ -384,6 +389,87 @@ export async function applyNonInteractiveAuthChoice(params: {
     return applyXaiConfig(nextConfig);
   }
 
+  if (authChoice === "mistral-api-key") {
+    const resolved = await resolveApiKey({
+      provider: "mistral",
+      cfg: baseConfig,
+      flagValue: opts.mistralApiKey,
+      flagName: "--mistral-api-key",
+      envVar: "MISTRAL_API_KEY",
+      runtime,
+    });
+    if (!resolved) {
+      return null;
+    }
+    if (
+      !(await maybeSetResolvedApiKey(resolved, (value) =>
+        setMistralApiKey(value, undefined, apiKeyStorageOptions),
+      ))
+    ) {
+      return null;
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "mistral:default",
+      provider: "mistral",
+      mode: "api_key",
+    });
+    return applyMistralConfig(nextConfig);
+  }
+
+  if (authChoice === "volcengine-api-key") {
+    const resolved = await resolveApiKey({
+      provider: "volcengine",
+      cfg: baseConfig,
+      flagValue: opts.volcengineApiKey,
+      flagName: "--volcengine-api-key",
+      envVar: "VOLCANO_ENGINE_API_KEY",
+      runtime,
+    });
+    if (!resolved) {
+      return null;
+    }
+    if (
+      !(await maybeSetResolvedApiKey(resolved, (value) =>
+        setVolcengineApiKey(value, undefined, apiKeyStorageOptions),
+      ))
+    ) {
+      return null;
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "volcengine:default",
+      provider: "volcengine",
+      mode: "api_key",
+    });
+    return applyPrimaryModel(nextConfig, "volcengine-plan/ark-code-latest");
+  }
+
+  if (authChoice === "byteplus-api-key") {
+    const resolved = await resolveApiKey({
+      provider: "byteplus",
+      cfg: baseConfig,
+      flagValue: opts.byteplusApiKey,
+      flagName: "--byteplus-api-key",
+      envVar: "BYTEPLUS_API_KEY",
+      runtime,
+    });
+    if (!resolved) {
+      return null;
+    }
+    if (
+      !(await maybeSetResolvedApiKey(resolved, (value) =>
+        setByteplusApiKey(value, undefined, apiKeyStorageOptions),
+      ))
+    ) {
+      return null;
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "byteplus:default",
+      provider: "byteplus",
+      mode: "api_key",
+    });
+    return applyPrimaryModel(nextConfig, "byteplus-plan/ark-code-latest");
+  }
+
   if (authChoice === "qianfan-api-key") {
     const resolved = await resolveApiKey({
       provider: "qianfan",
@@ -463,6 +549,33 @@ export async function applyNonInteractiveAuthChoice(params: {
       mode: "api_key",
     });
     return applyOpenrouterConfig(nextConfig);
+  }
+
+  if (authChoice === "kilocode-api-key") {
+    const resolved = await resolveApiKey({
+      provider: "kilocode",
+      cfg: baseConfig,
+      flagValue: opts.kilocodeApiKey,
+      flagName: "--kilocode-api-key",
+      envVar: "KILOCODE_API_KEY",
+      runtime,
+    });
+    if (!resolved) {
+      return null;
+    }
+    if (
+      !(await maybeSetResolvedApiKey(resolved, (value) =>
+        setKilocodeApiKey(value, undefined, apiKeyStorageOptions),
+      ))
+    ) {
+      return null;
+    }
+    nextConfig = applyAuthProfileConfig(nextConfig, {
+      profileId: "kilocode:default",
+      provider: "kilocode",
+      mode: "api_key",
+    });
+    return applyKilocodeConfig(nextConfig);
   }
 
   if (authChoice === "litellm-api-key") {

@@ -26,6 +26,8 @@ import { getChildLogger } from "../../logging.js";
 import { buildPairingReply } from "../../pairing/pairing-messages.js";
 import { upsertChannelPairingRequest } from "../../pairing/pairing-store.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
+import { DEFAULT_ACCOUNT_ID, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { readStoreAllowFromForDmPolicy } from "../../security/dm-policy-shared.js";
 import { markMentionResponded } from "../a2a-retry/index.js";
 import { checkA2ARateLimit } from "../loop-guard.js";
 import { fetchPluralKitMessageInfo } from "../pluralkit.js";
@@ -55,6 +57,7 @@ import { resolveDiscordChannelInfo, resolveDiscordMessageText } from "./message-
 import { resolveDiscordSenderIdentity, resolveDiscordWebhookId } from "./sender-identity.js";
 import { isSiblingBot, getAgentIdForBot } from "./sibling-bots.js";
 import { resolveDiscordSystemEvent } from "./system-events.js";
+import { isRecentlyUnboundThreadWebhookMessage } from "./thread-bindings.js";
 import {
   isThreadParticipant,
   registerThreadParticipant,
@@ -66,6 +69,45 @@ export type {
   DiscordMessagePreflightContext,
   DiscordMessagePreflightParams,
 } from "./message-handler.preflight.types.js";
+
+export function resolvePreflightMentionRequirement(params: {
+  shouldRequireMention: boolean;
+  isBoundThreadSession: boolean;
+}): boolean {
+  if (!params.shouldRequireMention) {
+    return false;
+  }
+  return !params.isBoundThreadSession;
+}
+
+export function shouldIgnoreBoundThreadWebhookMessage(params: {
+  accountId?: string;
+  threadId?: string;
+  webhookId?: string | null;
+  threadBinding?: SessionBindingRecord;
+}): boolean {
+  const webhookId = params.webhookId?.trim() || "";
+  if (!webhookId) {
+    return false;
+  }
+  const boundWebhookId =
+    typeof params.threadBinding?.metadata?.webhookId === "string"
+      ? params.threadBinding.metadata.webhookId.trim()
+      : "";
+  if (!boundWebhookId) {
+    const threadId = params.threadId?.trim() || "";
+    if (!threadId) {
+      return false;
+    }
+    return isRecentlyUnboundThreadWebhookMessage({
+      accountId: params.accountId,
+      threadId,
+      webhookId,
+    });
+  }
+  return webhookId === boundWebhookId;
+}
+
 
 export async function preflightDiscordMessage(
   params: DiscordMessagePreflightParams,
@@ -186,7 +228,11 @@ export async function preflightDiscordMessage(
       return null;
     }
     if (dmPolicy !== "open") {
-      const storeAllowFrom = await readChannelAllowFromStore("discord").catch(() => []);
+      const storeAllowFrom = await readStoreAllowFromForDmPolicy({
+        provider: "discord",
+        accountId: resolvedAccountId,
+        dmPolicy,
+      });
       const effectiveAllowFrom = [...(params.allowFrom ?? []), ...storeAllowFrom];
       const allowList = normalizeDiscordAllowList(effectiveAllowFrom, ["discord:", "user:", "pk:"]);
       const allowMatch = allowList
@@ -301,7 +347,36 @@ export async function preflightDiscordMessage(
     // Pass parent peer for thread binding inheritance
     parentPeer: earlyThreadParentId ? { kind: "channel", id: earlyThreadParentId } : undefined,
   });
-  const mentionRegexes = buildMentionRegexes(params.cfg, route.agentId);
+  let threadBinding: SessionBindingRecord | undefined;
+  if (earlyThreadChannel) {
+    threadBinding =
+      getSessionBindingService().resolveByConversation({
+        channel: "discord",
+        accountId: params.accountId,
+        conversationId: message.channelId,
+      }) ?? undefined;
+  }
+  if (
+    shouldIgnoreBoundThreadWebhookMessage({
+      accountId: params.accountId,
+      threadId: message.channelId,
+      webhookId,
+      threadBinding,
+    })
+  ) {
+    logVerbose(`discord: drop bound-thread webhook echo message ${message.id}`);
+    return null;
+  }
+  const boundSessionKey = threadBinding?.targetSessionKey?.trim();
+  const boundAgentId = boundSessionKey ? resolveAgentIdFromSessionKey(boundSessionKey) : undefined;
+  const effectiveRoute = boundSessionKey
+    ? {
+        ...route,
+        sessionKey: boundSessionKey,
+        agentId: boundAgentId ?? route.agentId,
+      }
+    : route;
+  const mentionRegexes = buildMentionRegexes(params.cfg, effectiveRoute.agentId);
   const explicitlyMentioned = Boolean(
     botId && message.mentionedUsers?.some((user: User) => user.id === botId),
   );
@@ -759,5 +834,7 @@ export async function preflightDiscordMessage(
     effectiveWasMentioned,
     canDetectMention,
     historyEntry,
+    threadBindings: params.threadBindings,
+    discordRestFetch: params.discordRestFetch,
   };
 }

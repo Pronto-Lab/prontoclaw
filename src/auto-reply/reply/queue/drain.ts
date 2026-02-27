@@ -1,9 +1,9 @@
-import type { FollowupRun } from "./types.js";
 import { defaultRuntime } from "../../../runtime.js";
 import {
   buildCollectPrompt,
+  beginQueueDrain,
   clearQueueSummaryState,
-  drainCollectItemIfNeeded,
+  drainCollectQueueStep,
   drainNextQueueItem,
   hasCrossChannelItems,
   previewQueueSummaryPrompt,
@@ -11,6 +11,7 @@ import {
 } from "../../../utils/queue-helpers.js";
 import { isRoutableChannel } from "../route-reply.js";
 import { FOLLOWUP_QUEUES } from "./state.js";
+import type { FollowupRun } from "./types.js";
 
 type OriginRoutingMetadata = Pick<
   FollowupRun,
@@ -49,46 +50,27 @@ export function scheduleFollowupDrain(
   key: string,
   runFollowup: (run: FollowupRun) => Promise<void>,
 ): void {
-  const queue = FOLLOWUP_QUEUES.get(key);
-  if (!queue || queue.draining) {
+  const queue = beginQueueDrain(FOLLOWUP_QUEUES, key);
+  if (!queue) {
     return;
   }
-  queue.draining = true;
   void (async () => {
     try {
-      let forceIndividualCollect = false;
+      const collectState = { forceIndividualCollect: false };
       while (queue.items.length > 0 || queue.droppedCount > 0) {
         await waitForQueueDebounce(queue);
         if (queue.mode === "collect") {
           // Once the batch is mixed, never collect again within this drain.
           // Prevents “collect after shift” collapsing different targets.
           //
-          // Debug: `pnpm test src/auto-reply/reply/queue.collect-routing.test.ts`
+          // Debug: `pnpm test src/auto-reply/reply/reply-flow.test.ts`
           // Check if messages span multiple channels.
           // If so, process individually to preserve per-message routing.
-          const isCrossChannel = hasCrossChannelItems(queue.items, (item) => {
-            const channel = item.originatingChannel;
-            const to = item.originatingTo;
-            const accountId = item.originatingAccountId;
-            const threadId = item.originatingThreadId;
-            if (!channel && !to && !accountId && threadId == null) {
-              return {};
-            }
-            if (!isRoutableChannel(channel) || !to) {
-              return { cross: true };
-            }
-            const threadKey = threadId != null ? String(threadId) : "";
-            return {
-              key: [channel, to, accountId || "", threadKey].join("|"),
-            };
-          });
+          const isCrossChannel = hasCrossChannelItems(queue.items, resolveCrossChannelKey);
 
-          const collectDrainResult = await drainCollectItemIfNeeded({
-            forceIndividualCollect,
+          const collectDrainResult = await drainCollectQueueStep({
+            collectState,
             isCrossChannel,
-            setForceIndividualCollect: (next) => {
-              forceIndividualCollect = next;
-            },
             items: queue.items,
             run: runFollowup,
           });
@@ -106,15 +88,7 @@ export function scheduleFollowupDrain(
             break;
           }
 
-          // Preserve originating channel from items when collecting same-channel.
-          const originatingChannel = items.find((i) => i.originatingChannel)?.originatingChannel;
-          const originatingTo = items.find((i) => i.originatingTo)?.originatingTo;
-          const originatingAccountId = items.find(
-            (i) => i.originatingAccountId,
-          )?.originatingAccountId;
-          const originatingThreadId = items.find(
-            (i) => i.originatingThreadId != null,
-          )?.originatingThreadId;
+          const routing = resolveOriginRoutingMetadata(items);
 
           const prompt = buildCollectPrompt({
             title: "[Queued messages while agent was busy]",

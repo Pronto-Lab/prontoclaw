@@ -4,17 +4,11 @@ import {
 } from "../../channels/plugins/index.js";
 import { normalizeChannelId as normalizeChatChannelId } from "../../channels/registry.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import { callGateway } from "../../gateway/call.js";
-import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
-import { resolveAgentConfig } from "../agent-scope.js";
-import { buildPayloadSummary } from "./a2a-payload-parser.js";
-import type { A2APayload } from "./a2a-payload-types.js";
-import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 
 const ANNOUNCE_SKIP_TOKEN = "ANNOUNCE_SKIP";
 const REPLY_SKIP_TOKEN = "REPLY_SKIP";
-const DEFAULT_PING_PONG_TURNS = 30;
-const MAX_PING_PONG_TURNS = 30;
+const DEFAULT_PING_PONG_TURNS = 5;
+const MAX_PING_PONG_TURNS = 5;
 
 export type AnnounceTarget = {
   channel: string;
@@ -76,144 +70,20 @@ export function resolveAnnounceTargetFromKey(sessionKey: string): AnnounceTarget
   };
 }
 
-function buildAgentLabel(agentId: string, config: OpenClawConfig | undefined): string {
-  if (!config) {
-    return agentId;
-  }
-  const agentConfig = resolveAgentConfig(config, agentId);
-  const rawName = agentConfig?.name;
-  if (rawName) {
-    // Sanitize: collapse whitespace/newlines to single spaces, strip parentheses
-    const name = rawName
-      .replace(/[\r\n]+/g, " ")
-      .replace(/[()]/g, "")
-      .trim();
-    if (name) {
-      return `${name} (${agentId})`;
-    }
-  }
-  return agentId;
-}
-
-export async function buildRequesterContextSummary(
-  sessionKey: string,
-  limit?: number,
-): Promise<string> {
-  try {
-    const result = await callGateway<{ messages: Array<unknown> }>({
-      method: "chat.history",
-      params: { sessionKey, limit: limit ?? 10 },
-    });
-
-    if (!result?.messages || !Array.isArray(result.messages)) {
-      return "";
-    }
-
-    const filtered = stripToolMessages(result.messages);
-    if (filtered.length === 0) {
-      return "";
-    }
-
-    const messageParts: string[] = [];
-    let charCount = 0;
-    const maxChars = 3000;
-
-    for (const msg of filtered) {
-      if (!msg || typeof msg !== "object") {
-        continue;
-      }
-
-      const role = (msg as { role?: unknown }).role;
-      let content = "";
-
-      if (role === "assistant") {
-        content = extractAssistantText(msg) ?? "";
-      } else if (role === "user") {
-        const rawContent = (msg as { content?: unknown }).content;
-        if (typeof rawContent === "string") {
-          content = rawContent;
-        } else if (Array.isArray(rawContent)) {
-          const textParts: string[] = [];
-          for (const block of rawContent) {
-            if (block && typeof block === "object") {
-              const text = (block as { text?: unknown }).text;
-              if (typeof text === "string") {
-                textParts.push(text);
-              }
-            }
-          }
-          content = textParts.join(" ");
-        }
-      } else {
-        continue;
-      }
-
-      if (!content) {
-        continue;
-      }
-
-      const truncated = content.length > 500 ? content.substring(0, 500) + "..." : content;
-      const line = `[${role}]: ${truncated}`;
-
-      if (charCount + line.length > maxChars) {
-        break;
-      }
-
-      messageParts.push(line);
-      charCount += line.length;
-    }
-
-    if (messageParts.length === 0) {
-      return "";
-    }
-
-    return `## Requester's Recent Context\n${messageParts.join("\n")}`;
-  } catch {
-    return "";
-  }
-}
-
 export function buildAgentToAgentMessageContext(params: {
   requesterSessionKey?: string;
   requesterChannel?: string;
   targetSessionKey: string;
-  config?: OpenClawConfig;
-  requesterContextSummary?: string;
-  payload?: A2APayload | null;
 }) {
-  const requesterAgentId = params.requesterSessionKey
-    ? resolveAgentIdFromSessionKey(params.requesterSessionKey)
-    : undefined;
-  const targetAgentId = resolveAgentIdFromSessionKey(params.targetSessionKey);
-
-  const requesterLabel = requesterAgentId
-    ? buildAgentLabel(requesterAgentId, params.config)
-    : undefined;
-  const targetLabel = buildAgentLabel(targetAgentId, params.config);
-
   const lines = [
     "Agent-to-agent message context:",
     params.requesterSessionKey
-      ? `From: ${requesterLabel}, session: ${params.requesterSessionKey}.`
+      ? `Agent 1 (requester) session: ${params.requesterSessionKey}.`
       : undefined,
-    params.requesterChannel ? `From channel: ${params.requesterChannel}.` : undefined,
-    `To: ${targetLabel}, session: ${params.targetSessionKey}.`,
-    params.payload
-      ? `
---- Structured Payload (${params.payload.type}) ---
-${buildPayloadSummary(params.payload)}
----`
+    params.requesterChannel
+      ? `Agent 1 (requester) channel: ${params.requesterChannel}.`
       : undefined,
-    params.requesterContextSummary && params.requesterContextSummary.trim()
-      ? params.requesterContextSummary
-      : undefined,
-    "",
-    "**IMPORTANT**: This is an internal agent-to-agent conversation.",
-    "- In this A2A session, use sessions_send to exchange messages with the other agent.",
-    "- For Discord-visible peer collaboration, use the `collaborate` tool instead (creates a thread and @mentions the target agent).",
-    "- NEVER use the message tool to send messages to Discord, Telegram, Slack, or any external channel for agent-to-agent communication.",
-    "- If sessions_send times out or fails, report the failure — do NOT fall back to external messaging channels (Discord DM, etc.).",
-    "- Do NOT mention or ping other agents on external channels — use `collaborate` for visible peer discussions.",
+    `Agent 2 (target) session: ${params.targetSessionKey}.`,
   ].filter(Boolean);
   return lines.join("\n");
 }
@@ -226,27 +96,13 @@ export function buildAgentToAgentReplyContext(params: {
   currentRole: "requester" | "target";
   turn: number;
   maxTurns: number;
-  originalMessage?: string;
-  messageIntent?: string;
-  previousTurnSummary?: string;
 }) {
   const currentLabel =
     params.currentRole === "requester" ? "Agent 1 (requester)" : "Agent 2 (target)";
-  const remainingTurns = params.maxTurns - params.turn + 1;
   const lines = [
-    "## Agent-to-agent reply step",
-    "",
-    `**Your role**: ${currentLabel}`,
-    `**Turn**: ${params.turn} of ${params.maxTurns} (${remainingTurns} remaining)`,
-    params.messageIntent ? `**Conversation purpose**: ${params.messageIntent}` : undefined,
-    "",
-    params.originalMessage
-      ? `### Original request\n${params.originalMessage.slice(0, 500)}`
-      : undefined,
-    params.previousTurnSummary
-      ? `### Previous discussion\n${params.previousTurnSummary}`
-      : undefined,
-    "",
+    "Agent-to-agent reply step:",
+    `Current agent: ${currentLabel}.`,
+    `Turn ${params.turn} of ${params.maxTurns}.`,
     params.requesterSessionKey
       ? `Agent 1 (requester) session: ${params.requesterSessionKey}.`
       : undefined,
@@ -255,18 +111,7 @@ export function buildAgentToAgentReplyContext(params: {
       : undefined,
     `Agent 2 (target) session: ${params.targetSessionKey}.`,
     params.targetChannel ? `Agent 2 (target) channel: ${params.targetChannel}.` : undefined,
-    "",
-    "### Guidelines",
-    "- Be concise and focused on the topic",
-    "- If the other agent asked you questions, you MUST answer them — do NOT skip",
-    "- If the other agent proposed something, share your opinion or build on it",
-    "- Do NOT repeat what has already been said",
-    "- Only reply REPLY_SKIP when there is genuinely nothing left to discuss (no open questions, no unresolved points)",
-    "- **NEVER use the message tool to send messages to Discord, Telegram, or any external channel during this conversation**",
-    "- **NEVER mention or ping other agents on external channels — this is an internal conversation. Use `collaborate` for visible peer discussions.**",
-    "- If sessions_send times out or fails, do NOT fall back to external messaging channels",
-    "",
-    `To end the conversation when fully resolved, reply exactly "${REPLY_SKIP_TOKEN}".`,
+    `If you want to stop the ping-pong, reply exactly "${REPLY_SKIP_TOKEN}".`,
   ].filter(Boolean);
   return lines.join("\n");
 }
@@ -298,31 +143,16 @@ export function buildAgentToAgentAnnounceContext(params: {
     `If you want to remain silent, reply exactly "${ANNOUNCE_SKIP_TOKEN}".`,
     "Any other reply will be posted to the target channel.",
     "After this reply, the agent-to-agent conversation is over.",
-    "**IMPORTANT: Do NOT use the message tool to send messages to Discord or other external channels. For visible peer collaboration, use the `collaborate` tool.**",
   ].filter(Boolean);
   return lines.join("\n");
 }
 
-function isSkipToken(text: string | undefined, token: string): boolean {
-  const normalized = (text ?? "").trim().toUpperCase();
-  if (!normalized) {
-    return false;
-  }
-  if (normalized === token) {
-    return true;
-  }
-  if (normalized.startsWith(token + ".") || normalized.startsWith(token + " ")) {
-    return true;
-  }
-  return false;
-}
-
 export function isAnnounceSkip(text?: string) {
-  return isSkipToken(text, ANNOUNCE_SKIP_TOKEN);
+  return (text ?? "").trim() === ANNOUNCE_SKIP_TOKEN;
 }
 
 export function isReplySkip(text?: string) {
-  return isSkipToken(text, REPLY_SKIP_TOKEN);
+  return (text ?? "").trim() === REPLY_SKIP_TOKEN;
 }
 
 export function resolvePingPongTurns(cfg?: OpenClawConfig) {
@@ -333,4 +163,10 @@ export function resolvePingPongTurns(cfg?: OpenClawConfig) {
   }
   const rounded = Math.floor(raw);
   return Math.max(0, Math.min(MAX_PING_PONG_TURNS, rounded));
+}
+
+export async function buildRequesterContextSummary(
+  _sessionKey: string,
+): Promise<string | undefined> {
+  return undefined;
 }

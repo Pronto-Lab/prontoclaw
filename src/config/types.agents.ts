@@ -1,55 +1,19 @@
 import type { ChatType } from "../channels/chat-type.js";
 import type { AgentDefaultsConfig } from "./types.agent-defaults.js";
+import type { AgentModelConfig, AgentSandboxConfig } from "./types.agents-shared.js";
 import type { HumanDelayConfig, IdentityConfig } from "./types.base.js";
 import type { GroupChatConfig } from "./types.messages.js";
-import type {
-  SandboxBrowserSettings,
-  SandboxDockerSettings,
-  SandboxPruneSettings,
-} from "./types.sandbox.js";
 import type { AgentToolsConfig, MemorySearchConfig } from "./types.tools.js";
-
-export type AgentDiscordConfig = {
-  responseWebhook?: string;
-  responseWebhookAvatar?: string;
-};
-
-export type AgentModelConfig =
-  | string
-  | {
-      /** Primary model (provider/model). */
-      primary?: string;
-      /** Per-agent model fallbacks (provider/model). */
-      fallbacks?: string[];
-    };
 
 export type AgentConfig = {
   id: string;
   default?: boolean;
   name?: string;
-  /** Human-readable description of agent capabilities for dynamic discovery. */
-  description?: string;
   workspace?: string;
   agentDir?: string;
   model?: AgentModelConfig;
-  /**
-   * Per-agent default thinking level.
-   *
-   * Why this exists:
-   * - teams often want different reasoning budgets per agent role
-   * - using only agents.defaults.thinkingDefault forces one global value
-   *
-   * Resolution order still applies at runtime:
-   * inline /think > session override > this field > global default.
-   */
-  thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Optional allowlist of skills for this agent (omit = all skills; empty = none). */
   skills?: string[];
-  /** Optional per-agent memory access controls. */
-  memory?: {
-    /** Allow this agent to read memory from other agents (ids or "*"). */
-    allowReadFrom?: string[];
-  };
   memorySearch?: MemorySearchConfig;
   /** Human-like delay between block replies for this agent. */
   humanDelay?: HumanDelayConfig;
@@ -57,35 +21,16 @@ export type AgentConfig = {
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   identity?: IdentityConfig;
   groupChat?: GroupChatConfig;
-  discord?: AgentDiscordConfig;
   subagents?: {
     /** Allow spawning sub-agents under other agent ids. Use "*" to allow any. */
     allowAgents?: string[];
     /** Per-agent default model for spawned sub-agents (string or {primary,fallbacks}). */
-    model?: string | { primary?: string; fallbacks?: string[] };
+    model?: AgentModelConfig;
   };
-  sandbox?: {
-    mode?: "off" | "non-main" | "all";
-    /** Agent workspace access inside the sandbox. */
-    workspaceAccess?: "none" | "ro" | "rw";
-    /**
-     * Session tools visibility for sandboxed sessions.
-     * - "spawned": only allow session tools to target sessions spawned from this session (default)
-     * - "all": allow session tools to target any session
-     */
-    sessionToolsVisibility?: "spawned" | "all";
-    /** Container/workspace scope for sandbox isolation. */
-    scope?: "session" | "agent" | "shared";
-    /** Legacy alias for scope ("session" when true, "shared" when false). */
-    perSession?: boolean;
-    workspaceRoot?: string;
-    /** Docker-specific sandbox overrides for this agent. */
-    docker?: SandboxDockerSettings;
-    /** Optional sandboxed browser overrides for this agent. */
-    browser?: SandboxBrowserSettings;
-    /** Auto-prune overrides for this agent. */
-    prune?: SandboxPruneSettings;
-  };
+  /** Optional per-agent sandbox overrides. */
+  sandbox?: AgentSandboxConfig;
+  /** Optional per-agent stream params (e.g. cacheRetention, temperature). */
+  params?: Record<string, unknown>;
   tools?: AgentToolsConfig;
 };
 
@@ -96,6 +41,7 @@ export type AgentsConfig = {
 
 export type AgentBinding = {
   agentId: string;
+  comment?: string;
   match: {
     channel: string;
     accountId?: string;

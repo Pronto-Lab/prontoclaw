@@ -94,11 +94,6 @@ type CreateMemoryGetTool = typeof import("../../agents/tools/memory-tool.js").cr
 type CreateMemorySearchTool =
   typeof import("../../agents/tools/memory-tool.js").createMemorySearchTool;
 type RegisterMemoryCli = typeof import("../../cli/memory-cli.js").registerMemoryCli;
-type CreateTaskStartTool = typeof import("../../agents/tools/task-tool.js").createTaskStartTool;
-type CreateTaskUpdateTool = typeof import("../../agents/tools/task-tool.js").createTaskUpdateTool;
-type CreateTaskCompleteTool =
-  typeof import("../../agents/tools/task-tool.js").createTaskCompleteTool;
-type CreateTaskStatusTool = typeof import("../../agents/tools/task-tool.js").createTaskStatusTool;
 type DiscordMessageActions =
   typeof import("../../channels/plugins/actions/discord.js").discordMessageActions;
 type AuditDiscordChannelPermissions =
@@ -216,10 +211,6 @@ export type PluginRuntime = {
     createMemoryGetTool: CreateMemoryGetTool;
     createMemorySearchTool: CreateMemorySearchTool;
     registerMemoryCli: RegisterMemoryCli;
-    createTaskStartTool: CreateTaskStartTool;
-    createTaskUpdateTool: CreateTaskUpdateTool;
-    createTaskCompleteTool: CreateTaskCompleteTool;
-    createTaskStatusTool: CreateTaskStatusTool;
   };
   channel: {
     text: {

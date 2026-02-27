@@ -8,7 +8,7 @@ import {
   type TopLevelComponents,
 } from "@buape/carbon";
 import { PollLayoutType } from "discord-api-types/payloads/v10";
-import { Routes, type APIEmbed } from "discord-api-types/v10";
+import { Routes, type APIChannel, type APIEmbed } from "discord-api-types/v10";
 import type { ChunkMode } from "../auto-reply/chunk.js";
 import type { RetryRunner } from "../infra/retry-policy.js";
 import { loadConfig } from "../config/config.js";
@@ -242,6 +242,18 @@ async function resolveChannelId(
   return { channelId: dmChannel.id, dm: true };
 }
 
+export async function resolveDiscordChannelType(
+  rest: RequestClient,
+  channelId: string,
+): Promise<number | undefined> {
+  try {
+    const channel = (await rest.get(Routes.channel(channelId))) as APIChannel | undefined;
+    return channel?.type;
+  } catch {
+    return undefined;
+  }
+}
+
 // Discord message flag for silent/suppress notifications
 export const SUPPRESS_NOTIFICATIONS_FLAG = 1 << 12;
 
@@ -327,6 +339,15 @@ export function buildDiscordMessagePayload(params: {
 
 export function stripUndefinedFields<T extends object>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
+}
+
+export function toDiscordFileBlob(data: Blob | Uint8Array): Blob {
+  if (data instanceof Blob) {
+    return data;
+  }
+  const arrayBuffer = new ArrayBuffer(data.byteLength);
+  new Uint8Array(arrayBuffer).set(data);
+  return new Blob([arrayBuffer]);
 }
 
 async function sendDiscordText(

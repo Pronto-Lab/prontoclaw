@@ -1,5 +1,4 @@
 import { Type } from "@sinclair/typebox";
-import type { AnyAgentTool } from "./common.js";
 import { loadConfig } from "../../config/config.js";
 import {
   DEFAULT_AGENT_ID,
@@ -7,6 +6,7 @@ import {
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import { resolveAgentConfig } from "../agent-scope.js";
+import type { AnyAgentTool } from "./common.js";
 import { jsonResult } from "./common.js";
 import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
 
@@ -15,7 +15,6 @@ const AgentsListToolSchema = Type.Object({});
 type AgentListEntry = {
   id: string;
   name?: string;
-  description?: string;
   configured: boolean;
 };
 
@@ -28,7 +27,7 @@ export function createAgentsListTool(opts?: {
     label: "Agents",
     name: "agents_list",
     description:
-      "List agent ids you can target with sessions_spawn (based on allowlists). Includes agent name and description when configured.",
+      'List OpenClaw agent ids you can target with `sessions_spawn` when `runtime="subagent"` (based on subagent allowlists).',
     parameters: AgentsListToolSchema,
     execute: async () => {
       const cfg = loadConfig();
@@ -58,17 +57,12 @@ export function createAgentsListTool(opts?: {
       const configuredAgents = Array.isArray(cfg.agents?.list) ? cfg.agents?.list : [];
       const configuredIds = configuredAgents.map((entry) => normalizeAgentId(entry.id));
       const configuredNameMap = new Map<string, string>();
-      const configuredDescMap = new Map<string, string>();
       for (const entry of configuredAgents) {
-        const normalizedId = normalizeAgentId(entry.id);
         const name = entry?.name?.trim() ?? "";
-        if (name) {
-          configuredNameMap.set(normalizedId, name);
+        if (!name) {
+          continue;
         }
-        const description = entry?.description?.trim() ?? "";
-        if (description) {
-          configuredDescMap.set(normalizedId, description);
-        }
+        configuredNameMap.set(normalizeAgentId(entry.id), name);
       }
 
       const allowed = new Set<string>();
@@ -91,7 +85,6 @@ export function createAgentsListTool(opts?: {
       const agents: AgentListEntry[] = ordered.map((id) => ({
         id,
         name: configuredNameMap.get(id),
-        description: configuredDescMap.get(id),
         configured: configuredIds.includes(id),
       }));
 

@@ -110,7 +110,8 @@ async function sendReminder(
   currentAttempt: number,
   maxAttempts: number,
 ): Promise<void> {
-  const text = `[리마인더 ${currentAttempt}/${maxAttempts}] <@${mention.targetBotId}> 위 요청에 대해 확인 부탁해요.`;
+  const elapsedMin = Math.round((Date.now() - mention.sentAt) / 60_000);
+  const text = `[리마인더 ${currentAttempt}/${maxAttempts}] <@${mention.targetBotId}> 위 요청에 대해 확인 부탁해요. (${elapsedMin}분 경과)`;
   try {
     await sendMessageDiscord(`channel:${mention.threadId}`, text);
   } catch (err) {
@@ -123,8 +124,9 @@ async function sendEscalation(
   attempts: number,
   escalationMentionId?: string,
 ): Promise<void> {
-  const escalationPart = escalationMentionId ? ` <@${escalationMentionId}> 확인 필요` : "";
-  const text = `⚠️ 응답 없음 (${attempts}회 시도). 대상: <@${mention.targetBotId}>.${escalationPart}`;
+  const elapsedMin = Math.round((Date.now() - mention.sentAt) / 60_000);
+  const escalationPing = escalationMentionId ? `<@${escalationMentionId}> ` : "";
+  const text = `⚠️ ${escalationPing}<@${mention.targetBotId}>이(가) ${elapsedMin}분째 무응답입니다. (${attempts}회 시도) 확인 필요.`;
   try {
     await sendMessageDiscord(`channel:${mention.threadId}`, text);
   } catch (err) {

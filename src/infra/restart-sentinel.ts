@@ -32,8 +32,6 @@ export type RestartSentinelPayload = {
   status: "ok" | "error" | "skipped";
   ts: number;
   sessionKey?: string;
-  /** Agent ID that requested the restart (for restart notification). */
-  requestingAgentId?: string;
   /** Delivery context captured at restart time to ensure channel routing survives restart. */
   deliveryContext?: {
     channel?: string;

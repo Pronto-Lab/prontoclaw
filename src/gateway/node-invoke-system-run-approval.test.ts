@@ -360,6 +360,7 @@ describe("sanitizeSystemRunParamsForForwarding", () => {
     const record = approvalManager.create(
       {
         host: "node",
+        nodeId: "node-1",
         command: "echo SAFE",
         commandArgv: ["echo", "SAFE"],
         systemRunBindingV1: buildSystemRunApprovalBindingV1({
@@ -392,6 +393,7 @@ describe("sanitizeSystemRunParamsForForwarding", () => {
     };
 
     const first = sanitizeSystemRunParamsForForwarding({
+      nodeId: "node-1",
       rawParams: params,
       client,
       execApprovalManager: approvalManager,
@@ -400,6 +402,7 @@ describe("sanitizeSystemRunParamsForForwarding", () => {
     expectAllowOnceForwardingResult(first);
 
     const second = sanitizeSystemRunParamsForForwarding({
+      nodeId: "node-1",
       rawParams: params,
       client,
       execApprovalManager: approvalManager,

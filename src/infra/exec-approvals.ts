@@ -52,16 +52,7 @@ export type ExecApprovalRequestPayload = {
 
 export type ExecApprovalRequest = {
   id: string;
-  request: {
-    command: string;
-    cwd?: string | null;
-    host?: string | null;
-    security?: string | null;
-    ask?: string | null;
-    agentId?: string | null;
-    resolvedPath?: string | null;
-    sessionKey?: string | null;
-  };
+  request: ExecApprovalRequestPayload;
   createdAtMs: number;
   expiresAtMs: number;
 };
@@ -71,6 +62,7 @@ export type ExecApprovalResolved = {
   decision: ExecApprovalDecision;
   resolvedBy?: string | null;
   ts: number;
+  request?: ExecApprovalRequest["request"];
 };
 
 export type ExecApprovalsDefaults = {

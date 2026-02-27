@@ -1,5 +1,10 @@
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
+import { resolveConfiguredModelRef } from "../agents/model-selection.js";
 import type { SkillCommandSpec } from "../agents/skills.js";
+import { isCommandFlagEnabled } from "../config/commands.js";
 import type { OpenClawConfig } from "../config/types.js";
+import { escapeRegExp } from "../utils.js";
+import { getChatCommands, getNativeCommandSurfaces } from "./commands-registry.data.js";
 import type {
   ChatCommandDefinition,
   CommandArgChoiceContext,
@@ -12,10 +17,6 @@ import type {
   NativeCommandSpec,
   ShouldHandleTextCommandsParams,
 } from "./commands-registry.types.js";
-import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
-import { resolveConfiguredModelRef } from "../agents/model-selection.js";
-import { escapeRegExp } from "../utils.js";
-import { getChatCommands, getNativeCommandSurfaces } from "./commands-registry.data.js";
 
 export type {
   ChatCommandDefinition,
@@ -96,13 +97,13 @@ export function listChatCommands(params?: {
 
 export function isCommandEnabled(cfg: OpenClawConfig, commandKey: string): boolean {
   if (commandKey === "config") {
-    return cfg.commands?.config === true;
+    return isCommandFlagEnabled(cfg, "config");
   }
   if (commandKey === "debug") {
-    return cfg.commands?.debug === true;
+    return isCommandFlagEnabled(cfg, "debug");
   }
   if (commandKey === "bash") {
-    return cfg.commands?.bash === true;
+    return isCommandFlagEnabled(cfg, "bash");
   }
   return true;
 }

@@ -113,6 +113,9 @@ function createDiscordStatusReactionController(params: {
   messageId: string;
   initialEmoji: string;
   rest: unknown;
+  emojis?: Record<string, string>;
+  timing?: Record<string, number>;
+  onError?: (err: unknown) => void;
 }) {
   let activeEmoji: string | null = null;
   let chain: Promise<void> = Promise.resolve();
@@ -398,14 +401,12 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           // Target is the receiving agent (us) — session key from preflight route
           const targetSessionKey = route.sessionKey;
 
-          const requesterContext = await buildRequesterContextSummary(senderSessionKey);
+          const _requesterContext = await buildRequesterContextSummary(senderSessionKey);
 
           const enrichedContext = buildAgentToAgentMessageContext({
             requesterSessionKey: senderSessionKey,
             requesterChannel: "discord",
             targetSessionKey,
-            config: freshCfg,
-            requesterContextSummary: requesterContext,
           });
 
           const cleanMessage = (baseText ?? text)
@@ -518,6 +519,16 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
     messageId: message.id,
     initialEmoji: ackReaction,
     rest: client.rest,
+    emojis: cfg.messages?.statusReactions?.emojis,
+    timing: cfg.messages?.statusReactions?.timing,
+    onError: (err) => {
+      logAckFailure({
+        log: logVerbose,
+        channel: "discord",
+        target: `${messageChannelId}/${message.id}`,
+        error: err,
+      });
+    },
   });
   if (statusReactionsEnabled) {
     void statusReactions.setQueued();
@@ -794,6 +805,7 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
   const { dispatcher, replyOptions, markDispatchIdle } = createReplyDispatcherWithTyping({
     ...prefixOptions,
     humanDelay: resolveHumanDelayConfig(cfg, route.agentId),
+    typingCallbacks,
     deliver: async (payload: ReplyPayload) => {
       const replyToId = replyReference.use();
       await deliverDiscordReply({

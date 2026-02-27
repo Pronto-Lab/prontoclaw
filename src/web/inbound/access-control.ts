@@ -1,4 +1,9 @@
 import { loadConfig } from "../../config/config.js";
+import {
+  resolveOpenProviderRuntimeGroupPolicy,
+  resolveDefaultGroupPolicy,
+  warnMissingProviderGroupPolicyFallbackOnce,
+} from "../../config/runtime-group-policy.js";
 import { logVerbose } from "../../globals.js";
 import { buildPairingReply } from "../../pairing/pairing-messages.js";
 import { upsertChannelPairingRequest } from "../../pairing/pairing-store.js";
@@ -17,6 +22,21 @@ export type InboundAccessControlResult = {
 };
 
 const PAIRING_REPLY_HISTORY_GRACE_MS = 30_000;
+
+function resolveWhatsAppRuntimeGroupPolicy(params: {
+  providerConfigPresent: boolean;
+  groupPolicy?: "open" | "allowlist" | "disabled";
+  defaultGroupPolicy?: "open" | "allowlist" | "disabled";
+}): {
+  groupPolicy: "open" | "allowlist" | "disabled";
+  providerMissingFallbackApplied: boolean;
+} {
+  return resolveOpenProviderRuntimeGroupPolicy({
+    providerConfigPresent: params.providerConfigPresent,
+    groupPolicy: params.groupPolicy,
+    defaultGroupPolicy: params.defaultGroupPolicy,
+  });
+}
 
 export async function checkInboundAccessControl(params: {
   accountId: string;
@@ -40,12 +60,12 @@ export async function checkInboundAccessControl(params: {
     accountId: params.accountId,
   });
   const dmPolicy = account.dmPolicy ?? "pairing";
-  const configuredAllowFrom = account.allowFrom;
-  const storeAllowFrom = await readChannelAllowFromStore(
-    "whatsapp",
-    process.env,
-    account.accountId,
-  ).catch(() => []);
+  const configuredAllowFrom = account.allowFrom ?? [];
+  const storeAllowFrom = await readStoreAllowFromForDmPolicy({
+    provider: "whatsapp",
+    accountId: account.accountId,
+    dmPolicy,
+  });
   // Without user config, default to self-only DM access so the owner can talk to themselves.
   const defaultAllowFrom =
     configuredAllowFrom.length === 0 && params.selfE164 ? [params.selfE164] : [];
@@ -53,7 +73,7 @@ export async function checkInboundAccessControl(params: {
   const groupAllowFrom =
     account.groupAllowFrom ?? (configuredAllowFrom.length > 0 ? configuredAllowFrom : undefined);
   const isSamePhone = params.from === params.selfE164;
-  const isSelfChat = isSelfChatMode(params.selfE164, configuredAllowFrom);
+  const isSelfChat = account.selfChatMode ?? isSelfChatMode(params.selfE164, configuredAllowFrom);
   const pairingGraceMs =
     typeof params.pairingGraceMs === "number" && params.pairingGraceMs > 0
       ? params.pairingGraceMs
@@ -67,10 +87,57 @@ export async function checkInboundAccessControl(params: {
   // - "open": groups bypass allowFrom, only mention-gating applies
   // - "disabled": block all group messages entirely
   // - "allowlist": only allow group messages from senders in groupAllowFrom/allowFrom
-  const defaultGroupPolicy = cfg.channels?.defaults?.groupPolicy;
-  const groupPolicy = account.groupPolicy ?? defaultGroupPolicy ?? "open";
-  if (params.group && groupPolicy === "disabled") {
-    logVerbose("Blocked group message (groupPolicy: disabled)");
+  const defaultGroupPolicy = resolveDefaultGroupPolicy(cfg);
+  const { groupPolicy, providerMissingFallbackApplied } = resolveWhatsAppRuntimeGroupPolicy({
+    providerConfigPresent: cfg.channels?.whatsapp !== undefined,
+    groupPolicy: account.groupPolicy,
+    defaultGroupPolicy,
+  });
+  warnMissingProviderGroupPolicyFallbackOnce({
+    providerMissingFallbackApplied,
+    providerKey: "whatsapp",
+    accountId: account.accountId,
+    log: (message) => logVerbose(message),
+  });
+  const normalizedDmSender = normalizeE164(params.from);
+  const normalizedGroupSender =
+    typeof params.senderE164 === "string" ? normalizeE164(params.senderE164) : null;
+  const access = resolveDmGroupAccessWithLists({
+    isGroup: params.group,
+    dmPolicy,
+    groupPolicy,
+    // Groups intentionally fall back to configured allowFrom only (not DM self-chat fallback).
+    allowFrom: params.group ? configuredAllowFrom : dmAllowFrom,
+    groupAllowFrom,
+    storeAllowFrom,
+    isSenderAllowed: (allowEntries) => {
+      const hasWildcard = allowEntries.includes("*");
+      if (hasWildcard) {
+        return true;
+      }
+      const normalizedEntrySet = new Set(
+        allowEntries
+          .map((entry) => normalizeE164(String(entry)))
+          .filter((entry): entry is string => Boolean(entry)),
+      );
+      if (!params.group && isSamePhone) {
+        return true;
+      }
+      return params.group
+        ? Boolean(normalizedGroupSender && normalizedEntrySet.has(normalizedGroupSender))
+        : normalizedEntrySet.has(normalizedDmSender);
+    },
+  });
+  if (params.group && access.decision !== "allow") {
+    if (access.reason === "groupPolicy=disabled") {
+      logVerbose("Blocked group message (groupPolicy: disabled)");
+    } else if (access.reason === "groupPolicy=allowlist (empty allowlist)") {
+      logVerbose("Blocked group message (groupPolicy: allowlist, no groupAllowFrom)");
+    } else {
+      logVerbose(
+        `Blocked group message from ${params.senderE164 ?? "unknown sender"} (groupPolicy: allowlist)`,
+      );
+    }
     return {
       allowed: false,
       shouldMarkRead: false,
@@ -152,3 +219,7 @@ export async function checkInboundAccessControl(params: {
     resolvedAccountId: account.accountId,
   };
 }
+
+export const __testing = {
+  resolveWhatsAppRuntimeGroupPolicy,
+};

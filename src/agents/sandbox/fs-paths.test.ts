@@ -1,12 +1,12 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { SandboxContext } from "./types.js";
 import {
   buildSandboxFsMounts,
   parseSandboxBindMount,
   resolveSandboxFsPathWithMounts,
 } from "./fs-paths.js";
 import { createSandboxTestContext } from "./test-fixtures.js";
+import type { SandboxContext } from "./types.js";
 
 function createSandbox(overrides?: Partial<SandboxContext>): SandboxContext {
   return createSandboxTestContext({ overrides });
@@ -101,5 +101,25 @@ describe("resolveSandboxFsPathWithMounts", () => {
         mounts,
       }),
     ).toThrow(/Path escapes sandbox root/);
+  });
+
+  it("prefers custom bind mounts over default workspace mount at /workspace", () => {
+    const sandbox = createSandbox({
+      docker: {
+        ...createSandbox().docker,
+        binds: ["/tmp/override:/workspace:ro"],
+      },
+    });
+    const mounts = buildSandboxFsMounts(sandbox);
+    const resolved = resolveSandboxFsPathWithMounts({
+      filePath: "/workspace/docs/AGENTS.md",
+      cwd: sandbox.workspaceDir,
+      defaultWorkspaceRoot: sandbox.workspaceDir,
+      defaultContainerRoot: sandbox.containerWorkdir,
+      mounts,
+    });
+
+    expect(resolved.hostPath).toBe(path.join(path.resolve("/tmp/override"), "docs", "AGENTS.md"));
+    expect(resolved.writable).toBe(false);
   });
 });

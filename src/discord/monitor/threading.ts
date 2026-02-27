@@ -1,13 +1,17 @@
 import { ChannelType, type Client } from "@buape/carbon";
 import { Routes } from "discord-api-types/v10";
-import type { ReplyToMode } from "../../config/config.js";
-import type { DiscordChannelConfigResolved } from "./allow-list.js";
-import type { DiscordMessageEvent } from "./listeners.js";
 import { createReplyReferencePlanner } from "../../auto-reply/reply/reply-reference.js";
+import type { ReplyToMode } from "../../config/config.js";
 import { logVerbose } from "../../globals.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { truncateUtf16Safe } from "../../utils.js";
-import { resolveDiscordChannelInfo, resolveDiscordMessageChannelId } from "./message-utils.js";
+import type { DiscordChannelConfigResolved } from "./allow-list.js";
+import type { DiscordMessageEvent } from "./listeners.js";
+import {
+  resolveDiscordChannelInfo,
+  resolveDiscordEmbedText,
+  resolveDiscordMessageChannelId,
+} from "./message-utils.js";
 
 export type DiscordThreadChannel = {
   id: string;
@@ -131,8 +135,12 @@ export async function resolveDiscordThreadParentInfo(params: {
   channelInfo: import("./message-utils.js").DiscordChannelInfo | null;
 }): Promise<DiscordThreadParentInfo> {
   const { threadChannel, channelInfo, client } = params;
-  const parentId =
+  let parentId =
     threadChannel.parentId ?? threadChannel.parent?.id ?? channelInfo?.parentId ?? undefined;
+  if (!parentId && threadChannel.id) {
+    const threadInfo = await resolveDiscordChannelInfo(client, threadChannel.id);
+    parentId = threadInfo?.parentId ?? undefined;
+  }
   if (!parentId) {
     return {};
   }

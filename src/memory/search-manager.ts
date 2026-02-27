@@ -1,12 +1,12 @@
 import type { OpenClawConfig } from "../config/config.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { ResolvedQmdConfig } from "./backend-config.js";
+import { resolveMemoryBackendConfig } from "./backend-config.js";
 import type {
   MemoryEmbeddingProbeResult,
   MemorySearchManager,
   MemorySyncProgressUpdate,
 } from "./types.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
-import { resolveMemoryBackendConfig } from "./backend-config.js";
 
 const log = createSubsystemLogger("memory");
 const QMD_MANAGER_CACHE = new Map<string, MemorySearchManager>();
@@ -64,11 +64,7 @@ export async function getMemorySearchManager(params: {
 
   try {
     const { MemoryIndexManager } = await import("./manager.js");
-    const manager = await MemoryIndexManager.get({
-      cfg: params.cfg,
-      agentId: params.agentId,
-      purpose: params.purpose,
-    });
+    const manager = await MemoryIndexManager.get(params);
     return { manager };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

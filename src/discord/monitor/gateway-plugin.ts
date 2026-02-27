@@ -4,8 +4,8 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import WebSocket from "ws";
 import type { DiscordAccountConfig } from "../../config/types.js";
-import type { RuntimeEnv } from "../../runtime.js";
 import { danger } from "../../globals.js";
+import type { RuntimeEnv } from "../../runtime.js";
 
 export function resolveDiscordGatewayIntents(
   intentsConfig?: import("../../config/types.discord.js").DiscordIntentsConfig,
@@ -16,7 +16,8 @@ export function resolveDiscordGatewayIntents(
     GatewayIntents.MessageContent |
     GatewayIntents.DirectMessages |
     GatewayIntents.GuildMessageReactions |
-    GatewayIntents.DirectMessageReactions;
+    GatewayIntents.DirectMessageReactions |
+    GatewayIntents.GuildVoiceStates;
   if (intentsConfig?.presence) {
     intents |= GatewayIntents.GuildPresences;
   }

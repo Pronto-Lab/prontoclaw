@@ -5,12 +5,10 @@
  * and can be called from anywhere in the codebase.
  */
 
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { createHookRunner, type HookRunner } from "./hooks.js";
 import type { PluginRegistry } from "./registry.js";
 import type { PluginHookGatewayContext, PluginHookGatewayStopEvent } from "./types.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
-import { registerQualityEnforcerHook } from "./core-hooks/quality-enforcer.js";
-import { registerTaskEnforcerHook } from "./core-hooks/task-enforcer.js";
-import { createHookRunner, type HookRunner } from "./hooks.js";
 
 const log = createSubsystemLogger("plugins");
 
@@ -22,9 +20,6 @@ let globalRegistry: PluginRegistry | null = null;
  * Called once when plugins are loaded during gateway startup.
  */
 export function initializeGlobalHookRunner(registry: PluginRegistry): void {
-  registerTaskEnforcerHook(registry);
-  registerQualityEnforcerHook(registry);
-
   globalRegistry = registry;
   globalHookRunner = createHookRunner(registry, {
     logger: {
@@ -35,9 +30,9 @@ export function initializeGlobalHookRunner(registry: PluginRegistry): void {
     catchErrors: true,
   });
 
-  const hookCount = registry.typedHooks.length;
+  const hookCount = registry.hooks.length;
   if (hookCount > 0) {
-    log.info(`hook runner initialized with ${hookCount} registered typed hooks`);
+    log.info(`hook runner initialized with ${hookCount} registered hooks`);
   }
 }
 

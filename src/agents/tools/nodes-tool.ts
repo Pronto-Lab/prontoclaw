@@ -1,7 +1,6 @@
+import crypto from "node:crypto";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
-import crypto from "node:crypto";
-import type { OpenClawConfig } from "../../config/config.js";
 import {
   type CameraFacing,
   cameraTempPath,
@@ -18,6 +17,8 @@ import {
   writeScreenRecordToFile,
 } from "../../cli/nodes-screen.js";
 import { parseDurationMs } from "../../cli/parse-duration.js";
+import type { OpenClawConfig } from "../../config/config.js";
+import { formatExecCommand } from "../../infra/system-run-command.js";
 import { imageMimeFromFormat } from "../../media/mime.js";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
@@ -65,6 +66,20 @@ async function invokeNodeCommandPayload(params: {
     idempotencyKey: crypto.randomUUID(),
   });
   return raw?.payload ?? {};
+}
+
+function isPairingRequiredMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("pairing required") || lower.includes("not_paired");
+}
+
+function extractPairingRequestId(message: string): string | null {
+  const match = message.match(/\(requestId:\s*([^)]+)\)/i);
+  if (!match) {
+    return null;
+  }
+  const value = (match[1] ?? "").trim();
+  return value.length > 0 ? value : null;
 }
 
 // Flattened schema: runtime validates per-action requirements.
@@ -502,6 +517,7 @@ export function createNodesTool(options?: {
                 command: cmdText,
                 commandArgv: command,
                 cwd,
+                nodeId,
                 host: "node",
                 agentId,
                 sessionKey,
@@ -582,7 +598,14 @@ export function createNodesTool(options?: {
             ? gatewayOpts.gatewayUrl.trim()
             : "default";
         const agentLabel = agentId ?? "unknown";
-        const message = err instanceof Error ? err.message : String(err);
+        let message = err instanceof Error ? err.message : String(err);
+        if (action === "invoke" && isPairingRequiredMessage(message)) {
+          const requestId = extractPairingRequestId(message);
+          const approveHint = requestId
+            ? `Approve pairing request ${requestId} and retry.`
+            : "Approve the pending pairing request and retry.";
+          message = `pairing required before node invoke. ${approveHint}`;
+        }
         throw new Error(
           `agent=${agentLabel} node=${nodeLabel} gateway=${gatewayLabel} action=${action}: ${message}`,
           { cause: err },
