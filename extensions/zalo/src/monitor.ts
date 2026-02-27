@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { OpenClawConfig, MarkdownTableMode } from "openclaw/plugin-sdk";
 import {
@@ -8,8 +7,7 @@ import {
   rejectNonPostWebhookRequest,
   resolveSenderCommandAuthorization,
   resolveWebhookPath,
-  resolveWebhookTargets,
-  requestBodyErrorToText,
+  warnMissingProviderGroupPolicyFallbackOnce,
 } from "openclaw/plugin-sdk";
 import type { ResolvedZaloAccount } from "./accounts.js";
 import {
@@ -23,6 +21,16 @@ import {
   type ZaloMessage,
   type ZaloUpdate,
 } from "./api.js";
+import {
+  evaluateZaloGroupAccess,
+  isZaloSenderAllowed,
+  resolveZaloRuntimeGroupPolicy,
+} from "./group-access.js";
+import {
+  handleZaloWebhookRequest as handleZaloWebhookRequestInternal,
+  registerZaloWebhookTarget as registerZaloWebhookTargetInternal,
+  type ZaloWebhookTarget,
+} from "./monitor.webhook.js";
 import { resolveZaloProxyFetch } from "./proxy.js";
 import { getZaloRuntime } from "./runtime.js";
 
@@ -51,13 +59,8 @@ export type ZaloMonitorResult = {
 
 const ZALO_TEXT_LIMIT = 2000;
 const DEFAULT_MEDIA_MAX_MB = 5;
-const ZALO_WEBHOOK_RATE_LIMIT_WINDOW_MS = 60_000;
-const ZALO_WEBHOOK_RATE_LIMIT_MAX_REQUESTS = 120;
-const ZALO_WEBHOOK_REPLAY_WINDOW_MS = 5 * 60_000;
-const ZALO_WEBHOOK_COUNTER_LOG_EVERY = 25;
 
 type ZaloCoreRuntime = ReturnType<typeof getZaloRuntime>;
-type WebhookRateLimitState = { count: number; windowStartMs: number };
 
 function logVerbose(core: ZaloCoreRuntime, runtime: ZaloRuntimeEnv, message: string): void {
   if (core.logging.shouldLogVerbose()) {
@@ -232,59 +235,6 @@ export async function handleZaloWebhookRequest(
     timeoutMs: 30_000,
     emptyObjectOnEmpty: false,
   });
-  if (!body.ok) {
-    res.statusCode =
-      body.code === "PAYLOAD_TOO_LARGE" ? 413 : body.code === "REQUEST_BODY_TIMEOUT" ? 408 : 400;
-    const message =
-      body.code === "PAYLOAD_TOO_LARGE"
-        ? requestBodyErrorToText("PAYLOAD_TOO_LARGE")
-        : body.code === "REQUEST_BODY_TIMEOUT"
-          ? requestBodyErrorToText("REQUEST_BODY_TIMEOUT")
-          : "Bad Request";
-    res.end(message);
-    recordWebhookStatus(target.runtime, path, res.statusCode);
-    return true;
-  }
-
-  // Zalo sends updates directly as { event_name, message, ... }, not wrapped in { ok, result }
-  const raw = body.value;
-  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
-  const update: ZaloUpdate | undefined =
-    record && record.ok === true && record.result
-      ? (record.result as ZaloUpdate)
-      : ((record as ZaloUpdate | null) ?? undefined);
-
-  if (!update?.event_name) {
-    res.statusCode = 400;
-    res.end("Bad Request");
-    recordWebhookStatus(target.runtime, path, res.statusCode);
-    return true;
-  }
-
-  if (isReplayEvent(update, nowMs)) {
-    res.statusCode = 200;
-    res.end("ok");
-    return true;
-  }
-
-  target.statusSink?.({ lastInboundAt: Date.now() });
-  processUpdate(
-    update,
-    target.token,
-    target.account,
-    target.config,
-    target.runtime,
-    target.core,
-    target.mediaMaxMb,
-    target.statusSink,
-    target.fetcher,
-  ).catch((err) => {
-    target.runtime.error?.(`[${target.account.accountId}] Zalo webhook failed: ${String(err)}`);
-  });
-
-  res.statusCode = 200;
-  res.end("ok");
-  return true;
 }
 
 function startPollingLoop(params: {
@@ -508,6 +458,42 @@ async function processMessageWithPipeline(params: {
 
   const dmPolicy = account.config.dmPolicy ?? "pairing";
   const configAllowFrom = (account.config.allowFrom ?? []).map((v) => String(v));
+  const configuredGroupAllowFrom = (account.config.groupAllowFrom ?? []).map((v) => String(v));
+  const groupAllowFrom =
+    configuredGroupAllowFrom.length > 0 ? configuredGroupAllowFrom : configAllowFrom;
+  const defaultGroupPolicy = resolveDefaultGroupPolicy(config);
+  const groupAccess = isGroup
+    ? evaluateZaloGroupAccess({
+        providerConfigPresent: config.channels?.zalo !== undefined,
+        configuredGroupPolicy: account.config.groupPolicy,
+        defaultGroupPolicy,
+        groupAllowFrom,
+        senderId,
+      })
+    : undefined;
+  if (groupAccess) {
+    warnMissingProviderGroupPolicyFallbackOnce({
+      providerMissingFallbackApplied: groupAccess.providerMissingFallbackApplied,
+      providerKey: "zalo",
+      accountId: account.accountId,
+      log: (message) => logVerbose(core, runtime, message),
+    });
+    if (!groupAccess.allowed) {
+      if (groupAccess.reason === "disabled") {
+        logVerbose(core, runtime, `zalo: drop group ${chatId} (groupPolicy=disabled)`);
+      } else if (groupAccess.reason === "empty_allowlist") {
+        logVerbose(
+          core,
+          runtime,
+          `zalo: drop group ${chatId} (groupPolicy=allowlist, no groupAllowFrom)`,
+        );
+      } else if (groupAccess.reason === "sender_not_allowlisted") {
+        logVerbose(core, runtime, `zalo: drop group sender ${senderId} (groupPolicy=allowlist)`);
+      }
+      return;
+    }
+  }
+
   const rawBody = text?.trim() || (mediaPath ? "<media:image>" : "");
   const { senderAllowedForCommands, commandAuthorized } = await resolveSenderCommandAuthorization({
     cfg: config,
@@ -516,7 +502,7 @@ async function processMessageWithPipeline(params: {
     dmPolicy,
     configuredAllowFrom: configAllowFrom,
     senderId,
-    isSenderAllowed,
+    isSenderAllowed: isZaloSenderAllowed,
     readAllowFromStore: () => core.channel.pairing.readAllowFromStore("zalo"),
     shouldComputeCommandAuthorized: (body, cfg) =>
       core.channel.commands.shouldComputeCommandAuthorized(body, cfg),
@@ -830,3 +816,8 @@ export async function monitorZaloProvider(options: ZaloMonitorOptions): Promise<
 
   return { stop };
 }
+
+export const __testing = {
+  evaluateZaloGroupAccess,
+  resolveZaloRuntimeGroupPolicy,
+};

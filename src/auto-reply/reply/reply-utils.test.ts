@@ -168,7 +168,7 @@ describe("typing controller", () => {
 
   it("does not start typing after run completion", async () => {
     vi.useFakeTimers();
-    const onReplyStart = vi.fn(async () => {});
+    const onReplyStart = vi.fn();
     const typing = createTypingController({
       onReplyStart,
       typingIntervalSeconds: 1,
@@ -177,13 +177,13 @@ describe("typing controller", () => {
 
     typing.markRunComplete();
     await typing.startTypingOnText("late text");
-    vi.advanceTimersByTime(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(onReplyStart).not.toHaveBeenCalled();
   });
 
   it("does not restart typing after it has stopped", async () => {
     vi.useFakeTimers();
-    const onReplyStart = vi.fn(async () => {});
+    const onReplyStart = vi.fn();
     const typing = createTypingController({
       onReplyStart,
       typingIntervalSeconds: 1,
@@ -196,12 +196,12 @@ describe("typing controller", () => {
     typing.markRunComplete();
     typing.markDispatchIdle();
 
-    vi.advanceTimersByTime(5_000);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(onReplyStart).toHaveBeenCalledTimes(1);
 
     // Late callbacks should be ignored and must not restart the interval.
     await typing.startTypingOnText("late tool result");
-    vi.advanceTimersByTime(5_000);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(onReplyStart).toHaveBeenCalledTimes(1);
   });
 });

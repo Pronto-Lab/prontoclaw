@@ -105,6 +105,7 @@ describe("abort detection", () => {
     expect(isAbortRequestText("/stop")).toBe(true);
     expect(isAbortRequestText("stop")).toBe(true);
     expect(isAbortRequestText("/stop@openclaw_bot", { botUsername: "openclaw_bot" })).toBe(true);
+    expect(isAbortRequestText("/Stop@openclaw_bot", { botUsername: "openclaw_bot" })).toBe(true);
 
     expect(isAbortRequestText("/status")).toBe(false);
     expect(isAbortRequestText("stop please")).toBe(false);

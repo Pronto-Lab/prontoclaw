@@ -27,9 +27,12 @@ export const BLOCKED_HOST_PATHS = [
   "/run/docker.sock",
 ];
 
-const BLOCKED_NETWORK_MODES = new Set(["host"]);
 const BLOCKED_SECCOMP_PROFILES = new Set(["unconfined"]);
 const BLOCKED_APPARMOR_PROFILES = new Set(["unconfined"]);
+
+export type ValidateNetworkModeOptions = {
+  allowContainerNamespaceJoin?: boolean;
+};
 
 export type BlockedBindReason =
   | { kind: "targets"; blockedPath: string }
@@ -54,8 +57,7 @@ export function parseBindSourcePath(bind: string): string {
  * Normalize a POSIX path: resolve `.`, `..`, collapse `//`, strip trailing `/`.
  */
 export function normalizeHostPath(raw: string): string {
-  const trimmed = raw.trim();
-  return posix.normalize(trimmed).replace(/\/+$/, "") || "/";
+  return normalizeSandboxHostPath(raw);
 }
 
 /**
@@ -120,7 +122,8 @@ function formatBindBlockedError(params: { bind: string; reason: BlockedBindReaso
 
 /**
  * Validate bind mounts — throws if any source path is dangerous.
- * Includes a symlink/realpath pass when the source path exists.
+ * Includes a symlink/realpath pass via existing ancestors so non-existent leaf
+ * paths cannot bypass source-root and blocked-path checks.
  */
 export function validateBindMounts(binds: string[] | undefined): void {
   if (!binds?.length) {
@@ -152,12 +155,27 @@ export function validateBindMounts(binds: string[] | undefined): void {
   }
 }
 
-export function validateNetworkMode(network: string | undefined): void {
-  if (network && BLOCKED_NETWORK_MODES.has(network.trim().toLowerCase())) {
+export function validateNetworkMode(
+  network: string | undefined,
+  options?: ValidateNetworkModeOptions,
+): void {
+  const blockedReason = getBlockedNetworkModeReason({
+    network,
+    allowContainerNamespaceJoin: options?.allowContainerNamespaceJoin,
+  });
+  if (blockedReason === "host") {
     throw new Error(
       `Sandbox security: network mode "${network}" is blocked. ` +
         'Network "host" mode bypasses container network isolation. ' +
         'Use "bridge" or "none" instead.',
+    );
+  }
+
+  if (blockedReason === "container_namespace_join") {
+    throw new Error(
+      `Sandbox security: network mode "${network}" is blocked by default. ` +
+        'Network "container:*" joins another container namespace and bypasses sandbox network isolation. ' +
+        "Use a custom bridge network, or set dangerouslyAllowContainerNamespaceJoin=true only when you fully trust this runtime.",
     );
   }
 }

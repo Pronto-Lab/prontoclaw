@@ -2,14 +2,28 @@ import type { ChannelChoice } from "../onboard-types.js";
 import type { ChannelOnboardingAdapter } from "./types.js";
 import { listChannelPlugins } from "../../channels/plugins/index.js";
 
-const CHANNEL_ONBOARDING_ADAPTERS = () =>
-  new Map<ChannelChoice, ChannelOnboardingAdapter>(
-    listChannelPlugins()
-      .map((plugin) => (plugin.onboarding ? ([plugin.id, plugin.onboarding] as const) : null))
-      .filter((entry): entry is readonly [ChannelChoice, ChannelOnboardingAdapter] =>
-        Boolean(entry),
-      ),
+const BUILTIN_ONBOARDING_ADAPTERS: ChannelOnboardingAdapter[] = [
+  telegramOnboardingAdapter,
+  whatsappOnboardingAdapter,
+  discordOnboardingAdapter,
+  slackOnboardingAdapter,
+  signalOnboardingAdapter,
+  imessageOnboardingAdapter,
+];
+
+const CHANNEL_ONBOARDING_ADAPTERS = () => {
+  const fromRegistry = listChannelPlugins()
+    .map((plugin) => (plugin.onboarding ? ([plugin.id, plugin.onboarding] as const) : null))
+    .filter((entry): entry is readonly [ChannelChoice, ChannelOnboardingAdapter] => Boolean(entry));
+
+  // Fall back to built-in adapters to keep onboarding working even when the plugin registry
+  // fails to populate (see #25545).
+  const fromBuiltins = BUILTIN_ONBOARDING_ADAPTERS.map(
+    (adapter) => [adapter.channel, adapter] as const,
   );
+
+  return new Map<ChannelChoice, ChannelOnboardingAdapter>([...fromBuiltins, ...fromRegistry]);
+};
 
 export function getChannelOnboardingAdapter(
   channel: ChannelChoice,

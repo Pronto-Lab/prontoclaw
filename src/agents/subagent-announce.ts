@@ -55,6 +55,9 @@ function buildCompletionDeliveryMessage(params: {
   subagentName: string;
 }): string {
   const findingsText = params.findings.trim();
+  if (isAnnounceSkip(findingsText)) {
+    return "";
+  }
   const hasFindings = findingsText.length > 0 && findingsText !== "(no output)";
   const header = `✅ Subagent ${params.subagentName} finished`;
   if (!hasFindings) {
@@ -77,6 +80,92 @@ function summarizeDeliveryError(error: unknown): string {
     return JSON.stringify(error);
   } catch {
     return "error";
+  }
+}
+
+const TRANSIENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS: readonly RegExp[] = [
+  /\berrorcode=unavailable\b/i,
+  /\bstatus\s*[:=]\s*"?unavailable\b/i,
+  /\bUNAVAILABLE\b/,
+  /no active .* listener/i,
+  /gateway not connected/i,
+  /gateway closed \(1006/i,
+  /gateway timeout/i,
+  /\b(econnreset|econnrefused|etimedout|enotfound|ehostunreach|network error)\b/i,
+];
+
+const PERMANENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS: readonly RegExp[] = [
+  /unsupported channel/i,
+  /unknown channel/i,
+  /chat not found/i,
+  /user not found/i,
+  /bot was blocked by the user/i,
+  /forbidden: bot was kicked/i,
+  /recipient is not a valid/i,
+  /outbound not configured for channel/i,
+];
+
+function isTransientAnnounceDeliveryError(error: unknown): boolean {
+  const message = summarizeDeliveryError(error);
+  if (!message) {
+    return false;
+  }
+  if (PERMANENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS.some((re) => re.test(message))) {
+    return false;
+  }
+  return TRANSIENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS.some((re) => re.test(message));
+}
+
+async function waitForAnnounceRetryDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+  if (!signal) {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+    return;
+  }
+  if (signal.aborted) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function runAnnounceDeliveryWithRetry<T>(params: {
+  operation: string;
+  signal?: AbortSignal;
+  run: () => Promise<T>;
+}): Promise<T> {
+  let retryIndex = 0;
+  for (;;) {
+    if (params.signal?.aborted) {
+      throw new Error("announce delivery aborted");
+    }
+    try {
+      return await params.run();
+    } catch (err) {
+      const delayMs = DIRECT_ANNOUNCE_TRANSIENT_RETRY_DELAYS_MS[retryIndex];
+      if (delayMs == null || !isTransientAnnounceDeliveryError(err) || params.signal?.aborted) {
+        throw err;
+      }
+      const nextAttempt = retryIndex + 2;
+      const maxAttempts = DIRECT_ANNOUNCE_TRANSIENT_RETRY_DELAYS_MS.length + 1;
+      defaultRuntime.log(
+        `[warn] Subagent announce ${params.operation} transient failure, retrying ${nextAttempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s: ${summarizeDeliveryError(err)}`,
+      );
+      retryIndex += 1;
+      await waitForAnnounceRetryDelay(delayMs, params.signal);
+    }
   }
 }
 
@@ -827,6 +916,10 @@ export async function runSubagentAnnounceFlow(params: {
       // Avoid announcing "(no output)" while the child run is still producing output.
       shouldDeleteChildSession = false;
       return false;
+    }
+
+    if (isAnnounceSkip(reply)) {
+      return true;
     }
 
     if (!outcome) {

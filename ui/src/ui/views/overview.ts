@@ -2,6 +2,7 @@ import { html } from "lit";
 import type { GatewayHelloOk } from "../gateway.ts";
 import type { UiSettings } from "../storage.ts";
 import { t, i18n, type Locale } from "../../i18n/index.ts";
+import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../external-link.ts";
 import { formatRelativeTimestamp, formatDurationHuman } from "../format.ts";
 import { formatNextRun } from "../presenter.ts";
 
@@ -61,8 +62,8 @@ export function renderOverview(props: OverviewProps) {
             <a
               class="session-link"
               href="https://docs.openclaw.ai/web/dashboard"
-              target="_blank"
-              rel="noreferrer"
+              target=${EXTERNAL_LINK_TARGET}
+              rel=${buildExternalLinkRel()}
               title="Control UI auth docs (opens in new tab)"
               >Docs: Control UI auth</a
             >
@@ -77,8 +78,8 @@ export function renderOverview(props: OverviewProps) {
           <a
             class="session-link"
             href="https://docs.openclaw.ai/web/dashboard"
-            target="_blank"
-            rel="noreferrer"
+            target=${EXTERNAL_LINK_TARGET}
+            rel=${buildExternalLinkRel()}
             title="Control UI auth docs (opens in new tab)"
             >Docs: Control UI auth</a
           >
@@ -109,8 +110,8 @@ export function renderOverview(props: OverviewProps) {
           <a
             class="session-link"
             href="https://docs.openclaw.ai/gateway/tailscale"
-            target="_blank"
-            rel="noreferrer"
+            target=${EXTERNAL_LINK_TARGET}
+            rel=${buildExternalLinkRel()}
             title="Tailscale Serve docs (opens in new tab)"
             >Docs: Tailscale Serve</a
           >
@@ -118,8 +119,8 @@ export function renderOverview(props: OverviewProps) {
           <a
             class="session-link"
             href="https://docs.openclaw.ai/web/control-ui#insecure-http"
-            target="_blank"
-            rel="noreferrer"
+            target=${EXTERNAL_LINK_TARGET}
+            rel=${buildExternalLinkRel()}
             title="Insecure HTTP docs (opens in new tab)"
             >Docs: Insecure HTTP</a
           >

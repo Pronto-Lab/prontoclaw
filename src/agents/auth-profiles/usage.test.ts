@@ -4,6 +4,7 @@ import {
   clearExpiredCooldowns,
   isProfileInCooldown,
   resolveProfileUnusableUntil,
+  resolveProfileUnusableUntilForDisplay,
 } from "./usage.js";
 
 function makeStore(usageStats: AuthProfileStore["usageStats"]): AuthProfileStore {
@@ -12,6 +13,7 @@ function makeStore(usageStats: AuthProfileStore["usageStats"]): AuthProfileStore
     profiles: {
       "anthropic:default": { type: "api_key", provider: "anthropic", key: "sk-test" },
       "openai:default": { type: "api_key", provider: "openai", key: "sk-test-2" },
+      "openrouter:default": { type: "api_key", provider: "openrouter", key: "sk-or-test" },
     },
     usageStats,
   };
@@ -26,6 +28,29 @@ describe("resolveProfileUnusableUntil", () => {
   it("returns the latest active timestamp", () => {
     expect(resolveProfileUnusableUntil({ cooldownUntil: 100, disabledUntil: 200 })).toBe(200);
     expect(resolveProfileUnusableUntil({ cooldownUntil: 300 })).toBe(300);
+  });
+});
+
+describe("resolveProfileUnusableUntilForDisplay", () => {
+  it("hides cooldown markers for OpenRouter profiles", () => {
+    const store = makeStore({
+      "openrouter:default": {
+        cooldownUntil: Date.now() + 60_000,
+      },
+    });
+
+    expect(resolveProfileUnusableUntilForDisplay(store, "openrouter:default")).toBeNull();
+  });
+
+  it("keeps cooldown markers visible for other providers", () => {
+    const until = Date.now() + 60_000;
+    const store = makeStore({
+      "anthropic:default": {
+        cooldownUntil: until,
+      },
+    });
+
+    expect(resolveProfileUnusableUntilForDisplay(store, "anthropic:default")).toBe(until);
   });
 });
 
@@ -61,6 +86,17 @@ describe("isProfileInCooldown", () => {
       },
     });
     expect(isProfileInCooldown(store, "anthropic:default")).toBe(true);
+  });
+
+  it("returns false for OpenRouter even when cooldown fields exist", () => {
+    const store = makeStore({
+      "openrouter:default": {
+        cooldownUntil: Date.now() + 60_000,
+        disabledUntil: Date.now() + 60_000,
+        disabledReason: "billing",
+      },
+    });
+    expect(isProfileInCooldown(store, "openrouter:default")).toBe(false);
   });
 });
 

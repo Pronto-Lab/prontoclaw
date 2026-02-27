@@ -781,6 +781,14 @@ describe("normalizeOutboundPayloadsForJson", () => {
       },
     ]);
   });
+
+  it("suppresses reasoning payloads", () => {
+    const normalized = normalizeOutboundPayloadsForJson([
+      { text: "Reasoning:\n_step_", isReasoning: true },
+      { text: "final answer" },
+    ]);
+    expect(normalized).toEqual([{ text: "final answer", mediaUrl: null, mediaUrls: undefined }]);
+  });
 });
 
 describe("normalizeOutboundPayloads", () => {
@@ -788,6 +796,14 @@ describe("normalizeOutboundPayloads", () => {
     const channelData = { line: { flexMessage: { altText: "Card", contents: {} } } };
     const normalized = normalizeOutboundPayloads([{ channelData }]);
     expect(normalized).toEqual([{ text: "", mediaUrls: [], channelData }]);
+  });
+
+  it("suppresses reasoning payloads", () => {
+    const normalized = normalizeOutboundPayloads([
+      { text: "Reasoning:\n_step_", isReasoning: true },
+      { text: "final answer" },
+    ]);
+    expect(normalized).toEqual([{ text: "final answer", mediaUrls: [] }]);
   });
 });
 

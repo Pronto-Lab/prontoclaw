@@ -7,6 +7,22 @@ title: "Security"
 
 # Security 🔒
 
+> [!WARNING]
+> **Personal assistant trust model:** this guidance assumes one trusted operator boundary per gateway (single-user/personal assistant model).
+> OpenClaw is **not** a hostile multi-tenant security boundary for multiple adversarial users sharing one agent/gateway.
+> If you need mixed-trust or adversarial-user operation, split trust boundaries (separate gateway + credentials, ideally separate OS users/hosts).
+
+## Scope first: personal assistant security model
+
+OpenClaw security guidance assumes a **personal assistant** deployment: one trusted operator boundary, potentially many agents.
+
+- Supported security posture: one user/trust boundary per gateway (prefer one OS user/host/VPS per boundary).
+- Not a supported security boundary: one shared gateway/agent used by mutually untrusted or adversarial users.
+- If adversarial-user isolation is required, split by trust boundary (separate gateway + credentials, and ideally separate OS users/hosts).
+- If multiple untrusted users can message one tool-enabled agent, treat them as sharing the same delegated tool authority for that agent.
+
+This page explains hardening **within that model**. It does not claim hostile multi-tenant isolation on one shared gateway.
+
 ## Quick check: `openclaw security audit`
 
 See also: [Formal Verification (Security Models)](/security/formal-verification/)
@@ -640,7 +656,7 @@ We may add a single `readOnlyMode` flag later to simplify this configuration.
 Additional hardening options:
 
 - `tools.exec.applyPatch.workspaceOnly: true` (default): ensures `apply_patch` cannot write/delete outside the workspace directory even when sandboxing is off. Set to `false` only if you intentionally want `apply_patch` to touch files outside the workspace.
-- `tools.fs.workspaceOnly: true` (optional): restricts `read`/`write`/`edit`/`apply_patch` paths to the workspace directory (useful if you allow absolute paths today and want a single guardrail).
+- `tools.fs.workspaceOnly: true` (optional): restricts `read`/`write`/`edit`/`apply_patch` paths and native prompt image auto-load paths to the workspace directory (useful if you allow absolute paths today and want a single guardrail).
 
 ### 5) Secure baseline (copy/paste)
 

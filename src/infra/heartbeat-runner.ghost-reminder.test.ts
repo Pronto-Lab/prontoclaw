@@ -42,7 +42,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
           workspace: tmpDir,
           heartbeat: {
             every: "5m",
-            target: "telegram",
+            target: params.target ?? "telegram",
           },
         },
       },
@@ -54,7 +54,7 @@ describe("Ghost reminder bug (issue #13317)", () => {
     await seedSessionStore(storePath, sessionKey, {
       lastChannel: "telegram",
       lastProvider: "telegram",
-      lastTo: "155462274",
+      lastTo: "-100155462274",
     });
 
     return { cfg, sessionKey };
@@ -208,5 +208,39 @@ describe("Ghost reminder bug (issue #13317)", () => {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("uses an internal-only cron prompt when delivery target is none", async () => {
+    const { result, sendTelegram, calledCtx } = await runHeartbeatCase({
+      tmpPrefix: "openclaw-cron-internal-",
+      replyText: "Handled internally",
+      reason: "cron:reminder-job",
+      target: "none",
+      enqueue: (sessionKey) => {
+        enqueueSystemEvent("Reminder: Rotate API keys", { sessionKey });
+      },
+    });
+
+    expect(result.status).toBe("ran");
+    expect(calledCtx?.Provider).toBe("cron-event");
+    expect(calledCtx?.Body).toContain("Handle this reminder internally");
+    expect(sendTelegram).not.toHaveBeenCalled();
+  });
+
+  it("uses an internal-only exec prompt when delivery target is none", async () => {
+    const { result, sendTelegram, calledCtx } = await runHeartbeatCase({
+      tmpPrefix: "openclaw-exec-internal-",
+      replyText: "Handled internally",
+      reason: "exec-event",
+      target: "none",
+      enqueue: (sessionKey) => {
+        enqueueSystemEvent("exec finished: deploy succeeded", { sessionKey });
+      },
+    });
+
+    expect(result.status).toBe("ran");
+    expect(calledCtx?.Provider).toBe("exec-event");
+    expect(calledCtx?.Body).toContain("Handle the result internally");
+    expect(sendTelegram).not.toHaveBeenCalled();
   });
 });

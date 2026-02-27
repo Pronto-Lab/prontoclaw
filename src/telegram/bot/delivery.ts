@@ -33,6 +33,7 @@ import {
 } from "./helpers.js";
 
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
+const EMPTY_TEXT_ERR_RE = /message text is empty/i;
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
 const FILE_TOO_BIG_RE = /file is too big/i;
 
@@ -535,7 +536,7 @@ async function sendTelegramText(
     linkPreview?: boolean;
     replyMarkup?: ReturnType<typeof buildInlineKeyboard>;
   },
-): Promise<number | undefined> {
+): Promise<number> {
   const baseParams = buildTelegramSendParams({
     replyToMessageId: opts?.replyToMessageId,
     thread: opts?.thread,
@@ -545,11 +546,38 @@ async function sendTelegramText(
   const linkPreviewOptions = linkPreviewEnabled ? undefined : { is_disabled: true };
   const textMode = opts?.textMode ?? "markdown";
   const htmlText = textMode === "html" ? text : markdownToTelegramHtml(text);
+  const fallbackText = opts?.plainText ?? text;
+  const hasFallbackText = fallbackText.trim().length > 0;
+  const sendPlainFallback = async () => {
+    const res = await withTelegramApiErrorLogging({
+      operation: "sendMessage",
+      runtime,
+      fn: () =>
+        bot.api.sendMessage(chatId, fallbackText, {
+          ...(linkPreviewOptions ? { link_preview_options: linkPreviewOptions } : {}),
+          ...(opts?.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
+          ...baseParams,
+        }),
+    });
+    runtime.log?.(`telegram sendMessage ok chat=${chatId} message=${res.message_id} (plain)`);
+    return res.message_id;
+  };
+
+  // Markdown can render to empty HTML for syntax-only chunks; recover with plain text.
+  if (!htmlText.trim()) {
+    if (!hasFallbackText) {
+      throw new Error("telegram sendMessage failed: empty formatted text and empty plain fallback");
+    }
+    return await sendPlainFallback();
+  }
   try {
     const res = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
-      shouldLog: (err) => !PARSE_ERR_RE.test(formatErrorMessage(err)),
+      shouldLog: (err) => {
+        const errText = formatErrorMessage(err);
+        return !PARSE_ERR_RE.test(errText) && !EMPTY_TEXT_ERR_RE.test(errText);
+      },
       fn: () =>
         bot.api.sendMessage(chatId, htmlText, {
           parse_mode: "HTML",

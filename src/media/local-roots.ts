@@ -4,7 +4,23 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolveStateDir } from "../config/paths.js";
 
-function buildMediaLocalRoots(stateDir: string): string[] {
+type BuildMediaLocalRootsOptions = {
+  preferredTmpDir?: string;
+};
+
+let cachedPreferredTmpDir: string | undefined;
+
+function resolveCachedPreferredTmpDir(): string {
+  if (!cachedPreferredTmpDir) {
+    cachedPreferredTmpDir = resolvePreferredOpenClawTmpDir();
+  }
+  return cachedPreferredTmpDir;
+}
+
+function buildMediaLocalRoots(
+  stateDir: string,
+  options: BuildMediaLocalRootsOptions = {},
+): string[] {
   const resolvedStateDir = path.resolve(stateDir);
   return [
     os.tmpdir(),

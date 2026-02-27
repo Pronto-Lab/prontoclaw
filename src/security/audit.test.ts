@@ -137,12 +137,14 @@ describe("security audit", () => {
     };
 
     const res = await audit(cfg);
+    const summary = res.findings.find((f) => f.checkId === "summary.attack_surface");
 
     expect(res.findings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ checkId: "summary.attack_surface", severity: "info" }),
       ]),
     );
+    expect(summary?.detail).toContain("trust model: personal assistant");
   });
 
   it("flags non-loopback bind without auth as critical", async () => {

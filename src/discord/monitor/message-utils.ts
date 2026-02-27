@@ -1,7 +1,7 @@
 import type { ChannelType, Client, Message } from "@buape/carbon";
 import type { APIAttachment } from "discord-api-types/v10";
 import { logVerbose } from "../../globals.js";
-import { fetchRemoteMedia } from "../../media/fetch.js";
+import { fetchRemoteMedia, type FetchLike } from "../../media/fetch.js";
 import { saveMediaBuffer } from "../../media/store.js";
 
 export type DiscordMediaInfo = {
@@ -125,6 +125,7 @@ export async function resolveDiscordChannelInfo(
 export async function resolveMediaList(
   message: Message,
   maxBytes: number,
+  fetchImpl?: FetchLike,
 ): Promise<DiscordMediaInfo[]> {
   const attachments = message.attachments ?? [];
   if (attachments.length === 0) {
@@ -136,6 +137,7 @@ export async function resolveMediaList(
     maxBytes,
     out,
     errorPrefix: "discord: failed to download attachment",
+    fetchImpl,
   });
   return out;
 }
@@ -143,6 +145,7 @@ export async function resolveMediaList(
 export async function resolveForwardedMediaList(
   message: Message,
   maxBytes: number,
+  fetchImpl?: FetchLike,
 ): Promise<DiscordMediaInfo[]> {
   const snapshots = resolveDiscordMessageSnapshots(message);
   if (snapshots.length === 0) {
@@ -155,6 +158,7 @@ export async function resolveForwardedMediaList(
       maxBytes,
       out,
       errorPrefix: "discord: failed to download forwarded attachment",
+      fetchImpl,
     });
   }
   return out;
@@ -165,6 +169,7 @@ async function appendResolvedMediaFromAttachments(params: {
   maxBytes: number;
   out: DiscordMediaInfo[];
   errorPrefix: string;
+  fetchImpl?: FetchLike;
 }) {
   const attachments = params.attachments;
   if (!attachments || attachments.length === 0) {

@@ -333,6 +333,8 @@ export interface TwilioVerificationResult {
 export interface TelnyxVerificationResult {
   ok: boolean;
   reason?: string;
+  /** Request is cryptographically valid but was already processed recently. */
+  isReplay?: boolean;
 }
 
 function decodeBase64OrBase64Url(input: string): Buffer {
@@ -426,7 +428,9 @@ export function verifyTelnyxWebhook(
       return { ok: false, reason: "Timestamp too old" };
     }
 
-    return { ok: true };
+    const replayKey = `telnyx:${sha256Hex(`${timestamp}\n${signature}\n${ctx.rawBody}`)}`;
+    const isReplay = markReplay(telnyxReplayCache, replayKey);
+    return { ok: true, isReplay };
   } catch (err) {
     return {
       ok: false,
