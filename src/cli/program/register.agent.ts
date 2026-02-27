@@ -3,9 +3,12 @@ import { DEFAULT_CHAT_CHANNEL } from "../../channels/registry.js";
 import { agentCliCommand } from "../../commands/agent-via-gateway.js";
 import {
   agentsAddCommand,
+  agentsBindingsCommand,
+  agentsBindCommand,
   agentsDeleteCommand,
   agentsListCommand,
   agentsSetIdentityCommand,
+  agentsUnbindCommand,
 } from "../../commands/agents.js";
 import { setVerbose } from "../../globals.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -98,6 +101,68 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/agent", "docs.openclaw.ai/cli/age
       await runCommandWithRuntime(defaultRuntime, async () => {
         await agentsListCommand(
           { json: Boolean(opts.json), bindings: Boolean(opts.bindings) },
+          defaultRuntime,
+        );
+      });
+    });
+
+  agents
+    .command("bindings")
+    .description("List routing bindings")
+    .option("--agent <id>", "Filter by agent id")
+    .option("--json", "Output JSON instead of text", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await agentsBindingsCommand(
+          {
+            agent: opts.agent as string | undefined,
+            json: Boolean(opts.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  agents
+    .command("bind")
+    .description("Add routing bindings for an agent")
+    .option("--agent <id>", "Agent id (defaults to current default agent)")
+    .option(
+      "--bind <channel[:accountId]>",
+      "Binding to add (repeatable). If omitted, accountId is resolved by channel defaults/hooks.",
+      collectOption,
+      [],
+    )
+    .option("--json", "Output JSON summary", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await agentsBindCommand(
+          {
+            agent: opts.agent as string | undefined,
+            bind: Array.isArray(opts.bind) ? (opts.bind as string[]) : undefined,
+            json: Boolean(opts.json),
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  agents
+    .command("unbind")
+    .description("Remove routing bindings for an agent")
+    .option("--agent <id>", "Agent id (defaults to current default agent)")
+    .option("--bind <channel[:accountId]>", "Binding to remove (repeatable)", collectOption, [])
+    .option("--all", "Remove all bindings for this agent", false)
+    .option("--json", "Output JSON summary", false)
+    .action(async (opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await agentsUnbindCommand(
+          {
+            agent: opts.agent as string | undefined,
+            bind: Array.isArray(opts.bind) ? (opts.bind as string[]) : undefined,
+            all: Boolean(opts.all),
+            json: Boolean(opts.json),
+          },
           defaultRuntime,
         );
       });

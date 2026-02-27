@@ -47,15 +47,6 @@ export type GroupHistoryEntry = {
   senderJid?: string;
 };
 
-function normalizeAllowFromE164(values: Array<string | number> | undefined): string[] {
-  const list = Array.isArray(values) ? values : [];
-  return list
-    .map((entry) => String(entry).trim())
-    .filter((entry) => entry && entry !== "*")
-    .map((entry) => normalizeE164(entry))
-    .filter((entry): entry is string => Boolean(entry));
-}
-
 async function resolveWhatsAppCommandAuthorized(params: {
   cfg: ReturnType<typeof loadConfig>;
   msg: WebInboundMsg;
@@ -102,10 +93,29 @@ async function resolveWhatsAppCommandAuthorized(params: {
       : params.msg.selfE164
         ? [params.msg.selfE164]
         : [];
-  if (allowFrom.some((v) => String(v).trim() === "*")) {
-    return true;
-  }
-  return normalizeAllowFromE164(allowFrom).includes(senderE164);
+  const access = resolveDmGroupAccessWithCommandGate({
+    isGroup,
+    dmPolicy,
+    groupPolicy,
+    allowFrom: dmAllowFrom,
+    groupAllowFrom: configuredGroupAllowFrom,
+    storeAllowFrom,
+    isSenderAllowed: (allowEntries) => {
+      if (allowEntries.includes("*")) {
+        return true;
+      }
+      const normalizedEntries = allowEntries
+        .map((entry) => normalizeE164(String(entry)))
+        .filter((entry): entry is string => Boolean(entry));
+      return normalizedEntries.includes(senderE164);
+    },
+    command: {
+      useAccessGroups,
+      allowTextCommands: true,
+      hasControlCommand: true,
+    },
+  });
+  return access.commandAuthorized;
 }
 
 export async function processMessage(params: {

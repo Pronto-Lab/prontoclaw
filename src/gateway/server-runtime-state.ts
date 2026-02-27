@@ -116,6 +116,12 @@ export async function createGatewayRuntimeState(params: {
   });
 
   const bindHosts = await resolveGatewayListenHosts(params.bindHost);
+  if (!isLoopbackHost(params.bindHost)) {
+    params.log.warn(
+      "⚠️  Gateway is binding to a non-loopback address. " +
+        "Ensure authentication is configured before exposing to public networks.",
+    );
+  }
   const httpServers: HttpServer[] = [];
   const httpBindHosts: string[] = [];
   for (const host of bindHosts) {

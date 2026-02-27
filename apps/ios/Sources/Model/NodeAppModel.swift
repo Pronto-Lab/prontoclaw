@@ -39,6 +39,7 @@ private final class NotificationInvokeLatch<T: Sendable>: @unchecked Sendable {
 }
 @MainActor
 @Observable
+// swiftlint:disable type_body_length file_length
 final class NodeAppModel {
     private let deepLinkLogger = Logger(subsystem: "ai.openclaw.ios", category: "DeepLink")
     private let pushWakeLogger = Logger(subsystem: "ai.openclaw.ios", category: "PushWake")
@@ -503,7 +504,7 @@ final class NodeAppModel {
         self.voiceWakeSyncTask = Task { [weak self] in
             guard let self else { return }
 
-            if !(await self.isGatewayHealthMonitorDisabled()) {
+            if !self.isGatewayHealthMonitorDisabled() {
                 await self.refreshWakeWordsFromGateway()
             }
 
@@ -558,9 +559,13 @@ final class NodeAppModel {
         self.gatewayHealthMonitor.start(
             check: { [weak self] in
                 guard let self else { return false }
-                if await self.isGatewayHealthMonitorDisabled() { return true }
+                if await MainActor.run(body: { self.isGatewayHealthMonitorDisabled() }) { return true }
                 do {
-                    let data = try await self.operatorGateway.request(method: "health", paramsJSON: nil, timeoutSeconds: 6)
+                    let data = try await self.operatorGateway.request(
+                        method: "health",
+                        paramsJSON: nil,
+                        timeoutSeconds: 6
+                    )
                     guard let decoded = try? JSONDecoder().decode(OpenClawGatewayHealthOK.self, from: data) else {
                         return false
                     }
@@ -1803,6 +1808,8 @@ private extension NodeAppModel {
         }
     }
 
+    // Legacy reconnect state machine; follow-up refactor needed to split into helpers.
+    // swiftlint:disable:next function_body_length
     func startNodeGatewayLoop(
         url: URL,
         stableID: String,
@@ -1870,7 +1877,10 @@ private extension NodeAppModel {
                                     sessionKey: relayData.sessionKey,
                                     deliveryChannel: relayData.deliveryChannel,
                                     deliveryTo: relayData.deliveryTo))
-                            GatewayDiagnostics.log("gateway connected host=\(url.host ?? "?") scheme=\(url.scheme ?? "?")")
+                            GatewayDiagnostics.log(
+                                "gateway connected host=\(url.host ?? "?") "
+                                    + "scheme=\(url.scheme ?? "?")"
+                            )
                             if let addr = await self.nodeGateway.currentRemoteAddress() {
                                 await MainActor.run { self.gatewayRemoteAddress = addr }
                             }
@@ -1957,9 +1967,11 @@ private extension NodeAppModel {
                             self.gatewayPairingRequestId = requestId
                             if let requestId, !requestId.isEmpty {
                                 self.gatewayStatusText =
-                                    "Pairing required (requestId: \(requestId)). Approve on gateway and return to OpenClaw."
+                                    "Pairing required (requestId: \(requestId)). "
+                                        + "Approve on gateway and return to OpenClaw."
                             } else {
-                                self.gatewayStatusText = "Pairing required. Approve on gateway and return to OpenClaw."
+                                self.gatewayStatusText =
+                                    "Pairing required. Approve on gateway and return to OpenClaw."
                             }
                         }
                         // Hard stop the underlying WebSocket watchdog reconnects so the UI stays stable and
@@ -2267,3 +2279,4 @@ extension NodeAppModel {
     }
 }
 #endif
+// swiftlint:enable type_body_length file_length

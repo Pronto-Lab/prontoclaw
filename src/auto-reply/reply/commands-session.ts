@@ -3,43 +3,15 @@ import { isRestartEnabled } from "../../config/commands.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
-import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { scheduleGatewaySigusr1Restart, triggerOpenClawRestart } from "../../infra/restart.js";
 import { loadCostUsageSummary, loadSessionCostSummary } from "../../infra/session-cost-usage.js";
 import { formatTokenCount, formatUsd } from "../../utils/usage-format.js";
 import { parseActivationCommand } from "../group-activation.js";
 import { parseSendPolicyCommand } from "../send-policy.js";
 import { normalizeUsageDisplay, resolveResponseUsageMode } from "../thinking.js";
-import {
-  formatAbortReplyText,
-  isAbortTrigger,
-  resolveSessionEntryForKey,
-  setAbortMemory,
-  stopSubagentsForRequester,
-} from "./abort.js";
+import { handleAbortTrigger, handleStopCommand } from "./commands-session-abort.js";
+import { persistSessionEntry } from "./commands-session-store.js";
 import type { CommandHandler } from "./commands-types.js";
-import { clearSessionQueues } from "./queue.js";
-
-function resolveAbortTarget(params: {
-  ctx: { CommandTargetSessionKey?: string | null };
-  sessionKey?: string;
-  sessionEntry?: SessionEntry;
-  sessionStore?: Record<string, SessionEntry>;
-}) {
-  const targetSessionKey = params.ctx.CommandTargetSessionKey?.trim() || params.sessionKey;
-  const { entry, key } = resolveSessionEntryForKey(params.sessionStore, targetSessionKey);
-  if (entry && key) {
-    return { entry, key, sessionId: entry.sessionId };
-  }
-  if (params.sessionEntry && params.sessionKey) {
-    return {
-      entry: params.sessionEntry,
-      key: params.sessionKey,
-      sessionId: params.sessionEntry.sessionId,
-    };
-  }
-  return { entry: undefined, key: targetSessionKey, sessionId: undefined };
-}
 
 async function applyAbortTarget(params: {
   abortTarget: ReturnType<typeof resolveAbortTarget>;
@@ -293,78 +265,4 @@ export const handleRestartCommand: CommandHandler = async (params, allowTextComm
   };
 };
 
-export const handleStopCommand: CommandHandler = async (params, allowTextCommands) => {
-  if (!allowTextCommands) {
-    return null;
-  }
-  if (params.command.commandBodyNormalized !== "/stop") {
-    return null;
-  }
-  if (!params.command.isAuthorizedSender) {
-    logVerbose(
-      `Ignoring /stop from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
-    );
-    return { shouldContinue: false };
-  }
-  const abortTarget = resolveAbortTarget({
-    ctx: params.ctx,
-    sessionKey: params.sessionKey,
-    sessionEntry: params.sessionEntry,
-    sessionStore: params.sessionStore,
-  });
-  const cleared = clearSessionQueues([abortTarget.key, abortTarget.sessionId]);
-  if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
-    logVerbose(
-      `stop: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
-    );
-  }
-  await applyAbortTarget({
-    abortTarget,
-    sessionStore: params.sessionStore,
-    storePath: params.storePath,
-    abortKey: params.command.abortKey,
-  });
-
-  // Trigger internal hook for stop command
-  const hookEvent = createInternalHookEvent(
-    "command",
-    "stop",
-    abortTarget.key ?? params.sessionKey ?? "",
-    {
-      sessionEntry: abortTarget.entry ?? params.sessionEntry,
-      sessionId: abortTarget.sessionId,
-      commandSource: params.command.surface,
-      senderId: params.command.senderId,
-    },
-  );
-  await triggerInternalHook(hookEvent);
-
-  const { stopped } = stopSubagentsForRequester({
-    cfg: params.cfg,
-    requesterSessionKey: abortTarget.key ?? params.sessionKey,
-  });
-
-  return { shouldContinue: false, reply: { text: formatAbortReplyText(stopped) } };
-};
-
-export const handleAbortTrigger: CommandHandler = async (params, allowTextCommands) => {
-  if (!allowTextCommands) {
-    return null;
-  }
-  if (!isAbortTrigger(params.command.rawBodyNormalized)) {
-    return null;
-  }
-  const abortTarget = resolveAbortTarget({
-    ctx: params.ctx,
-    sessionKey: params.sessionKey,
-    sessionEntry: params.sessionEntry,
-    sessionStore: params.sessionStore,
-  });
-  await applyAbortTarget({
-    abortTarget,
-    sessionStore: params.sessionStore,
-    storePath: params.storePath,
-    abortKey: params.command.abortKey,
-  });
-  return { shouldContinue: false, reply: { text: "⚙️ Agent was aborted." } };
-};
+export { handleAbortTrigger, handleStopCommand };

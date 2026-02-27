@@ -12,6 +12,9 @@ import {
 } from "./jobs.js";
 import { locked } from "./locked.js";
 import { ensureLoaded, persist } from "./store.js";
+import { DEFAULT_JOB_TIMEOUT_MS, resolveCronJobTimeoutMs } from "./timeout-policy.js";
+
+export { DEFAULT_JOB_TIMEOUT_MS } from "./timeout-policy.js";
 
 const MAX_TIMER_DELAY_MS = 60_000;
 

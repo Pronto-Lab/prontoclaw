@@ -25,7 +25,7 @@ import { resolveThreadSessionKeys } from "../routing/session-key.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import {
   isSenderAllowed,
-  normalizeAllowFromWithStore,
+  normalizeDmAllowFromWithStore,
   type NormalizedAllowFrom,
 } from "./bot-access.js";
 import { RegisterTelegramHandlerParams } from "./bot-native-commands.js";
@@ -463,7 +463,9 @@ export const registerTelegramHandlers = ({
     },
     "callback-allowlist": {
       enforceDirectAuthorization: true,
-      enforceGroupAllowlistAuthorization: true,
+      // Group auth is already enforced by shouldSkipGroupMessage (group policy + allowlist).
+      // An extra allowlist gate here would block users whose original command was authorized.
+      enforceGroupAllowlistAuthorization: false,
       deniedDmReason: "callback unauthorized by inlineButtonsScope allowlist",
       deniedGroupReason: "callback unauthorized by inlineButtonsScope allowlist",
     },
@@ -540,7 +542,7 @@ export const registerTelegramHandlers = ({
         return { allowed: false, reason: "direct-disabled" };
       }
       if (dmPolicy !== "open") {
-        const effectiveDmAllow = normalizeAllowFromWithStore({
+        const effectiveDmAllow = normalizeDmAllowFromWithStore({
           allowFrom,
           storeAllowFrom,
           dmPolicy,
@@ -1197,7 +1199,7 @@ export const registerTelegramHandlers = ({
         effectiveGroupAllow,
         hasGroupAllowOverride,
       } = eventAuthContext;
-      const effectiveDmAllow = normalizeAllowFromWithStore({
+      const effectiveDmAllow = normalizeDmAllowFromWithStore({
         allowFrom,
         storeAllowFrom,
         dmPolicy,

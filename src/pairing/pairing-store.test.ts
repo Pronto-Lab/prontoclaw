@@ -44,10 +44,12 @@ describe("pairing store", () => {
       const first = await upsertChannelPairingRequest({
         channel: "discord",
         id: "u1",
+        accountId: DEFAULT_ACCOUNT_ID,
       });
       const second = await upsertChannelPairingRequest({
         channel: "discord",
         id: "u1",
+        accountId: DEFAULT_ACCOUNT_ID,
       });
       expect(first.created).toBe(true);
       expect(second.created).toBe(false);
@@ -64,6 +66,7 @@ describe("pairing store", () => {
       const created = await upsertChannelPairingRequest({
         channel: "signal",
         id: "+15550001111",
+        accountId: DEFAULT_ACCOUNT_ID,
       });
       expect(created.created).toBe(true);
 
@@ -91,6 +94,7 @@ describe("pairing store", () => {
       const next = await upsertChannelPairingRequest({
         channel: "signal",
         id: "+15550001111",
+        accountId: DEFAULT_ACCOUNT_ID,
       });
       expect(next.created).toBe(true);
     });
@@ -108,6 +112,7 @@ describe("pairing store", () => {
         const first = await upsertChannelPairingRequest({
           channel: "telegram",
           id: "123",
+          accountId: DEFAULT_ACCOUNT_ID,
         });
         expect(first.code).toBe("AAAAAAAA");
 
@@ -117,6 +122,7 @@ describe("pairing store", () => {
         const second = await upsertChannelPairingRequest({
           channel: "telegram",
           id: "456",
+          accountId: DEFAULT_ACCOUNT_ID,
         });
         expect(second.code).toBe("BBBBBBBB");
       } finally {
@@ -132,6 +138,7 @@ describe("pairing store", () => {
         const created = await upsertChannelPairingRequest({
           channel: "whatsapp",
           id,
+          accountId: DEFAULT_ACCOUNT_ID,
         });
         expect(created.created).toBe(true);
       }
@@ -139,6 +146,7 @@ describe("pairing store", () => {
       const blocked = await upsertChannelPairingRequest({
         channel: "whatsapp",
         id: "+15550000004",
+        accountId: DEFAULT_ACCOUNT_ID,
       });
       expect(blocked.created).toBe(false);
 
@@ -161,7 +169,7 @@ describe("pairing store", () => {
       });
 
       const accountScoped = await readChannelAllowFromStore("telegram", process.env, "yy");
-      const channelScoped = await readChannelAllowFromStore("telegram");
+      const channelScoped = await readLegacyChannelAllowFromStore("telegram");
       expect(accountScoped).toContain("12345");
       expect(channelScoped).not.toContain("12345");
     });
@@ -183,7 +191,7 @@ describe("pairing store", () => {
       expect(approved?.id).toBe("12345");
 
       const accountScoped = await readChannelAllowFromStore("telegram", process.env, "yy");
-      const channelScoped = await readChannelAllowFromStore("telegram");
+      const channelScoped = await readLegacyChannelAllowFromStore("telegram");
       expect(accountScoped).toContain("12345");
       expect(channelScoped).not.toContain("12345");
     });
@@ -218,7 +226,7 @@ describe("pairing store", () => {
         "utf8",
       );
 
-      const scoped = await readChannelAllowFromStore("telegram", process.env, "default");
+      const scoped = await readChannelAllowFromStore("telegram", process.env, DEFAULT_ACCOUNT_ID);
       expect(scoped).toEqual(["1002", "1001"]);
     });
   });

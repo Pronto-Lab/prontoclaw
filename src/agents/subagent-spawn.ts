@@ -440,6 +440,7 @@ export async function spawnSubagentDirect(
     childSessionKey,
     label: label || undefined,
     task,
+    acpEnabled: cfg.acp?.enabled !== false,
     childDepth,
     maxSpawnDepth,
   });
@@ -554,6 +555,17 @@ export async function spawnSubagentDirect(
       replyPreview: `spawn accepted · run ${childRunId}`.slice(0, 200),
     },
   });
+
+  // Check if we're in a cron isolated session - don't add "do not poll" note
+  // because cron sessions end immediately after the agent produces a response,
+  // so the agent needs to wait for subagent results to keep the turn alive.
+  const isCronSession = isCronSessionKey(ctx.agentSessionKey);
+  const note =
+    spawnMode === "session"
+      ? SUBAGENT_SPAWN_SESSION_ACCEPTED_NOTE
+      : isCronSession
+        ? undefined
+        : SUBAGENT_SPAWN_ACCEPTED_NOTE;
 
   return {
     status: "accepted",

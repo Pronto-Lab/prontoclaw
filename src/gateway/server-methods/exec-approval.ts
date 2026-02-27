@@ -36,6 +36,7 @@ export function createExecApprovalHandlers(
         id?: string;
         command: string;
         commandArgv?: string[];
+        env?: Record<string, string>;
         cwd?: string;
         host?: string;
         security?: string;
@@ -43,6 +44,10 @@ export function createExecApprovalHandlers(
         agentId?: string;
         resolvedPath?: string;
         sessionKey?: string;
+        turnSourceChannel?: string;
+        turnSourceTo?: string;
+        turnSourceAccountId?: string;
+        turnSourceThreadId?: string | number;
         timeoutMs?: number;
         twoPhase?: boolean;
       };
@@ -65,9 +70,15 @@ export function createExecApprovalHandlers(
         host: p.host ?? null,
         security: p.security ?? null,
         ask: p.ask ?? null,
-        agentId: p.agentId ?? null,
+        agentId: effectiveAgentId ?? null,
         resolvedPath: p.resolvedPath ?? null,
-        sessionKey: p.sessionKey ?? null,
+        sessionKey: effectiveSessionKey ?? null,
+        turnSourceChannel:
+          typeof p.turnSourceChannel === "string" ? p.turnSourceChannel.trim() || null : null,
+        turnSourceTo: typeof p.turnSourceTo === "string" ? p.turnSourceTo.trim() || null : null,
+        turnSourceAccountId:
+          typeof p.turnSourceAccountId === "string" ? p.turnSourceAccountId.trim() || null : null,
+        turnSourceThreadId: p.turnSourceThreadId ?? null,
       };
       const record = manager.create(request, timeoutMs, explicitId);
       record.requestedByConnId = client?.connId ?? null;

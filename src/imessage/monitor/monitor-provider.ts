@@ -215,7 +215,11 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         : "";
     const bodyText = messageText || placeholder;
 
-    const storeAllowFrom = await readChannelAllowFromStore("imessage").catch(() => []);
+    const storeAllowFrom = await readChannelAllowFromStore(
+      "imessage",
+      process.env,
+      accountInfo.accountId,
+    ).catch(() => []);
     const decision = resolveIMessageInboundDecision({
       cfg,
       accountId: accountInfo.accountId,
@@ -247,6 +251,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       const { code, created } = await upsertChannelPairingRequest({
         channel: "imessage",
         id: decision.senderId,
+        accountId: accountInfo.accountId,
         meta: {
           sender: decision.senderId,
           chatId: chatId ? String(chatId) : undefined,

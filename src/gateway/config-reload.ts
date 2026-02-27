@@ -79,6 +79,7 @@ const BASE_RELOAD_RULES_TAIL: ReloadRule[] = [
   { prefix: "session", kind: "none" },
   { prefix: "talk", kind: "none" },
   { prefix: "skills", kind: "none" },
+  { prefix: "secrets", kind: "none" },
   { prefix: "plugins", kind: "restart" },
   { prefix: "ui", kind: "none" },
   { prefix: "gateway", kind: "restart" },
@@ -250,7 +251,7 @@ export function startGatewayConfigReloader(opts: {
   initialConfig: OpenClawConfig;
   readSnapshot: () => Promise<ConfigFileSnapshot>;
   onHotReload: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
-  onRestart: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
+  onRestart: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
   log: {
     info: (msg: string) => void;
     warn: (msg: string) => void;

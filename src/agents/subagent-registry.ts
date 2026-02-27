@@ -266,6 +266,7 @@ async function sweepSubagentRuns() {
     if (!entry.archiveAtMs || entry.archiveAtMs > now) {
       continue;
     }
+    clearPendingLifecycleError(runId);
     subagentRuns.delete(runId);
     mutated = true;
     try {
@@ -484,6 +485,7 @@ export function replaceSubagentRunAfterSteer(params: {
   }
 
   if (previousRunId !== nextRunId) {
+    clearPendingLifecycleError(previousRunId);
     subagentRuns.delete(previousRunId);
     resumedRuns.delete(previousRunId);
   }
@@ -662,6 +664,7 @@ export function addSubagentRunForTests(entry: SubagentRunRecord) {
 }
 
 export function releaseSubagentRun(runId: string) {
+  clearPendingLifecycleError(runId);
   const didDelete = subagentRuns.delete(runId);
   if (didDelete) {
     persistSubagentRuns();
@@ -767,6 +770,7 @@ export function markSubagentRunTerminated(params: {
   const reason = params.reason?.trim() || "killed";
   let updated = 0;
   for (const runId of runIds) {
+    clearPendingLifecycleError(runId);
     const entry = subagentRuns.get(runId);
     if (!entry) {
       continue;

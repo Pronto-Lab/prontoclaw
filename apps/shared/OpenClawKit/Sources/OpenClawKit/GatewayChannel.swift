@@ -391,6 +391,17 @@ public actor GatewayChannelActor {
         }
         let payload = payloadParts.joined(separator: "|")
         if includeDeviceIdentity, let identity {
+            let payload = GatewayDeviceAuthPayload.buildV3(
+                deviceId: identity.deviceId,
+                clientId: clientId,
+                clientMode: clientMode,
+                role: role,
+                scopes: scopes,
+                signedAtMs: signedAtMs,
+                token: authToken,
+                nonce: connectNonce,
+                platform: platform,
+                deviceFamily: InstanceIdentity.deviceFamily)
             if let signature = DeviceIdentityStore.signPayload(payload, identity: identity),
                let publicKey = DeviceIdentityStore.publicKeyBase64Url(identity) {
                 var device: [String: ProtoAnyCodable] = [

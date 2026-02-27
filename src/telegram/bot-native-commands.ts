@@ -249,7 +249,7 @@ async function resolveTelegramCommandAuth(params: {
     }
   }
 
-  const dmAllow = normalizeAllowFromWithStore({
+  const dmAllow = normalizeDmAllowFromWithStore({
     allowFrom: allowFrom,
     storeAllowFrom,
   });

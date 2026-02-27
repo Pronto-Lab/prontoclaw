@@ -10,6 +10,26 @@ function safeTrim(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function formatConversationTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  const formatted = formatZonedTimestamp(date);
+  if (!formatted) {
+    return undefined;
+  }
+  try {
+    const weekday = new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(date);
+    return weekday ? `${weekday} ${formatted}` : formatted;
+  } catch {
+    return formatted;
+  }
+}
+
 export function buildInboundMetaSystemPrompt(ctx: TemplateContext): string {
   const chatType = normalizeChatType(ctx.ChatType);
   const isDirect = !chatType || chatType === "direct";

@@ -14,6 +14,7 @@ import {
   sanitizeWithOpenAIResponses,
   TEST_SESSION_ID,
 } from "./pi-embedded-runner.sanitize-session-history.test-harness.js";
+import { makeZeroUsageSnapshot } from "./usage.js";
 
 let sanitizeSessionHistory: SanitizeSessionHistoryFn;
 

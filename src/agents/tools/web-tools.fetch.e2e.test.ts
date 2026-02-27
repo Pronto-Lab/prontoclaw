@@ -1,3 +1,4 @@
+import { EnvHttpProxyAgent } from "undici";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ssrf from "../../infra/net/ssrf.js";
 import { withFetchPreconnect } from "../../test-utils/fetch-mock.js";
@@ -142,6 +143,7 @@ describe("web_fetch extraction fallbacks", () => {
 
   afterEach(() => {
     global.fetch = priorFetch;
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 

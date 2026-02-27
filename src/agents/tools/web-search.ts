@@ -6,6 +6,10 @@ import { wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
 import {
+  WEB_TOOLS_TRUSTED_NETWORK_SSRF_POLICY,
+  withWebToolsNetworkGuard,
+} from "./web-guarded-fetch.js";
+import {
   CacheEntry,
   DEFAULT_CACHE_TTL_MINUTES,
   DEFAULT_TIMEOUT_SECONDS,
@@ -14,7 +18,6 @@ import {
   readResponseText,
   resolveCacheTtlMs,
   resolveTimeoutSeconds,
-  withTimeout,
   writeCache,
 } from "./web-shared.js";
 
@@ -534,17 +537,25 @@ async function runPerplexitySearch(params: {
     body.search_recency_filter = recencyFilter;
   }
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${params.apiKey}`,
-      "HTTP-Referer": "https://openclaw.ai",
-      "X-Title": "OpenClaw Web Search",
+  return withTrustedWebSearchEndpoint(
+    {
+      url: endpoint,
+      timeoutSeconds: params.timeoutSeconds,
+      init: {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${params.apiKey}`,
+          "HTTP-Referer": "https://openclaw.ai",
+          "X-Title": "OpenClaw Web Search",
+        },
+        body: JSON.stringify(body),
+      },
     },
-    body: JSON.stringify(body),
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+    async (res) => {
+      if (!res.ok) {
+        return await throwWebSearchApiError(res, "Perplexity");
+      }
 
   if (!res.ok) {
     const detailResult = await readResponseText(res, { maxBytes: 64_000 });
@@ -552,11 +563,9 @@ async function runPerplexitySearch(params: {
     throw new Error(`Perplexity API error (${res.status}): ${detail || res.statusText}`);
   }
 
-  const data = (await res.json()) as PerplexitySearchResponse;
-  const content = data.choices?.[0]?.message?.content ?? "No response";
-  const citations = data.citations ?? [];
-
-  return { content, citations };
+      return { content, citations };
+    },
+  );
 }
 
 async function runGrokSearch(params: {
@@ -586,15 +595,23 @@ async function runGrokSearch(params: {
   // citations are returned automatically when available — we just parse
   // them from the response without requesting them explicitly (#12910).
 
-  const res = await fetch(XAI_API_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${params.apiKey}`,
+  return withTrustedWebSearchEndpoint(
+    {
+      url: XAI_API_ENDPOINT,
+      timeoutSeconds: params.timeoutSeconds,
+      init: {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${params.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      },
     },
-    body: JSON.stringify(body),
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+    async (res) => {
+      if (!res.ok) {
+        return await throwWebSearchApiError(res, "xAI");
+      }
 
   if (!res.ok) {
     const detailResult = await readResponseText(res, { maxBytes: 64_000 });
@@ -602,14 +619,9 @@ async function runGrokSearch(params: {
     throw new Error(`xAI API error (${res.status}): ${detail || res.statusText}`);
   }
 
-  const data = (await res.json()) as GrokSearchResponse;
-  const { text: extractedText, annotationCitations } = extractGrokContent(data);
-  const content = extractedText ?? "No response";
-  // Prefer top-level citations; fall back to annotation-derived ones
-  const citations = (data.citations ?? []).length > 0 ? data.citations! : annotationCitations;
-  const inlineCitations = data.inline_citations;
-
-  return { content, citations, inlineCitations };
+      return { content, citations, inlineCitations };
+    },
+  );
 }
 
 async function runWebSearch(params: {
@@ -718,36 +730,42 @@ async function runWebSearch(params: {
     url.searchParams.set("freshness", params.freshness);
   }
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "X-Subscription-Token": params.apiKey,
+  const mapped = await withTrustedWebSearchEndpoint(
+    {
+      url: url.toString(),
+      timeoutSeconds: params.timeoutSeconds,
+      init: {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "X-Subscription-Token": params.apiKey,
+        },
+      },
     },
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+    async (res) => {
+      if (!res.ok) {
+        const detailResult = await readResponseText(res, { maxBytes: 64_000 });
+        const detail = detailResult.text;
+        throw new Error(`Brave Search API error (${res.status}): ${detail || res.statusText}`);
+      }
 
-  if (!res.ok) {
-    const detailResult = await readResponseText(res, { maxBytes: 64_000 });
-    const detail = detailResult.text;
-    throw new Error(`Brave Search API error (${res.status}): ${detail || res.statusText}`);
-  }
-
-  const data = (await res.json()) as BraveSearchResponse;
-  const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
-  const mapped = results.map((entry) => {
-    const description = entry.description ?? "";
-    const title = entry.title ?? "";
-    const url = entry.url ?? "";
-    const rawSiteName = resolveSiteName(url);
-    return {
-      title: title ? wrapWebContent(title, "web_search") : "",
-      url, // Keep raw for tool chaining
-      description: description ? wrapWebContent(description, "web_search") : "",
-      published: entry.age || undefined,
-      siteName: rawSiteName || undefined,
-    };
-  });
+      const data = (await res.json()) as BraveSearchResponse;
+      const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
+      return results.map((entry) => {
+        const description = entry.description ?? "";
+        const title = entry.title ?? "";
+        const url = entry.url ?? "";
+        const rawSiteName = resolveSiteName(url);
+        return {
+          title: title ? wrapWebContent(title, "web_search") : "",
+          url, // Keep raw for tool chaining
+          description: description ? wrapWebContent(description, "web_search") : "",
+          published: entry.age || undefined,
+          siteName: rawSiteName || undefined,
+        };
+      });
+    },
+  );
 
   const payload = {
     query: params.query,

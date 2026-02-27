@@ -37,6 +37,10 @@ export type ProcessGatewayAllowlistParams = {
   safeBins: Set<string>;
   agentId?: string;
   sessionKey?: string;
+  turnSourceChannel?: string;
+  turnSourceTo?: string;
+  turnSourceAccountId?: string;
+  turnSourceThreadId?: string | number;
   scopeKey?: string;
   warnings: string[];
   notifySessionKey?: string;

@@ -16,6 +16,12 @@ import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import type { RuntimeEnv } from "../runtime.js";
+import {
+  activateSecretsRuntimeSnapshot,
+  clearSecretsRuntimeSnapshot,
+  getActiveSecretsRuntimeSnapshot,
+  prepareSecretsRuntimeSnapshot,
+} from "../secrets/runtime.js";
 import { runOnboardingWizard } from "../wizard/onboarding.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { startChannelHealthMonitor } from "./channel-health-monitor.js";
@@ -76,6 +82,7 @@ const logReload = log.child("reload");
 const logHooks = log.child("hooks");
 const logPlugins = log.child("plugins");
 const logWsControl = log.child("ws");
+const logSecrets = log.child("secrets");
 const gatewayRuntime = runtimeForLogger(log);
 const canvasRuntime = runtimeForLogger(logCanvas);
 
@@ -380,6 +387,19 @@ export async function startGatewayServer(
   const execApprovalHandlers = createExecApprovalHandlers(execApprovalManager, {
     forwarder: execApprovalForwarder,
   });
+  const secretsHandlers = createSecretsHandlers({
+    reloadSecrets: async () => {
+      const active = getActiveSecretsRuntimeSnapshot();
+      if (!active) {
+        throw new Error("Secrets runtime snapshot is not active.");
+      }
+      const prepared = await activateRuntimeSecrets(active.sourceConfig, {
+        reason: "reload",
+        activate: true,
+      });
+      return { warningCount: prepared.warnings.length };
+    },
+  });
 
   const canvasHostServerPort = (canvasHostServer as CanvasHostServer | null)?.port;
 
@@ -401,6 +421,7 @@ export async function startGatewayServer(
     extraHandlers: {
       ...pluginRegistry.gatewayHandlers,
       ...execApprovalHandlers,
+      ...secretsHandlers,
     },
     broadcast,
     context: {
@@ -546,8 +567,27 @@ export async function startGatewayServer(
         return startGatewayConfigReloader({
           initialConfig: cfgAtStart,
           readSnapshot: readConfigFileSnapshot,
-          onHotReload: applyHotReload,
-          onRestart: requestGatewayRestart,
+          onHotReload: async (plan, nextConfig) => {
+            const previousSnapshot = getActiveSecretsRuntimeSnapshot();
+            const prepared = await activateRuntimeSecrets(nextConfig, {
+              reason: "reload",
+              activate: true,
+            });
+            try {
+              await applyHotReload(plan, prepared.config);
+            } catch (err) {
+              if (previousSnapshot) {
+                activateSecretsRuntimeSnapshot(previousSnapshot);
+              } else {
+                clearSecretsRuntimeSnapshot();
+              }
+              throw err;
+            }
+          },
+          onRestart: async (plan, nextConfig) => {
+            await activateRuntimeSecrets(nextConfig, { reason: "restart-check", activate: false });
+            requestGatewayRestart(plan, nextConfig);
+          },
           log: {
             info: (msg) => logReload.info(msg),
             warn: (msg) => logReload.warn(msg),
@@ -601,6 +641,7 @@ export async function startGatewayServer(
       authRateLimiter?.dispose();
       browserAuthRateLimiter.dispose();
       channelHealthMonitor?.stop();
+      clearSecretsRuntimeSnapshot();
       await close(opts);
     },
   };

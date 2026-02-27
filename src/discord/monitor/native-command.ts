@@ -36,12 +36,10 @@ import { resolveCommandAuthorizedFromAuthorizers } from "../../channels/command-
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
 import { buildPairingReply } from "../../pairing/pairing-messages.js";
-import {
-  readChannelAllowFromStore,
-  upsertChannelPairingRequest,
-} from "../../pairing/pairing-store.js";
+import { upsertChannelPairingRequest } from "../../pairing/pairing-store.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { buildUntrustedChannelMetadata } from "../../security/channel-metadata.js";
+import { readStoreAllowFromForDmPolicy } from "../../security/dm-policy-shared.js";
 import { chunkItems } from "../../utils/chunk-items.js";
 import { loadWebMedia } from "../../web/media.js";
 import { chunkDiscordTextWithMode } from "../chunk.js";
@@ -633,6 +631,7 @@ async function dispatchDiscordCommandInteraction(params: {
           const { code, created } = await upsertChannelPairingRequest({
             channel: "discord",
             id: user.id,
+            accountId,
             meta: {
               tag: sender.tag,
               name: sender.name,

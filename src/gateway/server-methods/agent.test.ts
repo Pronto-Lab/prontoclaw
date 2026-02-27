@@ -150,6 +150,8 @@ async function invokeAgent(
     respond?: ReturnType<typeof vi.fn>;
     reqId?: string;
     context?: GatewayRequestContext;
+    client?: AgentHandlerArgs["client"];
+    isWebchatConnect?: AgentHandlerArgs["isWebchatConnect"];
   },
 ) {
   const respond = options?.respond ?? vi.fn();
@@ -158,8 +160,8 @@ async function invokeAgent(
     respond: respond as never,
     context: options?.context ?? makeContext(),
     req: { type: "req", id: options?.reqId ?? "agent-test-req", method: "agent" },
-    client: null,
-    isWebchatConnect: () => false,
+    client: options?.client ?? null,
+    isWebchatConnect: options?.isWebchatConnect ?? (() => false),
   });
   return respond;
 }
@@ -189,6 +191,46 @@ async function invokeAgentIdentityGet(
 }
 
 describe("gateway agent handler", () => {
+  it("preserves ACP metadata from the current stored session entry", async () => {
+    const existingAcpMeta = {
+      backend: "acpx",
+      agent: "codex",
+      runtimeSessionName: "runtime-1",
+      mode: "persistent",
+      state: "idle",
+      lastActivityAt: Date.now(),
+    };
+
+    mockMainSessionEntry({
+      acp: existingAcpMeta,
+    });
+
+    let capturedEntry: Record<string, unknown> | undefined;
+    mocks.updateSessionStore.mockImplementation(async (_path, updater) => {
+      const store: Record<string, unknown> = {
+        "agent:main:main": {
+          sessionId: "existing-session-id",
+          updatedAt: Date.now(),
+          acp: existingAcpMeta,
+        },
+      };
+      const result = await updater(store);
+      capturedEntry = store["agent:main:main"] as Record<string, unknown>;
+      return result;
+    });
+
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 100 },
+    });
+
+    await runMainAgent("test", "test-idem-acp-meta");
+
+    expect(mocks.updateSessionStore).toHaveBeenCalled();
+    expect(capturedEntry).toBeDefined();
+    expect(capturedEntry?.acp).toEqual(existingAcpMeta);
+  });
+
   it("preserves cliSessionIds from existing session entry", async () => {
     const existingCliSessionIds = { "claude-cli": "abc-123-def" };
     const existingClaudeCliSessionId = "abc-123-def";

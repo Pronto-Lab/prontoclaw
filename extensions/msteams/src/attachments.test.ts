@@ -1,4 +1,4 @@
-import type { PluginRuntime } from "openclaw/plugin-sdk";
+import type { PluginRuntime, SsrFPolicy } from "openclaw/plugin-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setMSTeamsRuntime } from "./runtime.js";
 
@@ -298,6 +298,31 @@ describe("msteams attachments", () => {
 
       expect(media).toHaveLength(0);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks redirects to non-https URLs", async () => {
+      const insecureUrl = "http://x/insecure.png";
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url === TEST_URL_IMAGE) {
+          return createRedirectResponse(insecureUrl);
+        }
+        if (url === insecureUrl) {
+          return createBufferResponse("insecure", CONTENT_TYPE_IMAGE_PNG);
+        }
+        return createNotFoundResponse();
+      });
+
+      const media = await downloadAttachmentsWithFetch(
+        createImageAttachments(TEST_URL_IMAGE),
+        fetchMock,
+        {
+          allowHosts: [TEST_HOST],
+        },
+      );
+
+      expectAttachmentMediaLength(media, 0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 

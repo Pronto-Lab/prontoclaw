@@ -63,9 +63,11 @@ export type {
 export type { ChannelConfigSchema, ChannelPlugin } from "../channels/plugins/types.plugin.js";
 export type {
   AnyAgentTool,
+  OpenClawPluginConfigSchema,
   OpenClawPluginApi,
   OpenClawPluginService,
   OpenClawPluginServiceContext,
+  PluginLogger,
   ProviderAuthContext,
   ProviderAuthResult,
 } from "../plugins/types.js";
@@ -149,6 +151,8 @@ export type { WizardPrompter } from "../wizard/prompts.js";
 export { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../routing/session-key.js";
 export { formatAllowFromLowercase, isAllowedParsedChatSender } from "./allow-from.js";
 export { resolveSenderCommandAuthorization } from "./command-auth.js";
+export { createScopedPairingAccess } from "./pairing-access.js";
+export { issuePairingChallenge } from "../pairing/pairing-challenge.js";
 export { handleSlackMessageAction } from "./slack-message-actions.js";
 export { extractToolSend } from "./tool-send.js";
 export { resolveChannelAccountConfigBasePath } from "./config-paths.js";
@@ -171,6 +175,11 @@ export { createDedupeCache } from "../infra/dedupe.js";
 export type { DedupeCache } from "../infra/dedupe.js";
 export { formatErrorMessage } from "../infra/errors.js";
 export {
+  formatUtcTimestamp,
+  formatZonedTimestamp,
+  resolveTimezone,
+} from "../infra/format-time/format-datetime.js";
+export {
   DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
   DEFAULT_WEBHOOK_MAX_BODY_BYTES,
   RequestBodyLimitError,
@@ -189,6 +198,13 @@ export {
   isPrivateIpAddress,
 } from "../infra/net/ssrf.js";
 export type { LookupFn, SsrFPolicy } from "../infra/net/ssrf.js";
+export {
+  buildHostnameAllowlistPolicyFromSuffixAllowlist,
+  isHttpsUrlAllowedByHostnameSuffixAllowlist,
+  normalizeHostnameSuffixAllowlist,
+} from "./ssrf-policy.js";
+export { fetchWithBearerAuthScopeFallback } from "./fetch-auth.js";
+export type { ScopeTokenProvider } from "./fetch-auth.js";
 export { rawDataToString } from "../infra/ws.js";
 export { isWSLSync, isWSL2Sync, isWSLEnv } from "../infra/wsl.js";
 export { isTruthyEnvValue } from "../infra/env.js";

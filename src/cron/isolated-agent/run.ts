@@ -47,7 +47,7 @@ import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import { resolveAgentOutboundIdentity } from "../../infra/outbound/identity.js";
 import { resolveOutboundSessionRoute } from "../../infra/outbound/outbound-session.js";
 import { logWarn } from "../../logger.js";
-import { buildAgentMainSessionKey, normalizeAgentId } from "../../routing/session-key.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import {
   buildSafeExternalPrompt,
   detectSuspiciousPatterns,
@@ -64,6 +64,7 @@ import {
   pickSummaryFromPayloads,
   resolveHeartbeatAckMaxChars,
 } from "./helpers.js";
+import { resolveCronAgentSessionKey } from "./session-key.js";
 import { resolveCronSession } from "./session.js";
 import { resolveCronSkillsSnapshot } from "./skills-snapshot.js";
 import {
@@ -201,10 +202,7 @@ export async function runCronIsolatedAgentTurn(params: {
   };
 
   const baseSessionKey = (params.sessionKey?.trim() || `cron:${params.job.id}`).trim();
-  const agentSessionKey = buildAgentMainSessionKey({
-    agentId,
-    mainKey: baseSessionKey,
-  });
+  const agentSessionKey = resolveCronAgentSessionKey({ sessionKey: baseSessionKey, agentId });
 
   const workspaceDirRaw = resolveAgentWorkspaceDir(params.cfg, agentId);
   const agentDir = resolveAgentDir(params.cfg, agentId);

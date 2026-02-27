@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { isPathInsideWithRealpath } from "../security/scan-paths.js";
+import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
 import { resolveConfigDir, resolveUserPath } from "../utils.js";
 import { resolveBundledPluginsDir } from "./bundled-dir.js";
 import {
@@ -208,14 +208,21 @@ function isExtensionFile(filePath: string): boolean {
 
 function readPackageManifest(dir: string): PackageManifest | null {
   const manifestPath = path.join(dir, "package.json");
-  if (!fs.existsSync(manifestPath)) {
+  const opened = openBoundaryFileSync({
+    absolutePath: manifestPath,
+    rootPath: dir,
+    boundaryLabel: "plugin package directory",
+  });
+  if (!opened.ok) {
     return null;
   }
   try {
-    const raw = fs.readFileSync(manifestPath, "utf-8");
+    const raw = fs.readFileSync(opened.fd, "utf-8");
     return JSON.parse(raw) as PackageManifest;
   } catch {
     return null;
+  } finally {
+    fs.closeSync(opened.fd);
   }
 }
 
@@ -267,7 +274,7 @@ function addCandidate(params: {
   if (params.seen.has(resolved)) {
     return;
   }
-  const resolvedRoot = path.resolve(params.rootDir);
+  const resolvedRoot = safeRealpathSync(params.rootDir) ?? path.resolve(params.rootDir);
   if (
     isUnsafePluginCandidate({
       source: resolved,
@@ -302,11 +309,12 @@ function resolvePackageEntrySource(params: {
   diagnostics: PluginDiagnostic[];
 }): string | null {
   const source = path.resolve(params.packageDir, params.entryPath);
-  if (
-    !isPathInsideWithRealpath(params.packageDir, source, {
-      requireRealpath: true,
-    })
-  ) {
+  const opened = openBoundaryFileSync({
+    absolutePath: source,
+    rootPath: params.packageDir,
+    boundaryLabel: "plugin package directory",
+  });
+  if (!opened.ok) {
     params.diagnostics.push({
       level: "error",
       message: `extension entry escapes package directory: ${params.entryPath}`,
@@ -314,7 +322,9 @@ function resolvePackageEntrySource(params: {
     });
     return null;
   }
-  return source;
+  const safeSource = opened.path;
+  fs.closeSync(opened.fd);
+  return safeSource;
 }
 
 function discoverInDirectory(params: {

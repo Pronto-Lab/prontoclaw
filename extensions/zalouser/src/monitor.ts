@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { OpenClawConfig, MarkdownTableMode, RuntimeEnv } from "openclaw/plugin-sdk";
 import {
+  createScopedPairingAccess,
   createReplyPrefixOptions,
   mergeAllowlist,
   resolveSenderCommandAuthorization,
@@ -167,6 +168,11 @@ async function processMessage(
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void,
 ): Promise<void> {
   const { threadId, content, timestamp, metadata } = message;
+  const pairing = createScopedPairingAccess({
+    core,
+    channel: "zalouser",
+    accountId: account.accountId,
+  });
   if (!content?.trim()) {
     return;
   }
@@ -205,7 +211,7 @@ async function processMessage(
     configuredAllowFrom: configAllowFrom,
     senderId,
     isSenderAllowed,
-    readAllowFromStore: () => core.channel.pairing.readAllowFromStore("zalouser"),
+    readAllowFromStore: pairing.readAllowFromStore,
     shouldComputeCommandAuthorized: (body, cfg) =>
       core.channel.commands.shouldComputeCommandAuthorized(body, cfg),
     resolveCommandAuthorizedFromAuthorizers: (params) =>
@@ -223,8 +229,7 @@ async function processMessage(
 
       if (!allowed) {
         if (dmPolicy === "pairing") {
-          const { code, created } = await core.channel.pairing.upsertPairingRequest({
-            channel: "zalouser",
+          const { code, created } = await pairing.upsertPairingRequest({
             id: senderId,
             meta: { name: senderName || undefined },
           });

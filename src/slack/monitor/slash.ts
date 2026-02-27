@@ -7,11 +7,6 @@ import { formatAllowlistMatchMeta } from "../../channels/allowlist-match.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../../channels/command-gating.js";
 import { resolveNativeCommandsEnabled, resolveNativeSkillsEnabled } from "../../config/commands.js";
 import { danger, logVerbose } from "../../globals.js";
-import { buildPairingReply } from "../../pairing/pairing-messages.js";
-import {
-  readChannelAllowFromStore,
-  upsertChannelPairingRequest,
-} from "../../pairing/pairing-store.js";
 import { chunkItems } from "../../utils/chunk-items.js";
 import {
   normalizeAllowList,
@@ -359,11 +354,36 @@ export async function registerSlackMonitorSlashCommands(params: {
       let commandAuthorized = false;
       let channelConfig: SlackChannelConfigResolved | null = null;
       if (isDirectMessage) {
-        if (!ctx.dmEnabled || ctx.dmPolicy === "disabled") {
-          await respond({
-            text: "Slack DMs are disabled.",
-            response_type: "ephemeral",
-          });
+        const allowed = await authorizeSlackDirectMessage({
+          ctx,
+          accountId: ctx.accountId,
+          senderId: command.user_id,
+          allowFromLower: effectiveAllowFromLower,
+          resolveSenderName: ctx.resolveUserName,
+          sendPairingReply: async (text) => {
+            await respond({
+              text,
+              response_type: "ephemeral",
+            });
+          },
+          onDisabled: async () => {
+            await respond({
+              text: "Slack DMs are disabled.",
+              response_type: "ephemeral",
+            });
+          },
+          onUnauthorized: async ({ allowMatchMeta }) => {
+            logVerbose(
+              `slack: blocked slash sender ${command.user_id} (dmPolicy=${ctx.dmPolicy}, ${allowMatchMeta})`,
+            );
+            await respond({
+              text: "You are not authorized to use this command.",
+              response_type: "ephemeral",
+            });
+          },
+          log: logVerbose,
+        });
+        if (!allowed) {
           return;
         }
         if (ctx.dmPolicy !== "open") {

@@ -325,7 +325,9 @@ export const nextcloudTalkPlugin: ChannelPlugin<ResolvedNextcloudTalkAccount> = 
         statusSink: (patch) => ctx.setStatus({ accountId: ctx.accountId, ...patch }),
       });
 
-      return { stop };
+      // Keep webhook channels pending for the account lifecycle.
+      await waitForAbortSignal(ctx.abortSignal);
+      stop();
     },
     logoutAccount: async ({ accountId, cfg }) => {
       const nextCfg = { ...cfg } as OpenClawConfig;

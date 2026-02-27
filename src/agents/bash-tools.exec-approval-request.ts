@@ -9,6 +9,7 @@ export type RequestExecApprovalDecisionParams = {
   id: string;
   command: string;
   commandArgv?: string[];
+  env?: Record<string, string>;
   cwd: string;
   host: "gateway" | "node";
   security: ExecSecurity;
@@ -16,6 +17,10 @@ export type RequestExecApprovalDecisionParams = {
   agentId?: string;
   resolvedPath?: string;
   sessionKey?: string;
+  turnSourceChannel?: string;
+  turnSourceTo?: string;
+  turnSourceAccountId?: string;
+  turnSourceThreadId?: string | number;
 };
 
 export async function requestExecApprovalDecision(

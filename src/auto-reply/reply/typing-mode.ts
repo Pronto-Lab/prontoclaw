@@ -7,6 +7,8 @@ export type TypingModeContext = {
   isGroupChat: boolean;
   wasMentioned: boolean;
   isHeartbeat: boolean;
+  typingPolicy?: TypingPolicy;
+  suppressTyping?: boolean;
 };
 
 export const DEFAULT_GROUP_TYPING_MODE: TypingMode = "message";
@@ -16,8 +18,16 @@ export function resolveTypingMode({
   isGroupChat,
   wasMentioned,
   isHeartbeat,
+  typingPolicy,
+  suppressTyping,
 }: TypingModeContext): TypingMode {
-  if (isHeartbeat) {
+  if (
+    isHeartbeat ||
+    typingPolicy === "heartbeat" ||
+    typingPolicy === "system_event" ||
+    typingPolicy === "internal_webchat" ||
+    suppressTyping
+  ) {
     return "never";
   }
   if (configured) {

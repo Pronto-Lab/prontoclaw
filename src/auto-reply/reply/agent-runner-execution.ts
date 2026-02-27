@@ -126,6 +126,12 @@ export async function runAgentTurnWithFallback(params: {
         if (isSilentReplyText(text, SILENT_REPLY_TOKEN)) {
           return { skip: true };
         }
+        if (
+          isSilentReplyPrefixText(text, SILENT_REPLY_TOKEN) ||
+          isSilentReplyPrefixText(text, HEARTBEAT_TOKEN)
+        ) {
+          return { skip: true };
+        }
         if (!text) {
           // Allow media-only payloads (e.g. tool result screenshots) through.
           if ((payload.mediaUrls?.length ?? 0) > 0) {

@@ -195,7 +195,25 @@ describe("verifyTelnyxWebhook", () => {
 
     expect(first.ok).toBe(true);
     expect(first.isReplay).toBeFalsy();
+    expect(first.verifiedRequestKey).toBeTruthy();
     expect(second.ok).toBe(true);
+    expect(second.isReplay).toBe(true);
+    expect(second.verifiedRequestKey).toBe(first.verifiedRequestKey);
+  });
+
+  it("returns a stable request key when verification is skipped", () => {
+    const ctx = {
+      headers: {},
+      rawBody: JSON.stringify({ data: { event_type: "call.initiated" } }),
+      url: "https://example.com/voice/webhook",
+      method: "POST" as const,
+    };
+    const first = verifyTelnyxWebhook(ctx, undefined, { skipVerification: true });
+    const second = verifyTelnyxWebhook(ctx, undefined, { skipVerification: true });
+
+    expect(first.ok).toBe(true);
+    expect(first.verifiedRequestKey).toMatch(/^telnyx:skip:/);
+    expect(second.verifiedRequestKey).toBe(first.verifiedRequestKey);
     expect(second.isReplay).toBe(true);
   });
 });
@@ -440,5 +458,21 @@ describe("verifyTwilioWebhook", () => {
 
     expect(result.ok).toBe(false);
     expect(result.verificationUrl).toBe("https://legitimate.example.com/voice/webhook");
+  });
+
+  it("returns a stable request key when verification is skipped", () => {
+    const ctx = {
+      headers: {},
+      rawBody: "CallSid=CS123&CallStatus=completed",
+      url: "https://example.com/voice/webhook",
+      method: "POST" as const,
+    };
+    const first = verifyTwilioWebhook(ctx, "token", { skipVerification: true });
+    const second = verifyTwilioWebhook(ctx, "token", { skipVerification: true });
+
+    expect(first.ok).toBe(true);
+    expect(first.verifiedRequestKey).toMatch(/^twilio:skip:/);
+    expect(second.verifiedRequestKey).toBe(first.verifiedRequestKey);
+    expect(second.isReplay).toBe(true);
   });
 });

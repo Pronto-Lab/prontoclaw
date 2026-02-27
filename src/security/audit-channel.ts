@@ -57,6 +57,7 @@ export async function collectChannelSecurityFindings(params: {
   const warnDmPolicy = async (input: {
     label: string;
     provider: ChannelId;
+    accountId: string;
     dmPolicy: string;
     allowFrom?: Array<string | number> | null;
     policyPath?: string;
@@ -66,6 +67,7 @@ export async function collectChannelSecurityFindings(params: {
     const policyPath = input.policyPath ?? `${input.allowFromPath}policy`;
     const { hasWildcard, isMultiUserDm } = await resolveDmAllowState({
       provider: input.provider,
+      accountId: input.accountId,
       allowFrom: input.allowFrom,
       normalizeEntry: input.normalizeEntry,
     });
@@ -355,7 +357,11 @@ export async function collectChannelSecurityFindings(params: {
         continue;
       }
 
-      const storeAllowFrom = await readChannelAllowFromStore("telegram").catch(() => []);
+      const storeAllowFrom = await readChannelAllowFromStore(
+        "telegram",
+        process.env,
+        accountId,
+      ).catch(() => []);
       const storeHasWildcard = storeAllowFrom.some((v) => String(v).trim() === "*");
       const invalidTelegramAllowFromEntries = new Set<string>();
       for (const entry of storeAllowFrom) {

@@ -187,6 +187,103 @@ function asObjectRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function normalizeBindingChannelKey(raw?: string | null): string {
+  const normalized = normalizeChatChannelId(raw);
+  if (normalized) {
+    return normalized;
+  }
+  return (raw ?? "").trim().toLowerCase();
+}
+
+export function collectMissingDefaultAccountBindingWarnings(cfg: OpenClawConfig): string[] {
+  const channels = asObjectRecord(cfg.channels);
+  if (!channels) {
+    return [];
+  }
+
+  const bindings = Array.isArray(cfg.bindings) ? cfg.bindings : [];
+  const warnings: string[] = [];
+
+  for (const [channelKey, rawChannel] of Object.entries(channels)) {
+    const channel = asObjectRecord(rawChannel);
+    if (!channel) {
+      continue;
+    }
+    const accounts = asObjectRecord(channel.accounts);
+    if (!accounts) {
+      continue;
+    }
+
+    const normalizedAccountIds = Array.from(
+      new Set(
+        Object.keys(accounts)
+          .map((accountId) => normalizeAccountId(accountId))
+          .filter(Boolean),
+      ),
+    );
+    if (normalizedAccountIds.length === 0 || normalizedAccountIds.includes(DEFAULT_ACCOUNT_ID)) {
+      continue;
+    }
+    const accountIdSet = new Set(normalizedAccountIds);
+    const channelPattern = normalizeBindingChannelKey(channelKey);
+
+    let hasWildcardBinding = false;
+    const coveredAccountIds = new Set<string>();
+    for (const binding of bindings) {
+      const bindingRecord = asObjectRecord(binding);
+      if (!bindingRecord) {
+        continue;
+      }
+      const match = asObjectRecord(bindingRecord.match);
+      if (!match) {
+        continue;
+      }
+
+      const matchChannel =
+        typeof match.channel === "string" ? normalizeBindingChannelKey(match.channel) : "";
+      if (!matchChannel || matchChannel !== channelPattern) {
+        continue;
+      }
+
+      const rawAccountId = typeof match.accountId === "string" ? match.accountId.trim() : "";
+      if (!rawAccountId) {
+        continue;
+      }
+      if (rawAccountId === "*") {
+        hasWildcardBinding = true;
+        continue;
+      }
+      const normalizedBindingAccountId = normalizeAccountId(rawAccountId);
+      if (accountIdSet.has(normalizedBindingAccountId)) {
+        coveredAccountIds.add(normalizedBindingAccountId);
+      }
+    }
+
+    if (hasWildcardBinding) {
+      continue;
+    }
+
+    const uncoveredAccountIds = normalizedAccountIds.filter(
+      (accountId) => !coveredAccountIds.has(accountId),
+    );
+    if (uncoveredAccountIds.length === 0) {
+      continue;
+    }
+    if (coveredAccountIds.size > 0) {
+      warnings.push(
+        `- channels.${channelKey}: accounts.default is missing and account bindings only cover a subset of configured accounts. Uncovered accounts: ${uncoveredAccountIds.join(", ")}. Add bindings[].match.accountId for uncovered accounts (or "*"), or add channels.${channelKey}.accounts.default.`,
+      );
+      continue;
+    }
+
+    warnings.push(
+      `- channels.${channelKey}: accounts.default is missing and no valid account-scoped binding exists for configured accounts (${normalizedAccountIds.join(", ")}). Channel-only bindings (no accountId) match only default. Add bindings[].match.accountId for one of these accounts (or "*"), or add channels.${channelKey}.accounts.default.`,
+    );
+  }
+
+  return warnings;
+}
+
 function collectTelegramAccountScopes(
   cfg: OpenClawConfig,
 ): Array<{ prefix: string; account: Record<string, unknown> }> {
@@ -789,7 +886,7 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   if (snapshot.legacyIssues.length > 0) {
     note(
       snapshot.legacyIssues.map((issue) => `- ${issue.path}: ${issue.message}`).join("\n"),
-      "Legacy config keys detected",
+      "Compatibility config keys detected",
     );
     const { config: migrated, changes } = migrateLegacyConfig(snapshot.parsed);
     if (changes.length > 0) {
@@ -800,18 +897,18 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
       pendingChanges = pendingChanges || changes.length > 0;
     }
     if (shouldRepair) {
-      // Legacy migration (2026-01-02, commit: 16420e5b) — normalize per-provider allowlists; move WhatsApp gating into channels.whatsapp.allowFrom.
+      // Compatibility migration (2026-01-02, commit: 16420e5b) — normalize per-provider allowlists; move WhatsApp gating into channels.whatsapp.allowFrom.
       if (migrated) {
         cfg = migrated;
       }
     } else {
       fixHints.push(
-        `Run "${formatCliCommand("openclaw doctor --fix")}" to apply legacy migrations.`,
+        `Run "${formatCliCommand("openclaw doctor --fix")}" to apply compatibility migrations.`,
       );
     }
   }
 
-  const normalized = normalizeLegacyConfigValues(candidate);
+  const normalized = normalizeCompatibilityConfigValues(candidate);
   if (normalized.changes.length > 0) {
     note(normalized.changes.join("\n"), "Doctor changes");
     candidate = normalized.config;
@@ -833,6 +930,12 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     } else {
       fixHints.push(`Run "${formatCliCommand("openclaw doctor --fix")}" to apply these changes.`);
     }
+  }
+
+  const missingDefaultAccountBindingWarnings =
+    collectMissingDefaultAccountBindingWarnings(candidate);
+  if (missingDefaultAccountBindingWarnings.length > 0) {
+    note(missingDefaultAccountBindingWarnings.join("\n"), "Doctor warnings");
   }
 
   if (shouldRepair) {

@@ -13,7 +13,7 @@ const ANTHROPIC_1M_MODEL_PREFIXES = ["claude-opus-4", "claude-sonnet-4"] as cons
 // NOTE: We only force `store=true` for *direct* OpenAI Responses.
 // Codex responses (chatgpt.com/backend-api/codex/responses) require `store=false`.
 const OPENAI_RESPONSES_APIS = new Set(["openai-responses"]);
-const OPENAI_RESPONSES_PROVIDERS = new Set(["openai"]);
+const OPENAI_RESPONSES_PROVIDERS = new Set(["openai", "azure-openai-responses"]);
 
 /**
  * Resolve provider-specific extra params from model config.
@@ -86,6 +86,13 @@ function createStreamFnWithExtraParams(
   if (typeof extraParams.maxTokens === "number") {
     streamParams.maxTokens = extraParams.maxTokens;
   }
+  const transport = extraParams.transport;
+  if (transport === "sse" || transport === "websocket" || transport === "auto") {
+    streamParams.transport = transport;
+  } else if (transport != null) {
+    const transportSummary = typeof transport === "string" ? transport : typeof transport;
+    log.warn(`ignoring invalid transport param: ${transportSummary}`);
+  }
   const cacheRetention = resolveCacheRetention(extraParams, provider);
   if (cacheRetention) {
     streamParams.cacheRetention = cacheRetention;
@@ -114,10 +121,16 @@ function isDirectOpenAIBaseUrl(baseUrl: unknown): boolean {
 
   try {
     const host = new URL(baseUrl).hostname.toLowerCase();
-    return host === "api.openai.com" || host === "chatgpt.com";
+    return (
+      host === "api.openai.com" || host === "chatgpt.com" || host.endsWith(".openai.azure.com")
+    );
   } catch {
     const normalized = baseUrl.toLowerCase();
-    return normalized.includes("api.openai.com") || normalized.includes("chatgpt.com");
+    return (
+      normalized.includes("api.openai.com") ||
+      normalized.includes("chatgpt.com") ||
+      normalized.includes(".openai.azure.com")
+    );
   }
 }
 
@@ -156,6 +169,15 @@ function createOpenAIResponsesStoreWrapper(baseStreamFn: StreamFn | undefined): 
       },
     });
   };
+}
+
+function createCodexDefaultTransportWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) =>
+    underlying(model, context, {
+      ...options,
+      transport: options?.transport ?? "auto",
+    });
 }
 
 function isAnthropic1MModel(modelId: string): boolean {
@@ -385,6 +407,10 @@ export function applyExtraParamsToAgent(
     provider,
     modelId,
   });
+  if (provider === "openai-codex") {
+    // Default Codex to WebSocket-first when nothing else specifies transport.
+    agent.streamFn = createCodexDefaultTransportWrapper(agent.streamFn);
+  }
   const override =
     extraParamsOverride && Object.keys(extraParamsOverride).length > 0
       ? Object.fromEntries(

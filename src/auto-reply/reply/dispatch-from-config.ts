@@ -13,15 +13,18 @@ import {
   logSessionStateChange,
 } from "../../logging/diagnostic.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { maybeApplyTtsToPayload, normalizeTtsAutoMode, resolveTtsConfig } from "../../tts/tts.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { getReplyFromConfig } from "../reply.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
+import { shouldBypassAcpDispatchForCommand, tryDispatchAcpReply } from "./dispatch-acp.js";
 import { shouldSkipDuplicateInbound } from "./inbound-dedupe.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
+import { resolveRunTypingPolicy } from "./typing-policy.js";
 
 const AUDIO_PLACEHOLDER_RE = /^<media:audio>(\s*\([^)]*\))?$/i;
 const AUDIO_HEADER_RE = /^\[Audio\b/i;
-
 const normalizeMediaType = (value: string): string => value.split(";")[0]?.trim().toLowerCase();
 
 const isInboundAudioContext = (ctx: FinalizedMsgContext): boolean => {
@@ -54,24 +57,31 @@ const isInboundAudioContext = (ctx: FinalizedMsgContext): boolean => {
   return AUDIO_HEADER_RE.test(trimmed);
 };
 
-const resolveSessionTtsAuto = (
+const resolveSessionStoreEntry = (
   ctx: FinalizedMsgContext,
   cfg: OpenClawConfig,
-): string | undefined => {
+): {
+  sessionKey?: string;
+  entry?: SessionEntry;
+} => {
   const targetSessionKey =
     ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
   const sessionKey = (targetSessionKey ?? ctx.SessionKey)?.trim();
   if (!sessionKey) {
-    return undefined;
+    return {};
   }
   const agentId = resolveSessionAgentId({ sessionKey, config: cfg });
   const storePath = resolveStorePath(cfg.session?.store, { agentId });
   try {
     const store = loadSessionStore(storePath);
-    const entry = store[sessionKey.toLowerCase()] ?? store[sessionKey];
-    return normalizeTtsAutoMode(entry?.ttsAuto);
+    return {
+      sessionKey,
+      entry: store[sessionKey.toLowerCase()] ?? store[sessionKey],
+    };
   } catch {
-    return undefined;
+    return {
+      sessionKey,
+    };
   }
 };
 
@@ -146,8 +156,9 @@ export async function dispatchReplyFromConfig(params: {
     return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
   }
 
+  const sessionStoreEntry = resolveSessionStoreEntry(ctx, cfg);
   const inboundAudio = isInboundAudioContext(ctx);
-  const sessionTtsAuto = resolveSessionTtsAuto(ctx, cfg);
+  const sessionTtsAuto = normalizeTtsAutoMode(sessionStoreEntry.entry?.ttsAuto);
   const hookRunner = getGlobalHookRunner();
 
   // Extract message context for hooks (plugin and internal)
@@ -240,8 +251,11 @@ export async function dispatchReplyFromConfig(params: {
   const originatingChannel = ctx.OriginatingChannel;
   const originatingTo = ctx.OriginatingTo;
   const currentSurface = (ctx.Surface ?? ctx.Provider)?.toLowerCase();
-  const shouldRouteToOriginating =
-    isRoutableChannel(originatingChannel) && originatingTo && originatingChannel !== currentSurface;
+  const shouldRouteToOriginating = Boolean(
+    isRoutableChannel(originatingChannel) && originatingTo && originatingChannel !== currentSurface,
+  );
+  const shouldSuppressTyping =
+    shouldRouteToOriginating || originatingChannel === INTERNAL_MESSAGE_CHANNEL;
   const ttsChannel = shouldRouteToOriginating ? originatingChannel : currentSurface;
 
   /**
@@ -318,13 +332,56 @@ export async function dispatchReplyFromConfig(params: {
       return { queuedFinal, counts };
     }
 
+    const bypassAcpForCommand = shouldBypassAcpDispatchForCommand(ctx, cfg);
+
+    const sendPolicy = resolveSendPolicy({
+      cfg,
+      entry: sessionStoreEntry.entry,
+      sessionKey: sessionStoreEntry.sessionKey ?? sessionKey,
+      channel:
+        sessionStoreEntry.entry?.channel ??
+        ctx.OriginatingChannel ??
+        ctx.Surface ??
+        ctx.Provider ??
+        undefined,
+      chatType: sessionStoreEntry.entry?.chatType,
+    });
+    if (sendPolicy === "deny" && !bypassAcpForCommand) {
+      logVerbose(
+        `Send blocked by policy for session ${sessionStoreEntry.sessionKey ?? sessionKey ?? "unknown"}`,
+      );
+      const counts = dispatcher.getQueuedCounts();
+      recordProcessed("completed", { reason: "send_policy_deny" });
+      markIdle("message_completed");
+      return { queuedFinal: false, counts };
+    }
+
+    const shouldSendToolSummaries = ctx.ChatType !== "group" && ctx.CommandSource !== "native";
+    const acpDispatch = await tryDispatchAcpReply({
+      ctx,
+      cfg,
+      dispatcher,
+      sessionKey,
+      inboundAudio,
+      sessionTtsAuto,
+      ttsChannel,
+      shouldRouteToOriginating,
+      originatingChannel,
+      originatingTo,
+      shouldSendToolSummaries,
+      bypassForCommand: bypassAcpForCommand,
+      recordProcessed,
+      markIdle,
+    });
+    if (acpDispatch) {
+      return acpDispatch;
+    }
+
     // Track accumulated block text for TTS generation after streaming completes.
     // When block streaming succeeds, there's no final reply, so we need to generate
     // TTS audio separately from the accumulated block content.
     let accumulatedBlockText = "";
     let blockCount = 0;
-
-    const shouldSendToolSummaries = ctx.ChatType !== "group" && ctx.CommandSource !== "native";
 
     const resolveToolDeliveryPayload = (payload: ReplyPayload): ReplyPayload | null => {
       if (shouldSendToolSummaries) {
@@ -338,11 +395,19 @@ export async function dispatchReplyFromConfig(params: {
       }
       return { ...payload, text: undefined };
     };
+    const typing = resolveRunTypingPolicy({
+      requestedPolicy: params.replyOptions?.typingPolicy,
+      suppressTyping: params.replyOptions?.suppressTyping === true || shouldSuppressTyping,
+      originatingChannel,
+      systemEvent: shouldRouteToOriginating,
+    });
 
     const replyResult = await (params.replyResolver ?? getReplyFromConfig)(
       ctx,
       {
         ...params.replyOptions,
+        typingPolicy: typing.typingPolicy,
+        suppressTyping: typing.suppressTyping,
         onToolResult: (payload: ReplyPayload) => {
           const run = async () => {
             const ttsPayload = await maybeApplyTtsToPayload({

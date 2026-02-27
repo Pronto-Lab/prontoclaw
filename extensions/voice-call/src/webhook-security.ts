@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { getHeader } from "./http-headers.js";
 import type { WebhookContext } from "./types.js";
 
 /**
@@ -19,17 +20,7 @@ export function validateTwilioSignature(
     return false;
   }
 
-  // Build the string to sign: URL + sorted params (key+value pairs)
-  let dataToSign = url;
-
-  // Sort params alphabetically and append key+value
-  const sortedParams = Array.from(params.entries()).toSorted((a, b) =>
-    a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
-  );
-
-  for (const [key, value] of sortedParams) {
-    dataToSign += key + value;
-  }
+  const dataToSign = buildTwilioDataToSign(url, params);
 
   // HMAC-SHA1 with auth token, then base64 encode
   const expectedSignature = crypto
@@ -39,6 +30,24 @@ export function validateTwilioSignature(
 
   // Use timing-safe comparison to prevent timing attacks
   return timingSafeEqual(signature, expectedSignature);
+}
+
+function buildTwilioDataToSign(url: string, params: URLSearchParams): string {
+  let dataToSign = url;
+  const sortedParams = Array.from(params.entries()).toSorted((a, b) =>
+    a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+  );
+  for (const [key, value] of sortedParams) {
+    dataToSign += key + value;
+  }
+  return dataToSign;
+}
+
+function buildCanonicalTwilioParamString(params: URLSearchParams): string {
+  return Array.from(params.entries())
+    .toSorted((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
 }
 
 /**
@@ -291,20 +300,6 @@ function buildTwilioVerificationUrl(
   }
 }
 
-/**
- * Get a header value, handling both string and string[] types.
- */
-function getHeader(
-  headers: Record<string, string | string[] | undefined>,
-  name: string,
-): string | undefined {
-  const value = headers[name.toLowerCase()];
-  if (Array.isArray(value)) {
-    return value[0];
-  }
-  return value;
-}
-
 function isLoopbackAddress(address?: string): boolean {
   if (!address) {
     return false;
@@ -335,6 +330,8 @@ export interface TelnyxVerificationResult {
   reason?: string;
   /** Request is cryptographically valid but was already processed recently. */
   isReplay?: boolean;
+  /** Stable request identity derived from signed Telnyx material. */
+  verifiedRequestKey?: string;
 }
 
 function decodeBase64OrBase64Url(input: string): Buffer {
@@ -392,7 +389,14 @@ export function verifyTelnyxWebhook(
   },
 ): TelnyxVerificationResult {
   if (options?.skipVerification) {
-    return { ok: true, reason: "verification skipped (dev mode)" };
+    const replayKey = createSkippedVerificationReplayKey("telnyx", ctx);
+    const isReplay = markReplay(telnyxReplayCache, replayKey);
+    return {
+      ok: true,
+      reason: "verification skipped (dev mode)",
+      isReplay,
+      verifiedRequestKey: replayKey,
+    };
   }
 
   if (!publicKey) {
@@ -430,7 +434,7 @@ export function verifyTelnyxWebhook(
 
     const replayKey = `telnyx:${sha256Hex(`${timestamp}\n${signature}\n${ctx.rawBody}`)}`;
     const isReplay = markReplay(telnyxReplayCache, replayKey);
-    return { ok: true, isReplay };
+    return { ok: true, isReplay, verifiedRequestKey: replayKey };
   } catch (err) {
     return {
       ok: false,
@@ -482,7 +486,14 @@ export function verifyTwilioWebhook(
 ): TwilioVerificationResult {
   // Allow skipping verification for development/testing
   if (options?.skipVerification) {
-    return { ok: true, reason: "verification skipped (dev mode)" };
+    const replayKey = createSkippedVerificationReplayKey("twilio", ctx);
+    const isReplay = markReplay(twilioReplayCache, replayKey);
+    return {
+      ok: true,
+      reason: "verification skipped (dev mode)",
+      isReplay,
+      verifiedRequestKey: replayKey,
+    };
   }
 
   const signature = getHeader(ctx.headers, "x-twilio-signature");
@@ -505,7 +516,6 @@ export function verifyTwilioWebhook(
   // Parse the body as URL-encoded params
   const params = new URLSearchParams(ctx.rawBody);
 
-  // Validate signature
   const isValid = validateTwilioSignature(authToken, signature, verificationUrl, params);
 
   if (isValid) {
@@ -709,7 +719,14 @@ export function verifyPlivoWebhook(
   },
 ): PlivoVerificationResult {
   if (options?.skipVerification) {
-    return { ok: true, reason: "verification skipped (dev mode)" };
+    const replayKey = createSkippedVerificationReplayKey("plivo", ctx);
+    const isReplay = markReplay(plivoReplayCache, replayKey);
+    return {
+      ok: true,
+      reason: "verification skipped (dev mode)",
+      isReplay,
+      verifiedRequestKey: replayKey,
+    };
   }
 
   const signatureV3 = getHeader(ctx.headers, "x-plivo-signature-v3");

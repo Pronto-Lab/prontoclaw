@@ -30,6 +30,10 @@ export type ExecuteNodeHostCommandParams = {
   requestedNode?: string;
   boundNode?: string;
   sessionKey?: string;
+  turnSourceChannel?: string;
+  turnSourceTo?: string;
+  turnSourceAccountId?: string;
+  turnSourceThreadId?: string | number;
   agentId?: string;
   security: ExecSecurity;
   ask: ExecAsk;

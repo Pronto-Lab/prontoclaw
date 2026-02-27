@@ -14,6 +14,7 @@ import {
   applyGoogleGeminiModelDefault,
   GOOGLE_GEMINI_DEFAULT_MODEL,
 } from "./google-gemini-model-default.js";
+import type { ApiKeyStorageOptions } from "./onboard-auth.credentials.js";
 import {
   applyAuthProfileConfig,
   applyCloudflareAiGatewayConfig,

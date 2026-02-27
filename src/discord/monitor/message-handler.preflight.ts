@@ -16,14 +16,15 @@ import { resolveMentionGatingWithBypass } from "../../channels/mention-gating.js
 import { loadConfig } from "../../config/config.js";
 import { logVerbose, shouldLogVerbose } from "../../globals.js";
 import { recordChannelActivity } from "../../infra/channel-activity.js";
+import {
+  getSessionBindingService,
+  type SessionBindingRecord,
+} from "../../infra/outbound/session-binding-service.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { logDebug } from "../../logger.js";
 import { getChildLogger } from "../../logging.js";
 import { buildPairingReply } from "../../pairing/pairing-messages.js";
-import {
-  readChannelAllowFromStore,
-  upsertChannelPairingRequest,
-} from "../../pairing/pairing-store.js";
+import { upsertChannelPairingRequest } from "../../pairing/pairing-store.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { markMentionResponded } from "../a2a-retry/index.js";
 import { checkA2ARateLimit } from "../loop-guard.js";
@@ -177,6 +178,7 @@ export async function preflightDiscordMessage(
   }
 
   const dmPolicy = params.discordConfig?.dmPolicy ?? params.discordConfig?.dm?.policy ?? "pairing";
+  const resolvedAccountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
   let commandAuthorized = true;
   if (isDirectMessage) {
     if (dmPolicy === "disabled") {
@@ -205,6 +207,7 @@ export async function preflightDiscordMessage(
           const { code, created } = await upsertChannelPairingRequest({
             channel: "discord",
             id: author.id,
+            accountId: resolvedAccountId,
             meta: {
               tag: formatDiscordUserTag(author),
               name: author.username ?? undefined,

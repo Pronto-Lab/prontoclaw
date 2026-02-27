@@ -24,6 +24,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { agentCommand } from "./agent.js";
+import * as agentDeliveryModule from "./agent/delivery.js";
 
 const runtime: RuntimeEnv = {
   log: vi.fn(),

@@ -43,7 +43,7 @@ export function registerPreActionHooks(program: Command, programVersion: string)
     if (!verbose) {
       process.env.NODE_NO_WARNINGS ??= "1";
     }
-    if (commandPath[0] === "doctor" || commandPath[0] === "completion") {
+    if (CONFIG_GUARD_BYPASS_COMMANDS.has(commandPath[0])) {
       return;
     }
     const { ensureConfigReady } = await import("./config-guard.js");

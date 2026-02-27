@@ -24,6 +24,7 @@ import {
   sanitizeToolUseResultPairing,
 } from "../session-transcript-repair.js";
 import { resolveTranscriptPolicy } from "../transcript-policy.js";
+import { makeZeroUsageSnapshot } from "../usage.js";
 import { log } from "./logger.js";
 import { describeUnknownError } from "./utils.js";
 

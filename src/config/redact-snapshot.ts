@@ -159,7 +159,19 @@ function redactObjectWithLookup(
             result[key] = REDACTED_SENTINEL;
             values.push(value);
           } else if (typeof value === "object" && value !== null) {
-            result[key] = redactObjectWithLookup(value, lookup, candidate, values, hints);
+            if (hints[candidate]?.sensitive === true && !Array.isArray(value)) {
+              collectSensitiveStrings(value, values);
+              result[key] = REDACTED_SENTINEL;
+            } else {
+              result[key] = redactObjectWithLookup(value, lookup, candidate, values, hints);
+            }
+          } else if (
+            hints[candidate]?.sensitive === true &&
+            value !== undefined &&
+            value !== null
+          ) {
+            // Keep primitives at explicitly-sensitive paths fully redacted.
+            result[key] = REDACTED_SENTINEL;
           }
           break;
         }
@@ -228,6 +240,16 @@ function redactObjectGuessing(
       ) {
         result[key] = REDACTED_SENTINEL;
         values.push(value);
+      } else if (
+        !isExplicitlyNonSensitivePath(hints, [dotPath, wildcardPath]) &&
+        isSensitivePath(dotPath) &&
+        isWholeObjectSensitivePath(dotPath) &&
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+      ) {
+        collectSensitiveStrings(value, values);
+        result[key] = REDACTED_SENTINEL;
       } else if (typeof value === "object" && value !== null) {
         result[key] = redactObjectGuessing(value, dotPath, values, hints);
       } else {

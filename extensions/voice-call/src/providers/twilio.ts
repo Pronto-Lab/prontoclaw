@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { TwilioConfig, WebhookSecurityConfig } from "../config.js";
+import { getHeader } from "../http-headers.js";
 import type { MediaStreamHandler } from "../media-stream.js";
 import type { TelephonyTtsProvider } from "../telephony-tts.js";
 import type {
@@ -12,6 +13,7 @@ import type {
   StartListeningInput,
   StopListeningInput,
   WebhookContext,
+  WebhookParseOptions,
   WebhookVerificationResult,
 } from "../types.js";
 import type { VoiceCallProvider } from "./base.js";
@@ -205,7 +207,10 @@ export class TwilioProvider implements VoiceCallProvider {
   /**
    * Parse Twilio webhook event into normalized format.
    */
-  parseWebhookEvent(ctx: WebhookContext): ProviderWebhookParseResult {
+  parseWebhookEvent(
+    ctx: WebhookContext,
+    options?: WebhookParseOptions,
+  ): ProviderWebhookParseResult {
     try {
       const params = new URLSearchParams(ctx.rawBody);
       const callIdFromQuery =

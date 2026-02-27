@@ -35,6 +35,21 @@ export async function onboardCommand(opts: OnboardOptions, runtime: RuntimeEnv =
     normalizedAuthChoice === opts.authChoice && flow === opts.flow
       ? opts
       : { ...opts, authChoice: normalizedAuthChoice, flow };
+  if (
+    normalizedOpts.secretInputMode &&
+    normalizedOpts.secretInputMode !== "plaintext" &&
+    normalizedOpts.secretInputMode !== "ref"
+  ) {
+    runtime.error('Invalid --secret-input-mode. Use "plaintext" or "ref".');
+    runtime.exit(1);
+    return;
+  }
+
+  if (normalizedOpts.resetScope && !VALID_RESET_SCOPES.has(normalizedOpts.resetScope)) {
+    runtime.error('Invalid --reset-scope. Use "config", "config+creds+sessions", or "full".');
+    runtime.exit(1);
+    return;
+  }
 
   if (normalizedOpts.nonInteractive && normalizedOpts.acceptRisk !== true) {
     runtime.error(
@@ -53,7 +68,8 @@ export async function onboardCommand(opts: OnboardOptions, runtime: RuntimeEnv =
     const baseConfig = snapshot.valid ? snapshot.config : {};
     const workspaceDefault =
       normalizedOpts.workspace ?? baseConfig.agents?.defaults?.workspace ?? DEFAULT_WORKSPACE;
-    await handleReset("full", resolveUserPath(workspaceDefault), runtime);
+    const resetScope: ResetScope = normalizedOpts.resetScope ?? "config+creds+sessions";
+    await handleReset(resetScope, resolveUserPath(workspaceDefault), runtime);
   }
 
   if (process.platform === "win32") {

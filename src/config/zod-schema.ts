@@ -2,7 +2,12 @@ import { z } from "zod";
 import { ToolsSchema } from "./zod-schema.agent-runtime.js";
 import { AgentsSchema, AudioSchema, BindingsSchema, BroadcastSchema } from "./zod-schema.agents.js";
 import { ApprovalsSchema } from "./zod-schema.approvals.js";
-import { HexColorSchema, ModelsConfigSchema } from "./zod-schema.core.js";
+import {
+  HexColorSchema,
+  ModelsConfigSchema,
+  SecretInputSchema,
+  SecretsConfigSchema,
+} from "./zod-schema.core.js";
 import { HookMappingSchema, HooksGmailSchema, InternalHooksSchema } from "./zod-schema.hooks.js";
 import { InstallRecordShape } from "./zod-schema.installs.js";
 import { ChannelsSchema } from "./zod-schema.providers.js";
@@ -277,6 +282,7 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    secrets: SecretsConfigSchema,
     auth: z
       .object({
         profiles: z
@@ -298,6 +304,36 @@ export const OpenClawSchema = z
             billingBackoffHoursByProvider: z.record(z.string(), z.number().positive()).optional(),
             billingMaxHours: z.number().positive().optional(),
             failureWindowHours: z.number().positive().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    acp: z
+      .object({
+        enabled: z.boolean().optional(),
+        dispatch: z
+          .object({
+            enabled: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+        backend: z.string().optional(),
+        defaultAgent: z.string().optional(),
+        allowedAgents: z.array(z.string()).optional(),
+        maxConcurrentSessions: z.number().int().positive().optional(),
+        stream: z
+          .object({
+            coalesceIdleMs: z.number().int().nonnegative().optional(),
+            maxChunkChars: z.number().int().positive().optional(),
+          })
+          .strict()
+          .optional(),
+        runtime: z
+          .object({
+            ttlMinutes: z.number().int().positive().optional(),
+            installCommand: z.string().optional(),
           })
           .strict()
           .optional(),
@@ -650,7 +686,7 @@ export const OpenClawSchema = z
             z
               .object({
                 enabled: z.boolean().optional(),
-                apiKey: z.string().optional().register(sensitive),
+                apiKey: SecretInputSchema.optional().register(sensitive),
                 env: z.record(z.string(), z.string()).optional(),
                 config: z.record(z.string(), z.unknown()).optional(),
               })

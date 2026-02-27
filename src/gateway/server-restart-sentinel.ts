@@ -5,6 +5,7 @@ import { agentCommand } from "../commands/agent.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
 import { parseSessionThreadInfo } from "../config/sessions/delivery-info.js";
 import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
+import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
 import {
   consumeRestartSentinel,

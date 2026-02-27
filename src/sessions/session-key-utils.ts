@@ -6,7 +6,7 @@ export type ParsedAgentSessionKey = {
 export function parseAgentSessionKey(
   sessionKey: string | undefined | null,
 ): ParsedAgentSessionKey | null {
-  const raw = (sessionKey ?? "").trim();
+  const raw = (sessionKey ?? "").trim().toLowerCase();
   if (!raw) {
     return null;
   }

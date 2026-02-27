@@ -29,6 +29,7 @@ export async function applyAuthChoiceHuggingface(
   let nextConfig = params.config;
   let agentModelOverride: string | undefined;
   const noteAgentModel = createAuthChoiceAgentModelNoter(params);
+  const requestedSecretInputMode = normalizeSecretInputModeInput(params.opts?.secretInputMode);
 
   let hasCredential = false;
   let hfKey = "";

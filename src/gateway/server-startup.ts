@@ -260,6 +260,22 @@ export async function startGatewaySidecars(params: {
     params.log.warn(`plugin services failed to start: ${String(err)}`);
   }
 
+  if (params.cfg.acp?.enabled) {
+    void getAcpSessionManager()
+      .reconcilePendingSessionIdentities({ cfg: params.cfg })
+      .then((result) => {
+        if (result.checked === 0) {
+          return;
+        }
+        params.log.warn(
+          `acp startup identity reconcile (renderer=${ACP_SESSION_IDENTITY_RENDERER_VERSION}): checked=${result.checked} resolved=${result.resolved} failed=${result.failed}`,
+        );
+      })
+      .catch((err) => {
+        params.log.warn(`acp startup identity reconcile failed: ${String(err)}`);
+      });
+  }
+
   void startGatewayMemoryBackend({ cfg: params.cfg, log: params.log }).catch((err) => {
     params.log.warn(`qmd memory startup initialization failed: ${String(err)}`);
   });

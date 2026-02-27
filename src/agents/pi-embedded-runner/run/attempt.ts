@@ -1,5 +1,4 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ImageContent } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
 import { createAgentSession, SessionManager, SettingsManager } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
@@ -106,6 +105,7 @@ import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
+import { pruneProcessedHistoryImages } from "./history-image-prune.js";
 import { detectAndLoadPromptImages } from "./images.js";
 
 export function injectHistoryImagesIntoMessages(
@@ -449,6 +449,7 @@ export async function runEmbeddedAttempt(
       workspaceNotes,
       reactionGuidance,
       promptMode,
+      acpEnabled: params.config?.acp?.enabled !== false,
       runtimeInfo,
       messageToolHints,
       sandboxInfo,
@@ -958,16 +959,20 @@ export async function runEmbeddedAttempt(
         }
 
         try {
+          // Idempotent cleanup for legacy sessions with persisted image payloads.
+          // Called each run; only mutates already-answered user turns that still carry image blocks.
+          const didPruneImages = pruneProcessedHistoryImages(activeSession.messages);
+          if (didPruneImages) {
+            activeSession.agent.replaceMessages(activeSession.messages);
+          }
+
           // Detect and load images referenced in the prompt for vision-capable models.
-          // This eliminates the need for an explicit "view" tool call by injecting
-          // images directly into the prompt when the model supports it.
-          // Also scans conversation history to enable follow-up questions about earlier images.
+          // Images are prompt-local only (pi-like behavior).
           const imageResult = await detectAndLoadPromptImages({
             prompt: effectivePrompt,
             workspaceDir: effectiveWorkspace,
             model: params.model,
             existingImages: params.images,
-            historyMessages: activeSession.messages,
             maxBytes: MAX_IMAGE_BYTES,
             maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
             workspaceOnly: effectiveFsWorkspaceOnly,
@@ -978,21 +983,10 @@ export async function runEmbeddedAttempt(
                 : undefined,
           });
 
-          // Inject history images into their original message positions.
-          // This ensures the model sees images in context (e.g., "compare to the first image").
-          const didMutate = injectHistoryImagesIntoMessages(
-            activeSession.messages,
-            imageResult.historyImagesByIndex,
-          );
-          if (didMutate) {
-            // Persist message mutations (e.g., injected history images) so we don't re-scan/reload.
-            activeSession.agent.replaceMessages(activeSession.messages);
-          }
-
           cacheTrace?.recordStage("prompt:images", {
             prompt: effectivePrompt,
             messages: activeSession.messages,
-            note: `images: prompt=${imageResult.images.length} history=${imageResult.historyImagesByIndex.size}`,
+            note: `images: prompt=${imageResult.images.length}`,
           });
 
           // Diagnostic: log context sizes before prompt to help debug early overflow errors.
@@ -1009,7 +1003,6 @@ export async function runEmbeddedAttempt(
                 `historyImageBlocks=${sessionSummary.totalImageBlocks} ` +
                 `systemPromptChars=${systemLen} promptChars=${promptLen} ` +
                 `promptImages=${imageResult.images.length} ` +
-                `historyImageMessages=${imageResult.historyImagesByIndex.size} ` +
                 `provider=${params.provider}/${params.modelId} sessionFile=${params.sessionFile}`,
             );
           }
@@ -1084,13 +1077,15 @@ export async function runEmbeddedAttempt(
           }
         }
 
+        const compactionOccurredThisAttempt = getCompactionCount() > 0;
+
         // Append cache-TTL timestamp AFTER prompt + compaction retry completes.
         // Previously this was before the prompt, which caused a custom entry to be
         // inserted between compaction and the next prompt — breaking the
         // prepareCompaction() guard that checks the last entry type, leading to
         // double-compaction. See: https://github.com/openclaw/openclaw/issues/9282
         // Skip when timed out during compaction — session state may be inconsistent.
-        if (!timedOutDuringCompaction) {
+        if (!timedOutDuringCompaction && !compactionOccurredThisAttempt) {
           const shouldTrackCacheTtl =
             params.config?.agents?.defaults?.contextPruning?.mode === "cache-ttl" &&
             isCacheTtlEligibleProvider(params.provider, params.modelId);
@@ -1122,7 +1117,7 @@ export async function runEmbeddedAttempt(
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
-        if (promptError && promptErrorSource === "prompt") {
+        if (promptError && promptErrorSource === "prompt" && !compactionOccurredThisAttempt) {
           try {
             sessionManager.appendCustomEntry("openclaw:prompt-error", {
               timestamp: Date.now(),

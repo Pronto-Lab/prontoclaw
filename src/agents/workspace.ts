@@ -1,6 +1,8 @@
+import syncFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { openBoundaryFile } from "../infra/boundary-file-read.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { isA2ASessionKey, isCronSessionKey, isSubagentSessionKey } from "../routing/session-key.js";
@@ -35,6 +37,7 @@ const WORKSPACE_STATE_VERSION = 1;
 
 const workspaceTemplateCache = new Map<string, Promise<string>>();
 let gitAvailabilityPromise: Promise<boolean> | null = null;
+const MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES = 2 * 1024 * 1024;
 
 function stripFrontMatter(content: string): string {
   if (!content.startsWith("---")) {
@@ -94,6 +97,18 @@ export type WorkspaceBootstrapFile = {
   path: string;
   content?: string;
   missing: boolean;
+};
+
+export type ExtraBootstrapLoadDiagnosticCode =
+  | "invalid-bootstrap-filename"
+  | "missing"
+  | "security"
+  | "io";
+
+export type ExtraBootstrapLoadDiagnostic = {
+  path: string;
+  reason: ExtraBootstrapLoadDiagnosticCode;
+  detail: string;
 };
 
 type WorkspaceOnboardingState = {
@@ -286,7 +301,13 @@ export async function ensureAgentWorkspace(params?: {
   const statePath = resolveWorkspaceStatePath(dir);
 
   const isBrandNewWorkspace = await (async () => {
-    const paths = [agentsPath, soulPath, toolsPath, identityPath, userPath, heartbeatPath];
+    const templatePaths = [agentsPath, soulPath, toolsPath, identityPath, userPath, heartbeatPath];
+    const userContentPaths = [
+      path.join(dir, "memory"),
+      path.join(dir, DEFAULT_MEMORY_FILENAME),
+      path.join(dir, ".git"),
+    ];
+    const paths = [...templatePaths, ...userContentPaths];
     const existing = await Promise.all(
       paths.map(async (p) => {
         try {
@@ -331,14 +352,31 @@ export async function ensureAgentWorkspace(params?: {
   }
 
   if (!state.bootstrapSeededAt && !state.onboardingCompletedAt && !bootstrapExists) {
-    // Legacy migration path: if USER/IDENTITY diverged from templates, treat onboarding as complete
-    // and avoid recreating BOOTSTRAP for already-onboarded workspaces.
+    // Legacy migration path: if USER/IDENTITY diverged from templates, or if user-content
+    // indicators exist, treat onboarding as complete and avoid recreating BOOTSTRAP for
+    // already-onboarded workspaces.
     const [identityContent, userContent] = await Promise.all([
       fs.readFile(identityPath, "utf-8"),
       fs.readFile(userPath, "utf-8"),
     ]);
+    const hasUserContent = await (async () => {
+      const indicators = [
+        path.join(dir, "memory"),
+        path.join(dir, DEFAULT_MEMORY_FILENAME),
+        path.join(dir, ".git"),
+      ];
+      for (const indicator of indicators) {
+        try {
+          await fs.access(indicator);
+          return true;
+        } catch {
+          // continue
+        }
+      }
+      return false;
+    })();
     const legacyOnboardingCompleted =
-      identityContent !== identityTemplate || userContent !== userTemplate;
+      identityContent !== identityTemplate || userContent !== userTemplate || hasUserContent;
     if (legacyOnboardingCompleted) {
       markState({ onboardingCompletedAt: nowIso() });
     } else {
@@ -455,10 +493,10 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
       result.push({
         name: entry.name,
         path: entry.filePath,
-        content,
+        content: loaded.content,
         missing: false,
       });
-    } catch {
+    } else {
       result.push({ name: entry.name, path: entry.filePath, missing: true });
     }
   }
@@ -508,16 +546,21 @@ export async function loadExtraBootstrapFiles(
   dir: string,
   extraPatterns: string[],
 ): Promise<WorkspaceBootstrapFile[]> {
+  const loaded = await loadExtraBootstrapFilesWithDiagnostics(dir, extraPatterns);
+  return loaded.files;
+}
+
+export async function loadExtraBootstrapFilesWithDiagnostics(
+  dir: string,
+  extraPatterns: string[],
+): Promise<{
+  files: WorkspaceBootstrapFile[];
+  diagnostics: ExtraBootstrapLoadDiagnostic[];
+}> {
   if (!extraPatterns.length) {
-    return [];
+    return { files: [], diagnostics: [] };
   }
   const resolvedDir = resolveUserPath(dir);
-  let realResolvedDir = resolvedDir;
-  try {
-    realResolvedDir = await fs.realpath(resolvedDir);
-  } catch {
-    // Keep lexical root if realpath fails.
-  }
 
   // Resolve glob patterns into concrete file paths
   const resolvedPaths = new Set<string>();
@@ -537,11 +580,18 @@ export async function loadExtraBootstrapFiles(
     }
   }
 
-  const result: WorkspaceBootstrapFile[] = [];
+  const files: WorkspaceBootstrapFile[] = [];
+  const diagnostics: ExtraBootstrapLoadDiagnostic[] = [];
   for (const relPath of resolvedPaths) {
     const filePath = path.resolve(resolvedDir, relPath);
-    // Guard against path traversal — resolved path must stay within workspace
-    if (!filePath.startsWith(resolvedDir + path.sep) && filePath !== resolvedDir) {
+    // Only load files whose basename is a recognized bootstrap filename
+    const baseName = path.basename(relPath);
+    if (!VALID_BOOTSTRAP_NAMES.has(baseName)) {
+      diagnostics.push({
+        path: filePath,
+        reason: "invalid-bootstrap-filename",
+        detail: `unsupported bootstrap basename: ${baseName}`,
+      });
       continue;
     }
     try {
@@ -562,12 +612,24 @@ export async function loadExtraBootstrapFiles(
       result.push({
         name: baseName as WorkspaceBootstrapFileName,
         path: filePath,
-        content,
+        content: loaded.content,
         missing: false,
       });
-    } catch {
-      // Silently skip missing extra files
+      continue;
     }
+
+    const reason: ExtraBootstrapLoadDiagnosticCode =
+      loaded.reason === "path" ? "missing" : loaded.reason === "validation" ? "security" : "io";
+    diagnostics.push({
+      path: filePath,
+      reason,
+      detail:
+        loaded.error instanceof Error
+          ? loaded.error.message
+          : typeof loaded.error === "string"
+            ? loaded.error
+            : reason,
+    });
   }
-  return result;
+  return { files, diagnostics };
 }

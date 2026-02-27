@@ -64,6 +64,8 @@ function cloneFirstTemplateModel(params: {
   return undefined;
 }
 
+const CODEX_GPT53_ELIGIBLE_PROVIDERS = new Set(["openai-codex", "github-copilot"]);
+
 function resolveOpenAICodexGpt53FallbackModel(
   provider: string,
   modelId: string,
@@ -71,7 +73,7 @@ function resolveOpenAICodexGpt53FallbackModel(
 ): Model<Api> | undefined {
   const normalizedProvider = normalizeProviderId(provider);
   const trimmedModelId = modelId.trim();
-  if (normalizedProvider !== "openai-codex") {
+  if (!CODEX_GPT53_ELIGIBLE_PROVIDERS.has(normalizedProvider)) {
     return undefined;
   }
   if (trimmedModelId.toLowerCase() !== OPENAI_CODEX_GPT_53_MODEL_ID) {
@@ -179,6 +181,38 @@ function resolveAnthropicSonnet46ForwardCompatModel(
     dashTemplateId: "claude-sonnet-4-5",
     dotTemplateId: "claude-sonnet-4.5",
     fallbackTemplateIds: ANTHROPIC_SONNET_TEMPLATE_MODEL_IDS,
+  });
+}
+
+// gemini-3.1-pro-preview / gemini-3.1-flash-preview are not present in pi-ai's built-in
+// google-gemini-cli catalog yet. Clone the nearest gemini-3 template so users don't get
+// "Unknown model" errors when Google Gemini CLI gains new minor-version models.
+function resolveGoogleGeminiCli31ForwardCompatModel(
+  provider: string,
+  modelId: string,
+  modelRegistry: ModelRegistry,
+): Model<Api> | undefined {
+  if (normalizeProviderId(provider) !== "google-gemini-cli") {
+    return undefined;
+  }
+  const trimmed = modelId.trim();
+  const lower = trimmed.toLowerCase();
+
+  let templateIds: readonly string[];
+  if (lower.startsWith(GEMINI_3_1_PRO_PREFIX)) {
+    templateIds = GEMINI_3_1_PRO_TEMPLATE_IDS;
+  } else if (lower.startsWith(GEMINI_3_1_FLASH_PREFIX)) {
+    templateIds = GEMINI_3_1_FLASH_TEMPLATE_IDS;
+  } else {
+    return undefined;
+  }
+
+  return cloneFirstTemplateModel({
+    normalizedProvider: "google-gemini-cli",
+    trimmedModelId: trimmed,
+    templateIds: [...templateIds],
+    modelRegistry,
+    patch: { reasoning: true },
   });
 }
 

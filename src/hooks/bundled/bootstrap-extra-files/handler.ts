@@ -1,6 +1,6 @@
 import {
   filterBootstrapFilesForSession,
-  loadExtraBootstrapFiles,
+  loadExtraBootstrapFilesWithDiagnostics,
 } from "../../../agents/workspace.js";
 import { resolveHookConfig } from "../../config.js";
 import { isAgentBootstrapEvent, type HookHandler } from "../../hooks.js";
@@ -43,7 +43,19 @@ const bootstrapExtraFilesHook: HookHandler = async (event) => {
   }
 
   try {
-    const extras = await loadExtraBootstrapFiles(context.workspaceDir, patterns);
+    const { files: extras, diagnostics } = await loadExtraBootstrapFilesWithDiagnostics(
+      context.workspaceDir,
+      patterns,
+    );
+    if (diagnostics.length > 0) {
+      log.debug("skipped extra bootstrap candidates", {
+        skipped: diagnostics.length,
+        reasons: diagnostics.reduce<Record<string, number>>((counts, item) => {
+          counts[item.reason] = (counts[item.reason] ?? 0) + 1;
+          return counts;
+        }, {}),
+      });
+    }
     if (extras.length === 0) {
       return;
     }

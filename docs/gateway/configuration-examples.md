@@ -618,4 +618,4 @@ If more than one person can DM your bot (multiple entries in `allowFrom`, pairin
 - If you set `dmPolicy: "open"`, the matching `allowFrom` list must include `"*"`.
 - Provider IDs differ (phone numbers, user IDs, channel IDs). Use the provider docs to confirm the format.
 - Optional sections to add later: `web`, `browser`, `ui`, `discovery`, `canvasHost`, `talk`, `signal`, `imessage`.
-- See [Providers](/channels/whatsapp) and [Troubleshooting](/gateway/troubleshooting) for deeper setup notes.
+- See [Providers](/providers) and [Troubleshooting](/gateway/troubleshooting) for deeper setup notes.

@@ -500,6 +500,30 @@ export async function handleInvoke(
     return;
   }
 
+  if (command === "system.run.prepare") {
+    try {
+      const params = decodeParams<{
+        command?: unknown;
+        rawCommand?: unknown;
+        cwd?: unknown;
+        agentId?: unknown;
+        sessionKey?: unknown;
+      }>(frame.paramsJSON);
+      const prepared = buildSystemRunApprovalPlanV2(params);
+      if (!prepared.ok) {
+        await sendErrorResult(client, frame, "INVALID_REQUEST", prepared.message);
+        return;
+      }
+      await sendJsonPayloadResult(client, frame, {
+        cmdText: prepared.cmdText,
+        plan: prepared.plan,
+      });
+    } catch (err) {
+      await sendInvalidRequestResult(client, frame, err);
+    }
+    return;
+  }
+
   if (command !== "system.run") {
     await sendErrorResult(client, frame, "UNAVAILABLE", "command not supported");
     return;

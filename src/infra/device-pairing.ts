@@ -16,6 +16,7 @@ export type DevicePairingPendingRequest = {
   publicKey: string;
   displayName?: string;
   platform?: string;
+  deviceFamily?: string;
   clientId?: string;
   clientMode?: string;
   role?: string;
@@ -51,6 +52,7 @@ export type PairedDevice = {
   publicKey: string;
   displayName?: string;
   platform?: string;
+  deviceFamily?: string;
   clientId?: string;
   clientMode?: string;
   role?: string;
@@ -288,6 +290,7 @@ export async function approveDevicePairing(
       publicKey: pending.publicKey,
       displayName: pending.displayName,
       platform: pending.platform,
+      deviceFamily: pending.deviceFamily,
       clientId: pending.clientId,
       clientMode: pending.clientMode,
       role: pending.role,

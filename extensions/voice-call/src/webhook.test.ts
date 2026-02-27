@@ -7,7 +7,7 @@ import { VoiceCallWebhookServer } from "./webhook.js";
 
 const provider: VoiceCallProvider = {
   name: "mock",
-  verifyWebhook: () => ({ ok: true }),
+  verifyWebhook: () => ({ ok: true, verifiedRequestKey: "mock:req:base" }),
   parseWebhookEvent: () => ({ events: [] }),
   initiateCall: async () => ({ providerCallId: "provider-call", status: "initiated" }),
   hangupCall: async () => {},

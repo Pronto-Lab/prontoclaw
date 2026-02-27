@@ -35,15 +35,14 @@ export async function resolveTelegramGroupAllowFromContext(params: {
   effectiveGroupAllow: NormalizedAllowFrom;
   hasGroupAllowOverride: boolean;
 }> {
+  const accountId = normalizeAccountId(params.accountId);
   const resolvedThreadId = resolveTelegramForumThreadId({
     isForum: params.isForum,
     messageThreadId: params.messageThreadId,
   });
-  const storeAllowFrom = await readChannelAllowFromStore(
-    "telegram",
-    process.env,
-    params.accountId,
-  ).catch(() => []);
+  const storeAllowFrom = await readChannelAllowFromStore("telegram", process.env, accountId).catch(
+    () => [],
+  );
   const { groupConfig, topicConfig } = params.resolveTelegramGroupConfig(
     params.chatId,
     resolvedThreadId,

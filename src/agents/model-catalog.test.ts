@@ -57,6 +57,7 @@ describe("loadModelCatalog", () => {
     __setModelCatalogImportForTest(
       async () =>
         ({
+          discoverAuthStorage: () => ({}),
           AuthStorage: class {},
           ModelRegistry: class {
             getAll() {

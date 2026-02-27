@@ -30,6 +30,9 @@ const queueMocks = vi.hoisted(() => ({
   ackDelivery: vi.fn(async () => {}),
   failDelivery: vi.fn(async () => {}),
 }));
+const logMocks = vi.hoisted(() => ({
+  warn: vi.fn(),
+}));
 
 vi.mock("../../config/sessions.js", async () => {
   const actual = await vi.importActual<typeof import("../../config/sessions.js")>(
@@ -51,6 +54,18 @@ vi.mock("./delivery-queue.js", () => ({
   enqueueDelivery: queueMocks.enqueueDelivery,
   ackDelivery: queueMocks.ackDelivery,
   failDelivery: queueMocks.failDelivery,
+}));
+vi.mock("../../logging/subsystem.js", () => ({
+  createSubsystemLogger: () => {
+    const makeLogger = () => ({
+      warn: logMocks.warn,
+      info: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn(() => makeLogger()),
+    });
+    return makeLogger();
+  },
 }));
 
 const { deliverOutboundPayloads, normalizeOutboundPayloads } = await import("./deliver.js");
@@ -95,6 +110,7 @@ describe("deliverOutboundPayloads", () => {
     queueMocks.ackDelivery.mockResolvedValue(undefined);
     queueMocks.failDelivery.mockReset();
     queueMocks.failDelivery.mockResolvedValue(undefined);
+    logMocks.warn.mockClear();
   });
 
   afterEach(() => {
@@ -182,7 +198,7 @@ describe("deliverOutboundPayloads", () => {
       cfg: telegramChunkConfig,
       channel: "telegram",
       to: "123",
-      agentId: "work",
+      session: { agentId: "work" },
       payloads: [{ text: "hi", mediaUrl: "file:///tmp/f.png" }],
       deps: { sendTelegram },
     });

@@ -1,3 +1,4 @@
+import { shouldMoveSingleAccountChannelKey } from "../channels/plugins/setup-helpers.js";
 import type { OpenClawConfig } from "../config/config.js";
 export function normalizeLegacyConfigValues(cfg: OpenClawConfig): {
   config: OpenClawConfig;
@@ -142,6 +143,7 @@ export function normalizeLegacyConfigValues(cfg: OpenClawConfig): {
 
   normalizeProvider("slack");
   normalizeProvider("discord");
+  seedMissingDefaultAccountsFromSingleAccountBase();
 
   const legacyAckReaction = cfg.messages?.ackReaction?.trim();
   const hasWhatsAppConfig = cfg.channels?.whatsapp !== undefined;

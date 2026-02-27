@@ -4,89 +4,48 @@ import { TuiStreamAssembler } from "./tui-stream-assembler.js";
 describe("TuiStreamAssembler", () => {
   it("keeps thinking before content even when thinking arrives later", () => {
     const assembler = new TuiStreamAssembler();
-    const first = assembler.ingestDelta(
-      "run-1",
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Hello" }],
-      },
-      true,
-    );
+    const first = assembler.ingestDelta("run-1", messageWithContent([text("Hello")]), true);
     expect(first).toBe("Hello");
 
-    const second = assembler.ingestDelta(
-      "run-1",
-      {
-        role: "assistant",
-        content: [{ type: "thinking", thinking: "Brain" }],
-      },
-      true,
-    );
+    const second = assembler.ingestDelta("run-1", messageWithContent([thinking("Brain")]), true);
     expect(second).toBe("[thinking]\nBrain\n\nHello");
   });
 
   it("omits thinking when showThinking is false", () => {
     const assembler = new TuiStreamAssembler();
-    const text = assembler.ingestDelta(
+    const output = assembler.ingestDelta(
       "run-2",
-      {
-        role: "assistant",
-        content: [
-          { type: "thinking", thinking: "Hidden" },
-          { type: "text", text: "Visible" },
-        ],
-      },
+      messageWithContent([thinking("Hidden"), text("Visible")]),
       false,
     );
-
-    expect(text).toBe("Visible");
+    expect(output).toBe("Visible");
   });
 
   it("falls back to streamed text on empty final payload", () => {
     const assembler = new TuiStreamAssembler();
-    assembler.ingestDelta(
-      "run-3",
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Streamed" }],
-      },
-      false,
-    );
-
-    const finalText = assembler.finalize(
-      "run-3",
-      {
-        role: "assistant",
-        content: [],
-      },
-      false,
-    );
-
+    assembler.ingestDelta("run-3", messageWithContent([text("Streamed")]), false);
+    const finalText = assembler.finalize("run-3", { role: "assistant", content: [] }, false);
     expect(finalText).toBe("Streamed");
   });
 
   it("returns null when delta text is unchanged", () => {
     const assembler = new TuiStreamAssembler();
-    const first = assembler.ingestDelta(
-      "run-4",
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Repeat" }],
-      },
-      false,
-    );
-
+    const first = assembler.ingestDelta("run-4", messageWithContent([text("Repeat")]), false);
     expect(first).toBe("Repeat");
+    const second = assembler.ingestDelta("run-4", messageWithContent([text("Repeat")]), false);
+    expect(second).toBeNull();
+  });
+
+  it("keeps streamed delta text when incoming tool boundary drops a block", () => {
+    const assembler = new TuiStreamAssembler();
+    const first = assembler.ingestDelta("run-delta-boundary", TEXT_ONLY_TWO_BLOCKS, false);
+    expect(first).toBe("Draft line 1\nDraft line 2");
 
     const second = assembler.ingestDelta(
-      "run-4",
-      {
-        role: "assistant",
-        content: [{ type: "text", text: "Repeat" }],
-      },
+      "run-delta-boundary",
+      messageWithContent([toolUse(), text("Draft line 2")]),
       false,
     );
-
     expect(second).toBeNull();
   });
 

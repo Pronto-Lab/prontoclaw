@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { createExecApprovalForwarder } from "./exec-approval-forwarder.js";
@@ -40,14 +43,17 @@ function createForwarder(params: {
   resolveSessionTarget?: () => { channel: string; to: string } | null;
 }) {
   const deliver = params.deliver ?? vi.fn().mockResolvedValue([]);
-  const forwarder = createExecApprovalForwarder({
+  const deps: NonNullable<Parameters<typeof createExecApprovalForwarder>[0]> = {
     getConfig: () => params.cfg,
     deliver: deliver as unknown as NonNullable<
       NonNullable<Parameters<typeof createExecApprovalForwarder>[0]>["deliver"]
     >,
     nowMs: () => 1000,
-    resolveSessionTarget: params.resolveSessionTarget ?? (() => null),
-  });
+  };
+  if (params.resolveSessionTarget !== undefined) {
+    deps.resolveSessionTarget = params.resolveSessionTarget;
+  }
+  const forwarder = createExecApprovalForwarder(deps);
   return { deliver, forwarder };
 }
 

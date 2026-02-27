@@ -27,6 +27,7 @@ export function resolvePluginSkillDirs(params: {
     return [];
   }
   const normalizedPlugins = normalizePluginsConfig(params.config?.plugins);
+  const acpEnabled = params.config?.acp?.enabled !== false;
   const memorySlot = normalizedPlugins.slots.memory;
   let selectedMemoryPluginId: string | null = null;
   const seen = new Set<string>();
@@ -38,6 +39,10 @@ export function resolvePluginSkillDirs(params: {
     }
     const enableState = resolveEnableState(record.id, record.origin, normalizedPlugins);
     if (!enableState.enabled) {
+      continue;
+    }
+    // ACP router skills should not be attached when ACP is explicitly disabled.
+    if (!acpEnabled && record.id === "acpx") {
       continue;
     }
     const memoryDecision = resolveMemorySlotDecision({

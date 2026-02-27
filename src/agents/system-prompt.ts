@@ -199,6 +199,8 @@ export function buildAgentSystemPrompt(params: {
   ttsHint?: string;
   /** Controls which hardcoded sections to include. Defaults to "full". */
   promptMode?: PromptMode;
+  /** Whether ACP-specific routing guidance should be included. Defaults to true. */
+  acpEnabled?: boolean;
   runtimeInfo?: {
     agentId?: string;
     host?: string;
@@ -234,6 +236,7 @@ export function buildAgentSystemPrompt(params: {
   };
   memoryCitationsMode?: MemoryCitationsMode;
 }) {
+  const acpEnabled = params.acpEnabled !== false;
   const coreToolSummaries: Record<string, string> = {
     read: "Read file contents",
     write: "Create or overwrite files",
@@ -253,7 +256,9 @@ export function buildAgentSystemPrompt(params: {
     cron: "Manage cron jobs and wake events (use for reminders; when scheduling a reminder, write the systemEvent text as something that will read like a reminder when it fires, and mention that it is a reminder depending on the time gap between setting and firing; include recent context in reminder text if appropriate)",
     message: "Send messages and channel actions",
     gateway: "Restart, apply config, or run updates on the running OpenClaw process",
-    agents_list: "List agent ids allowed for sessions_spawn",
+    agents_list: acpEnabled
+      ? 'List OpenClaw agent ids allowed for sessions_spawn when runtime="subagent" (not ACP harness ids)'
+      : "List OpenClaw agent ids allowed for sessions_spawn",
     sessions_list: "List other sessions (incl. sub-agents) with filters/last",
     sessions_history: "Fetch history for another session/sub-agent",
     sessions_send:
@@ -310,6 +315,7 @@ export function buildAgentSystemPrompt(params: {
 
   const normalizedTools = canonicalToolNames.map((tool) => tool.toLowerCase());
   const availableTools = new Set(normalizedTools);
+  const hasSessionsSpawn = availableTools.has("sessions_spawn");
   const externalToolSummaries = new Map<string, string>();
   for (const [key, value] of Object.entries(params.toolSummaries ?? {})) {
     const normalized = key.trim().toLowerCase();
@@ -443,6 +449,13 @@ export function buildAgentSystemPrompt(params: {
     "TOOLS.md does not control tool availability; it is user guidance for how to use external tools.",
     `For long waits, avoid rapid poll loops: use ${execToolName} with enough yieldMs or ${processToolName}(action=poll, timeout=<ms>).`,
     "If a task is more complex or takes longer, spawn a sub-agent. Completion is push-based: it will auto-announce when done.",
+    ...(hasSessionsSpawn && acpEnabled
+      ? [
+          'For requests like "do this in codex/claude code/gemini", treat it as ACP harness intent and call `sessions_spawn` with `runtime: "acp"`.',
+          'On Discord, default ACP harness requests to thread-bound persistent sessions (`thread: true`, `mode: "session"`) unless the user asks otherwise.',
+          "Set `agentId` explicitly unless `acp.defaultAgent` is configured, and do not route ACP harness requests through `subagents`/`agents_list` or local PTY exec flows.",
+        ]
+      : []),
     "Do not poll `subagents list` / `sessions_list` in a loop; only check status on-demand (for intervention, debugging, or when explicitly asked).",
     "",
     "## Tool Call Style",
@@ -450,6 +463,7 @@ export function buildAgentSystemPrompt(params: {
     "Narrate only when it helps: multi-step work, complex/challenging problems, sensitive actions (e.g., deletions), or when the user explicitly asks.",
     "Keep narration brief and value-dense; avoid repeating obvious steps.",
     "Use plain human language for narration unless in a technical context.",
+    "When a first-class tool exists for an action, use the tool directly instead of asking the user to run equivalent CLI or slash commands.",
     "",
     // [PRONTO-CUSTOM] Sub-agent orchestration: Sub-agents (promptMode="minimal") do not
     // receive Task Tracking instructions because their task tools are denied anyway.

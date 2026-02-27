@@ -5,12 +5,12 @@
  * and from directory-based discovery (bundled, managed, workspace)
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { OpenClawConfig } from "../config/config.js";
 import type { InternalHookHandler } from "./internal-hooks.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { isPathInsideWithRealpath } from "../security/scan-paths.js";
 import { resolveHookConfig } from "./config.js";
 import { shouldIncludeHook } from "./config.js";
 import { registerInternalHook } from "./internal-hooks.js";
@@ -72,13 +72,15 @@ export async function loadInternalHooks(
       }
 
       try {
-        if (
-          !isPathInsideWithRealpath(entry.hook.baseDir, entry.hook.handlerPath, {
-            requireRealpath: true,
-          })
-        ) {
+        const hookBaseDir = safeRealpathOrResolve(entry.hook.baseDir);
+        const opened = await openBoundaryFile({
+          absolutePath: entry.hook.handlerPath,
+          rootPath: hookBaseDir,
+          boundaryLabel: "hook directory",
+        });
+        if (!opened.ok) {
           log.error(
-            `Hook '${entry.hook.name}' handler path resolves outside hook directory: ${entry.hook.handlerPath}`,
+            `Hook '${entry.hook.name}' handler path fails boundary checks: ${entry.hook.handlerPath}`,
           );
           continue;
         }
@@ -141,21 +143,24 @@ export async function loadInternalHooks(
       }
       const baseDir = path.resolve(workspaceDir);
       const modulePath = path.resolve(baseDir, rawModule);
+      const baseDirReal = safeRealpathOrResolve(baseDir);
+      const modulePathSafe = safeRealpathOrResolve(modulePath);
       const rel = path.relative(baseDir, modulePath);
       if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
         log.error(`Handler module path must stay within workspaceDir: ${rawModule}`);
         continue;
       }
-      if (
-        !isPathInsideWithRealpath(baseDir, modulePath, {
-          requireRealpath: true,
-        })
-      ) {
-        log.error(
-          `Handler module path resolves outside workspaceDir after symlink resolution: ${rawModule}`,
-        );
+      const opened = await openBoundaryFile({
+        absolutePath: modulePathSafe,
+        rootPath: baseDirReal,
+        boundaryLabel: "workspace directory",
+      });
+      if (!opened.ok) {
+        log.error(`Handler module path fails boundary checks under workspaceDir: ${rawModule}`);
         continue;
       }
+      const safeModulePath = opened.path;
+      fs.closeSync(opened.fd);
 
       // Import the module with cache-busting to ensure fresh reload
       const url = pathToFileURL(modulePath).href;
@@ -184,4 +189,12 @@ export async function loadInternalHooks(
   }
 
   return loadedCount;
+}
+
+function safeRealpathOrResolve(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
 }

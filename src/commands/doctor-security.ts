@@ -75,6 +75,7 @@ export async function noteSecurityWarnings(cfg: OpenClawConfig) {
   const warnDmPolicy = async (params: {
     label: string;
     provider: ChannelId;
+    accountId: string;
     dmPolicy: string;
     allowFrom?: Array<string | number> | null;
     policyPath?: string;
@@ -86,6 +87,7 @@ export async function noteSecurityWarnings(cfg: OpenClawConfig) {
     const policyPath = params.policyPath ?? `${params.allowFromPath}policy`;
     const { hasWildcard, allowCount, isMultiUserDm } = await resolveDmAllowState({
       provider: params.provider,
+      accountId: params.accountId,
       allowFrom: params.allowFrom,
       normalizeEntry: params.normalizeEntry,
     });
@@ -152,6 +154,7 @@ export async function noteSecurityWarnings(cfg: OpenClawConfig) {
       await warnDmPolicy({
         label: plugin.meta.label ?? plugin.id,
         provider: plugin.id,
+        accountId: defaultAccountId,
         dmPolicy: dmPolicy.policy,
         allowFrom: dmPolicy.allowFrom,
         policyPath: dmPolicy.policyPath,

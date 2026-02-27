@@ -12,12 +12,16 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 
 const log = createSubsystemLogger("sessions-spawn-tool");
 
+const SESSIONS_SPAWN_RUNTIMES = ["subagent", "acp"] as const;
+
 const SessionsSpawnToolSchema = Type.Object({
   task: Type.String(),
   label: Type.Optional(Type.String()),
+  runtime: optionalStringEnum(SESSIONS_SPAWN_RUNTIMES),
   agentId: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
   thinking: Type.Optional(Type.String()),
+  cwd: Type.Optional(Type.String()),
   runTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
   // Back-compat: older callers used timeoutSeconds for this tool.
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
@@ -52,6 +56,7 @@ export function createSessionsSpawnTool(opts?: {
       const params = args as Record<string, unknown>;
       const task = readStringParam(params, "task", { required: true });
       const label = typeof params.label === "string" ? params.label.trim() : "";
+      const runtime = params.runtime === "acp" ? "acp" : "subagent";
       const requestedAgentId = readStringParam(params, "agentId");
       const modelOverride = readStringParam(params, "model");
       const thinkingOverrideRaw = readStringParam(params, "thinking");

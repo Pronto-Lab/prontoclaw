@@ -12,6 +12,7 @@ import {
   resolveStorePath,
 } from "../config/sessions.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
+import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { note } from "../terminal/note.js";
 import { shortenHomePath } from "../utils.js";
 
@@ -336,7 +337,8 @@ export async function noteStateIntegrity(
         return bUpdated - aUpdated;
       })
       .slice(0, 5);
-    const missing = recent.filter(([, entry]) => {
+    const recentTranscriptCandidates = recent.filter(([key]) => !isSlashRoutingSessionKey(key));
+    const missing = recentTranscriptCandidates.filter(([, entry]) => {
       const sessionId = entry.sessionId;
       if (!sessionId) {
         return false;

@@ -177,6 +177,7 @@ export async function downloadMSTeamsAttachments(params: {
   }
   const allowHosts = resolveAllowedHosts(params.allowHosts);
   const authAllowHosts = resolveAuthAllowedHosts(params.authAllowHosts);
+  const ssrfPolicy = resolveMediaSsrfPolicy(allowHosts);
 
   // Download ANY downloadable attachment (not just images)
   const downloadable = list.filter(isDownloadableAttachment);

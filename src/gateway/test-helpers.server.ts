@@ -19,7 +19,7 @@ import { DEFAULT_AGENT_ID, toAgentStoreSessionKey } from "../routing/session-key
 import { captureEnv } from "../test-utils/env.js";
 import { getDeterministicFreePortBlock } from "../test-utils/ports.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
-import { buildDeviceAuthPayload } from "./device-auth.js";
+import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
 import {
   agentCommand,
@@ -514,7 +514,7 @@ export async function connectReq(
     }
     const identity = loadOrCreateDeviceIdentity();
     const signedAtMs = Date.now();
-    const payload = buildDeviceAuthPayload({
+    const payload = buildDeviceAuthPayloadV3({
       deviceId: identity.deviceId,
       clientId: client.id,
       clientMode: client.mode,

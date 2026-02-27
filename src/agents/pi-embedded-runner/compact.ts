@@ -3,7 +3,6 @@ import {
   createAgentSession,
   estimateTokens,
   SessionManager,
-  SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -500,6 +499,7 @@ export async function compactEmbeddedPiSessionDirect(
       docsPath: docsPath ?? undefined,
       ttsHint,
       promptMode,
+      acpEnabled: params.config?.acp?.enabled !== false,
       runtimeInfo,
       reactionGuidance,
       messageToolHints,

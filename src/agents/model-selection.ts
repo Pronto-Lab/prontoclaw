@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentConfig, resolveAgentModelPrimary } from "./agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
+import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 import { normalizeGoogleModelId } from "./models-config.providers.js";
 
 export type ModelRef = {
@@ -258,18 +259,18 @@ export function resolveModelRefFromString(params: {
   defaultProvider: string;
   aliasIndex?: ModelAliasIndex;
 }): { ref: ModelRef; alias?: string } | null {
-  const trimmed = params.raw.trim();
-  if (!trimmed) {
+  const { model } = splitTrailingAuthProfile(params.raw);
+  if (!model) {
     return null;
   }
-  if (!trimmed.includes("/")) {
-    const aliasKey = normalizeAliasKey(trimmed);
+  if (!model.includes("/")) {
+    const aliasKey = normalizeAliasKey(model);
     const aliasMatch = params.aliasIndex?.byAlias.get(aliasKey);
     if (aliasMatch) {
       return { ref: aliasMatch.ref, alias: aliasMatch.alias };
     }
   }
-  const parsed = parseModelRef(trimmed, params.defaultProvider);
+  const parsed = parseModelRef(model, params.defaultProvider);
   if (!parsed) {
     return null;
   }
