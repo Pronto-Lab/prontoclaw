@@ -13,6 +13,7 @@ import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { hasInterSessionUserProvenance } from "../sessions/input-provenance.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
 import { extractToolCallNames, hasToolCall } from "../utils/transcript-tools.js";
+import { maskConversationTitleOrPreview } from "../channels/sensitive-mask.js";
 import { stripEnvelope } from "./chat-sanitize.js";
 import type { SessionPreviewItem } from "./session-utils.types.js";
 
@@ -371,10 +372,14 @@ export function readSessionTitleFieldsFromTranscript(
   }
 }
 
+function maskSensitivePreviewText(text: string): string {
+  return maskConversationTitleOrPreview(text);
+}
+
 function extractTextFromContent(content: TranscriptMessage["content"]): string | null {
   if (typeof content === "string") {
     const normalized = stripInlineDirectiveTagsForDisplay(content).text.trim();
-    return normalized || null;
+    return normalized ? maskSensitivePreviewText(normalized) : null;
   }
   if (!Array.isArray(content)) {
     return null;
@@ -386,7 +391,7 @@ function extractTextFromContent(content: TranscriptMessage["content"]): string |
     if (part.type === "text" || part.type === "output_text" || part.type === "input_text") {
       const normalized = stripInlineDirectiveTagsForDisplay(part.text).text.trim();
       if (normalized) {
-        return normalized;
+        return maskSensitivePreviewText(normalized);
       }
     }
   }
@@ -656,6 +661,7 @@ function buildPreviewItems(
     if (role === "user") {
       trimmed = stripEnvelope(trimmed);
     }
+    trimmed = maskSensitivePreviewText(trimmed);
     trimmed = truncatePreviewText(trimmed, maxChars);
     items.push({ role, text: trimmed });
   }

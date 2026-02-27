@@ -13,7 +13,7 @@ const DEFAULT_OPTIONS: Required<SensitiveMaskOptions> = {
 };
 
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b/giu;
-const PHONE_CANDIDATE_PATTERN = /\+?[0-9][0-9().\-\s]{7,}[0-9]/g;
+const PHONE_CANDIDATE_PATTERN = /\+?[0-9][0-9().\-\s]{7,}[0-9](?![0-9])/g;
 const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g;
 const BEARER_PATTERN = /\bBearer\s+([A-Za-z0-9._-]{12,})\b/gi;
 const PREFIXED_TOKEN_PATTERN = /\b(?:sk|pk|rk|ghp|gho|ghu|xox[baprs]|pat)[-_][A-Za-z0-9_-]{8,}\b/g;
@@ -78,7 +78,14 @@ function maskEmails(input: string): string {
 }
 
 function maskPhones(input: string): string {
-  return input.replace(PHONE_CANDIDATE_PATTERN, (candidate) => {
+  return input.replace(PHONE_CANDIDATE_PATTERN, (candidate, offset, wholeInput) => {
+    if (typeof offset === "number" && typeof wholeInput === "string") {
+      const tail = wholeInput.slice(offset + candidate.length).toLowerCase();
+      if (tail.startsWith("@s.whatsapp.net") || tail.startsWith("@g.us")) {
+        return candidate;
+      }
+    }
+
     const digits = candidate.replace(/\D/g, "");
     if (digits.length < 9) {
       return candidate;

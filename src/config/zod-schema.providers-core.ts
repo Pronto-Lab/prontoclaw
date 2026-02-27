@@ -513,6 +513,25 @@ export const DiscordAccountSchema = z
       .union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)])
       .optional(),
     activityUrl: z.string().url().optional(),
+    threadCommunication: z
+      .object({
+        enabled: z.boolean().optional(),
+        allowSiblingMentionsInThreads: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    a2aRetry: z
+      .object({
+        enabled: z.boolean().optional(),
+        responseTimeoutMs: z.number().int().positive().optional(),
+        maxAttempts: z.number().int().positive().optional(),
+        checkIntervalMs: z.number().int().positive().optional(),
+        cleanupMaxAgeMs: z.number().int().positive().optional(),
+        escalationMentionId: z.string().optional(),
+        notifyOnFailure: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

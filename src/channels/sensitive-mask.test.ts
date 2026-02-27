@@ -34,6 +34,11 @@ describe("maskConversationTitleOrPreview", () => {
     );
   });
 
+  it("preserves WhatsApp-style ids", () => {
+    const input = "sender=1234567890@s.whatsapp.net";
+    expect(maskConversationTitleOrPreview(input)).toBe(input);
+  });
+
   it("supports selective masking via options", () => {
     const input = "qa_test@resona.co.kr";
     expect(maskConversationTitleOrPreview(input, { maskEmails: false })).toBe(input);
