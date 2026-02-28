@@ -49,22 +49,22 @@ graph TD
     User["사용자 (Discord)"]
 
     subgraph ProntoClaw["ProntoClaw Gateway (Port 18789)"]
-        DM["Discord Monitor\n(11 봇 동시 수신)"]
-        CR["ChannelRouter\n(LLM 기반 라우팅)"]
-        LLM["LLM Runner\n(Anthropic API)"]
-        Tools["Agent Tools\ncolaborate · task_* · milestone_*"]
-        EB["Event Bus\n→ coordination-events.ndjson"]
-        TP["Thread Participant\nRegistry"]
-        SB["Sibling Bot\nRegistry"]
+        DM["Discord Monitor<br/>(11 봇 동시 수신)"]
+        CR["ChannelRouter<br/>(LLM 기반 라우팅)"]
+        LLM["LLM Runner<br/>(Anthropic API)"]
+        Tools["Agent Tools<br/>collaborate · task_* · milestone_*"]
+        EB["Event Bus<br/>→ coordination-events.ndjson"]
+        TP["Thread Participant<br/>Registry"]
+        SB["Sibling Bot<br/>Registry"]
     end
 
     subgraph Monitoring["모니터링"]
-        TM["task-monitor\n(Bun, Port 3847)"]
-        TH["task-hub\n(Next.js, Port 3102)"]
+        TM["task-monitor<br/>(Bun, Port 3847)"]
+        TH["task-hub<br/>(Next.js, Port 3102)"]
     end
 
     subgraph Config["설정 관리"]
-        CF["prontoclaw-config\n(Harness UI, Port 3200)"]
+        CF["prontoclaw-config<br/>(Harness UI, Port 3200)"]
     end
 
     User --> DM
@@ -84,30 +84,19 @@ graph TD
 
 ProntoClaw는 OpenClaw의 Gateway/Channel 인프라를 그대로 활용하면서, 그 위에 다음 레이어를 추가합니다.
 
-```
-┌─────────────────────────────────────────────────┐
-│          ProntoClaw 커스텀 레이어                 │
-│                                                 │
-│  Agent Collaboration v2 (스레드 기반 협업)        │
-│  ChannelRouter (LLM 기반 채널/스레드 자동 선택)    │
-│  Handler/Observer Pattern (멘션 기반 역할 분기)   │
-│  Task Management (11개 MCP 도구)                 │
-│  Event Bus + ndjson 이벤트 로그                   │
-│  A2A Retry (에이전트 간 멘션 실패 자동 재시도)     │
-│  Thread Participant Registry (참여자 추적)        │
-│  Sibling Bot Registry (봇 ↔ 에이전트 ID 매핑)     │
-│  Task Continuation (재시작 시 작업 자동 재개)      │
-│  Milestone 크로스 에이전트 추적                    │
-│  도메인 스킬 시스템 (43+ 전문 스킬)                │
-├─────────────────────────────────────────────────┤
-│          OpenClaw 기반 인프라                      │
-│                                                 │
-│  Gateway (WebSocket 컨트롤 플레인)                │
-│  Pi Agent Runtime (LLM 세션 관리)                 │
-│  Discord Channel (discord.js)                    │
-│  Session Model (에이전트별 격리)                   │
-│  Tool Policy Pipeline                            │
-└─────────────────────────────────────────────────┘
+```mermaid
+block-beta
+    columns 1
+    block:custom["ProntoClaw 커스텀 레이어"]
+        A["Agent Collaboration v2 · ChannelRouter · Handler/Observer"]
+        B["Task Management (11 MCP 도구) · Event Bus · ndjson 로그"]
+        C["A2A Retry · Thread Participant Registry · Sibling Bot Registry"]
+        D["Task Continuation · Milestone 추적 · 도메인 스킬 (43+)"]
+    end
+    block:base["OpenClaw 기반 인프라"]
+        E["Gateway (WebSocket) · Pi Agent Runtime · Discord Channel"]
+        F["Session Model · Tool Policy Pipeline"]
+    end
 ```
 
 ---
@@ -118,23 +107,13 @@ ProntoClaw는 OpenClaw의 Gateway/Channel 인프라를 그대로 활용하면서
 
 사용자가 Discord에 메시지를 보내면, 11개 봇이 동시에 이벤트를 수신합니다. 각 봇의 Discord Monitor가 **Handler/Observer 패턴**으로 역할을 판별합니다.
 
-```
-Discord 메시지 수신
-       │
-       ▼
-봇이 @멘션 되었는가?
-  ┌────┴────┐
-  Yes       No
-  │         │
-  ▼         ▼
-HANDLER   스레드 참여자인가?
-(LLM 호출   ┌────┴────┐
- → 응답)    Yes       No
-            │         │
-            ▼         ▼
-         OBSERVER   무시
-      (히스토리에
-       기록만)
+```mermaid
+flowchart TD
+    START["Discord 메시지 수신"] --> MENTION{"봇이 @멘션 되었는가?"}
+    MENTION -- Yes --> HANDLER["HANDLER<br/>LLM 호출 → 응답 생성"]
+    MENTION -- No --> PARTICIPANT{"스레드 참여자인가?"}
+    PARTICIPANT -- Yes --> OBSERVER["OBSERVER<br/>세션 히스토리에 기록만"]
+    PARTICIPANT -- No --> IGNORE["무시"]
 ```
 
 - **HANDLER**: @멘션된 봇이 LLM을 호출해 응답 생성
@@ -175,12 +154,14 @@ sequenceDiagram
 
 에이전트는 11개의 MCP 도구로 작업을 명시적으로 관리합니다.
 
-```
-task_start → task_update → task_complete
-                ↓               ↓
-           task_block      TASK_HISTORY.md에
-                ↓          월별 아카이브
-           task_resume
+```mermaid
+flowchart LR
+    START["task_start"] --> UPDATE["task_update"]
+    UPDATE --> COMPLETE["task_complete"]
+    COMPLETE --> ARCHIVE["TASK_HISTORY.md<br/>월별 아카이브"]
+    UPDATE --> BLOCK["task_block"]
+    BLOCK --> RESUME["task_resume"]
+    RESUME --> UPDATE
 ```
 
 | 도구                | 기능                                     |
@@ -201,18 +182,13 @@ task_start → task_update → task_complete
 
 모든 에이전트 활동은 이벤트로 기록되어 실시간 모니터링됩니다.
 
-```
-에이전트 도구 호출
-    ↓
-Event Bus (인메모리 Pub/Sub)
-    ↓
-coordination-events.ndjson (append-only 로그)
-    ↓
-task-monitor (파일 감시 + 이벤트 enrichment)
-    ↓
-REST API + WebSocket
-    ↓
-task-hub 대시보드 (실시간 시각화)
+```mermaid
+flowchart TD
+    A["에이전트 도구 호출"] --> B["Event Bus<br/>(인메모리 Pub/Sub)"]
+    B --> C["coordination-events.ndjson<br/>(append-only 로그)"]
+    C --> D["task-monitor<br/>(파일 감시 + 이벤트 enrichment)"]
+    D --> E["REST API + WebSocket"]
+    E --> F["task-hub 대시보드<br/>(실시간 시각화)"]
 ```
 
 **이벤트 종류:**
@@ -271,10 +247,11 @@ ProntoClaw는 세 개의 프로젝트가 함께 동작합니다.
 | [prontoclaw-config](https://github.com/Pronto-Lab/prontoclaw-config) | 에이전트 설정/스킬 관리 + Harness UI | Next.js, simple-git             | 3200  |
 | [task-hub](https://github.com/Pronto-Lab/task-hub)                   | 작업 관리 + 실시간 모니터링 대시보드 | Next.js, MongoDB                | 3102  |
 
-```
-prontoclaw (Gateway)
-    ├── coordination-events.ndjson ──→ task-monitor ──→ task-hub (대시보드)
-    └── 에이전트 워크스페이스 설정 ←── prontoclaw-config (Harness)
+```mermaid
+flowchart LR
+    GW["prontoclaw<br/>(Gateway)"] -->|coordination-events.ndjson| TM["task-monitor"]
+    TM --> TH["task-hub<br/>(대시보드)"]
+    CF["prontoclaw-config<br/>(Harness)"] -->|워크스페이스 설정 / 스킬| GW
 ```
 
 ---
