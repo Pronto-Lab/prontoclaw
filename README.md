@@ -85,18 +85,27 @@ graph TD
 ProntoClaw는 OpenClaw의 Gateway/Channel 인프라를 그대로 활용하면서, 그 위에 다음 레이어를 추가합니다.
 
 ```mermaid
-block-beta
-    columns 1
-    block:custom["ProntoClaw 커스텀 레이어"]
-        A["Agent Collaboration v2 · ChannelRouter · Handler/Observer"]
-        B["Task Management (11 MCP 도구) · Event Bus · ndjson 로그"]
-        C["A2A Retry · Thread Participant Registry · Sibling Bot Registry"]
-        D["Task Continuation · Milestone 추적 · 도메인 스킬 (43+)"]
+graph TD
+    subgraph custom["ProntoClaw 커스텀 레이어"]
+        direction LR
+        A["Agent Collaboration v2"]
+        B["ChannelRouter"]
+        C["Handler/Observer"]
+        D["Task Management"]
+        E["Event Bus"]
+        F["A2A Retry"]
+        G["도메인 스킬 (43+)"]
     end
-    block:base["OpenClaw 기반 인프라"]
-        E["Gateway (WebSocket) · Pi Agent Runtime · Discord Channel"]
-        F["Session Model · Tool Policy Pipeline"]
+
+    subgraph base["OpenClaw 기반 인프라"]
+        direction LR
+        H["Gateway"]
+        I["Pi Agent Runtime"]
+        J["Discord Channel"]
+        K["Session Model"]
     end
+
+    custom --> base
 ```
 
 ---
