@@ -108,7 +108,6 @@ export function shouldIgnoreBoundThreadWebhookMessage(params: {
   return webhookId === boundWebhookId;
 }
 
-
 export async function preflightDiscordMessage(
   params: DiscordMessagePreflightParams,
 ): Promise<DiscordMessagePreflightContext | null> {
@@ -693,6 +692,20 @@ export async function preflightDiscordMessage(
     registerThreadParticipant(message.channelId, params.botUserId);
     touchThreadActivity(message.channelId);
     // Skip mention gate — just mentioned in thread, now registered as participant
+  } else if (threadChannel && params.botUserId) {
+    // Not a participant and not mentioned in this thread — drop silently.
+    // Without this guard every agent bot in the guild would respond to
+    // thread messages in channels where shouldRequireMention is false.
+    logVerbose(`discord: drop thread message (not a participant in ${message.channelId})`);
+    if (historyEntry) {
+      recordPendingHistoryEntryIfEnabled({
+        historyMap: params.guildHistories,
+        historyKey: message.channelId,
+        limit: params.historyLimit,
+        entry: historyEntry,
+      });
+    }
+    return null;
   } else if (isGuildMessage && shouldRequireMention) {
     if (botId && mentionGate.shouldSkip) {
       logDebug(`[discord-preflight] drop: no-mention`);
