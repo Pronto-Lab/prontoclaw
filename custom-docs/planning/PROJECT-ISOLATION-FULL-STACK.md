@@ -93,12 +93,12 @@ graph LR
 
 ```mermaid
 graph TB
-  subgraph "Project A (resonar)"
+  subgraph "Project A (project-alpha)"
     direction TB
     HA[HarnessProject A]
     MA[Milestone A]
-    TA_1["task_abc.md<br/>projectSlug: resonar"]
-    TA_2["task_xyz.md<br/>projectSlug: resonar"]
+    TA_1["task_abc.md<br/>projectSlug: project-alpha"]
+    TA_2["task_xyz.md<br/>projectSlug: project-alpha"]
     CTXA["PROJECT-CONTEXT.md<br/>(A의 미션/스택/제약)"]
   end
 
@@ -178,10 +178,10 @@ graph LR
     // NEW: 프로젝트 정의
     "projects": [
       {
-        "slug": "resonar",
+        "slug": "project-alpha",
         "name": "레소나",
         "description": "음악 스트리밍 서비스",
-        "repoPath": "/path/to/resonar",
+        "repoPath": "/path/to/project-alpha",
         "agents": ["ruda", "eden", "yunseul"],
         "contextFile": "PROJECT-CONTEXT.md"
       },
@@ -261,7 +261,7 @@ sequenceDiagram
   participant Agent as 에이전트 (eden)
 
   CR->>CR: backlog에서 task pick
-  CR->>CR: task.projectSlug 확인 ("resonar")
+  CR->>CR: task.projectSlug 확인 ("project-alpha")
   CR->>FS: PROJECT-CONTEXT.md 읽기
   FS-->>CR: 미션, 스택, 제약 정보
   CR->>Agent: continuation message<br/>[태스크 설명 + 프로젝트 컨텍스트]
@@ -293,7 +293,7 @@ interface TaskFile {
   milestoneItemId?: string;
 
   // NEW: 프로젝트 소속
-  projectSlug?: string; // "resonar", "project-beta", null(개인)
+  projectSlug?: string; // "project-alpha", "project-beta", null(개인)
 }
 ```
 
@@ -305,9 +305,9 @@ interface TaskFile {
 {
 "id": "task_abc123",
 "status": "backlog",
-"projectSlug": "resonar",
+"projectSlug": "project-alpha",
 "description": "추천 알고리즘 API 엔드포인트 구현",
-"harnessProjectSlug": "resonar-mvp",
+"harnessProjectSlug": "project-alpha-mvp",
 "assignee": "eden",
 "priority": "high"
 }
@@ -360,7 +360,7 @@ function resolveProjectContextPath(project: ProjectConfig): string {
 // task_list, task_pick_backlog에 프로젝트 필터 추가
 
 // 에이전트가 "레소나 작업만 보여줘"라고 하면:
-task_list({ projectSlug: "resonar" });
+task_list({ projectSlug: "project-alpha" });
 
 // continuation runner가 backlog에서 태스크를 고를 때:
 // 에이전트의 소속 프로젝트에 해당하는 태스크만 선택
@@ -494,15 +494,15 @@ sequenceDiagram
   participant Agent as Agent (eden)
   participant WS as Workspace
 
-  TH->>GW: delegateToAgent("eden", {<br/>projectSlug: "resonar",<br/>description: "추천 API 구현"})
-  GW->>WS: task_backlog_add<br/>{projectSlug: "resonar", ...}
+  TH->>GW: delegateToAgent("eden", {<br/>projectSlug: "project-alpha",<br/>description: "추천 API 구현"})
+  GW->>WS: task_backlog_add<br/>{projectSlug: "project-alpha", ...}
   WS-->>WS: task_xyz.md 생성
 
   Note over CR: eden이 idle 상태가 되면...
 
   CR->>WS: pickNextBacklogTask("eden")
-  WS-->>CR: task_xyz (projectSlug: "resonar")
-  CR->>CTX: readProjectContext("resonar")
+  WS-->>CR: task_xyz (projectSlug: "project-alpha")
+  CR->>CTX: readProjectContext("project-alpha")
   CTX-->>CR: 미션, 스택, 제약 정보
   CR->>Agent: continuation message<br/>[태스크 + 프로젝트 컨텍스트]
   Agent->>Agent: 레소나 컨텍스트로 작업 수행
@@ -686,11 +686,11 @@ interface ProjectDashboard {
 **기존 API에 projectSlug 필터 추가:**
 
 ```
-GET /api/harness?projectSlug=resonar
-GET /api/milestones?projectSlug=resonar
-GET /api/todos?projectSlug=resonar
-GET /api/tasks?projectSlug=resonar
-GET /api/events/stream?projectSlug=resonar  # SSE 이벤트 필터링
+GET /api/harness?projectSlug=project-alpha
+GET /api/milestones?projectSlug=project-alpha
+GET /api/todos?projectSlug=project-alpha
+GET /api/tasks?projectSlug=project-alpha
+GET /api/events/stream?projectSlug=project-alpha  # SSE 이벤트 필터링
 ```
 
 #### 4-5. 대시보드 UI
@@ -716,8 +716,8 @@ sequenceDiagram
 
   User->>TH: Harness "레소나 MVP"에서<br/>"추천 API" 아이템 Launch
   TH->>API: POST /api/harness/{itemId}/launch<br/>{assigneeAgent: "eden"}
-  API->>API: projectSlug: "resonar" 설정
-  API->>GW: delegateToAgent("eden", {<br/>projectSlug: "resonar",<br/>harnessItemId: "..."})
+  API->>API: projectSlug: "project-alpha" 설정
+  API->>GW: delegateToAgent("eden", {<br/>projectSlug: "project-alpha",<br/>harnessItemId: "..."})
   GW->>GW: task_backlog_add → eden workspace
 
   Note over CR: eden idle 감지
@@ -734,7 +734,7 @@ sequenceDiagram
 
   Agent->>GW: task_complete
 
-  User->>TH: /projects/resonar 대시보드에서 확인
+  User->>TH: /projects/project-alpha 대시보드에서 확인
 ```
 
 #### 시나리오 2: 에이전트의 프로젝트 간 컨텍스트 전환
@@ -748,7 +748,7 @@ sequenceDiagram
 
   Note over Agent: 레소나 태스크 완료
 
-  Agent->>CR: task_complete (resonar 태스크)
+  Agent->>CR: task_complete (project-alpha 태스크)
 
   CR->>CR: eden backlog 확인
   CR->>CR: 다음 태스크: project-beta
@@ -790,7 +790,7 @@ flowchart TD
 ```typescript
 // 에이전트 도구 추가 (선택적, 후속 구현)
 project_update_context({
-  projectSlug: "resonar",
+  projectSlug: "project-alpha",
   section: "최근 결정사항",
   append: "2026-03-07: Redis 대신 Upstash KV 사용 결정 (서버리스 호환)",
 });
