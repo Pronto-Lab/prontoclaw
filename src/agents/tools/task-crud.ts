@@ -173,7 +173,7 @@ export function createTaskStartTool(options: {
         // recovery/enforcement reads the markdown on disk after restarts,
         // compaction, and cross-session continuation.
         steps: hasSteps
-          ? stepsInput.map((s, i) => ({
+          ? stepsInput!.map((s, i) => ({
               id: `s${i + 1}`,
               content: s.content,
               status: (i === 0 && !requiresApproval
